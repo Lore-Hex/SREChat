@@ -309,6 +309,10 @@ defmodule OpenChat.RedisMockTest do
     assert state["users"] == %{"alice" => %{"uid" => "alice"}}
     assert state["next_id"] == default["next_id"]
 
+    stale_state = put_in(default, ["users", "ghost"], %{"uid" => "ghost"})
+    refreshed = RedisPersistence.refresh_keys(default, stale_state, [{:record, "users", "ghost"}])
+    refute Map.has_key?(refreshed["users"], "ghost")
+
     stale_state = put_in(default, ["users", "err"], %{"uid" => "err"})
     MockRedis.force_command({:ok, ["err"]})
     MockRedis.force_command({:error, :record_down})
@@ -414,6 +418,36 @@ defmodule OpenChat.RedisMockTest do
     )
 
     send(Process.whereis(RedisBus), :unexpected)
+
+    send(Process.whereis(RedisBus), {
+      :redix_pubsub,
+      self(),
+      make_ref(),
+      :message,
+      %{channel: "mock:test:events", payload: "not-json"}
+    })
+
+    refute_receive {:comet_event, _event}, 20
+
+    bus_state = :sys.get_state(RedisBus)
+
+    self_origin_payload =
+      Jason.encode!(%{
+        "origin" => bus_state.origin,
+        "keys" => [["user", "alice"]],
+        "event" => %{"text" => "self-origin"},
+        "system" => false
+      })
+
+    send(Process.whereis(RedisBus), {
+      :redix_pubsub,
+      self(),
+      make_ref(),
+      :message,
+      %{channel: "mock:test:events", payload: self_origin_payload}
+    })
+
+    refute_receive {:comet_event, %{"text" => "self-origin"}}, 20
   end
 
   test "RedisBus init handles already-started and failed pubsub clients" do

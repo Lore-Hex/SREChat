@@ -700,11 +700,12 @@ defmodule OpenChatWeb.ApiRouter do
     affix = params["cursorAffix"] || params["affix"] || "prepend"
     cursor_field = params["cursorField"] || "id"
     cursor_value = params["cursorValue"] || params[cursor_field]
+    cursor_id = params["cursorId"] || params["cursor_id"] || params["id"]
 
     page =
       reactions
-      |> sort_reactions(affix)
-      |> filter_reaction_cursor(cursor_field, cursor_value, affix)
+      |> sort_reactions(cursor_field, affix)
+      |> filter_reaction_cursor(cursor_field, cursor_value, cursor_id, affix)
       |> Enum.take(limit)
 
     meta =
@@ -714,27 +715,43 @@ defmodule OpenChatWeb.ApiRouter do
     {page, meta}
   end
 
-  defp sort_reactions(reactions, "append") do
-    Enum.sort_by(reactions, &reaction_sort_key/1, :asc)
+  defp sort_reactions(reactions, field, "append") do
+    Enum.sort_by(reactions, &reaction_sort_key(&1, field), :asc)
   end
 
-  defp sort_reactions(reactions, _affix) do
-    Enum.sort_by(reactions, &reaction_sort_key/1, :desc)
+  defp sort_reactions(reactions, field, _affix) do
+    Enum.sort_by(reactions, &reaction_sort_key(&1, field), :desc)
   end
 
-  defp reaction_sort_key(reaction) do
+  defp reaction_sort_key(reaction, "reactedAt") do
+    {to_int(reaction["reactedAt"], 0), to_int(reaction["id"], 0)}
+  end
+
+  defp reaction_sort_key(reaction, _field) do
     {to_int(reaction["id"], 0), to_int(reaction["reactedAt"], 0)}
   end
 
-  defp filter_reaction_cursor(reactions, _field, nil, _affix), do: reactions
-  defp filter_reaction_cursor(reactions, _field, "", _affix), do: reactions
+  defp filter_reaction_cursor(reactions, _field, nil, _cursor_id, _affix), do: reactions
+  defp filter_reaction_cursor(reactions, _field, "", _cursor_id, _affix), do: reactions
 
-  defp filter_reaction_cursor(reactions, field, cursor_value, "append") do
+  defp filter_reaction_cursor(reactions, "reactedAt", cursor_value, cursor_id, "append")
+       when cursor_id != nil and cursor_id != "" do
+    cursor_key = {to_int(cursor_value, 0), to_int(cursor_id, 0)}
+    Enum.filter(reactions, &(reaction_sort_key(&1, "reactedAt") > cursor_key))
+  end
+
+  defp filter_reaction_cursor(reactions, "reactedAt", cursor_value, cursor_id, _affix)
+       when cursor_id != nil and cursor_id != "" do
+    cursor_key = {to_int(cursor_value, 0), to_int(cursor_id, 0)}
+    Enum.filter(reactions, &(reaction_sort_key(&1, "reactedAt") < cursor_key))
+  end
+
+  defp filter_reaction_cursor(reactions, field, cursor_value, _cursor_id, "append") do
     cursor_value = to_int(cursor_value, 0)
     Enum.filter(reactions, &(reaction_cursor_value(&1, field) > cursor_value))
   end
 
-  defp filter_reaction_cursor(reactions, field, cursor_value, _affix) do
+  defp filter_reaction_cursor(reactions, field, cursor_value, _cursor_id, _affix) do
     cursor_value = to_int(cursor_value, 0)
     Enum.filter(reactions, &(reaction_cursor_value(&1, field) < cursor_value))
   end
@@ -764,6 +781,7 @@ defmodule OpenChatWeb.ApiRouter do
     cursor = %{
       "cursorField" => field,
       "cursorValue" => reaction_cursor_value(cursor_reaction, field),
+      "cursorId" => to_int(cursor_reaction["id"], 0),
       "cursorAffix" => affix,
       "affix" => affix
     }

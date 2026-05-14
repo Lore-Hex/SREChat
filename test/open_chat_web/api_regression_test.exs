@@ -471,6 +471,28 @@ defmodule OpenChatWeb.ApiRegressionTest do
 
     assert json(conn)["data"] == []
 
+    conn =
+      auth_conn(
+        :get,
+        "/v3.0/messages/#{message["id"]}/reactions?limit=2&cursorAffix=append",
+        %{},
+        "uid:bob"
+      )
+
+    append_first = json(conn)
+    assert length(append_first["data"]) == 2
+    append_cursor = get_in(append_first, ["meta", "next", "cursorValue"])
+
+    conn =
+      auth_conn(
+        :get,
+        "/v3.0/messages/#{message["id"]}/reactions?limit=2&cursorField=id&cursorValue=#{append_cursor}&cursorAffix=append",
+        %{},
+        "uid:bob"
+      )
+
+    assert [%{}] = json(conn)["data"]
+
     for reaction <- ["😎", "🎉"] do
       auth_conn(
         :delete,
@@ -523,6 +545,74 @@ defmodule OpenChatWeb.ApiRegressionTest do
 
     assert conn.status == 403
     assert json(conn)["error"]["code"] == "ERR_FORBIDDEN"
+  end
+
+  test "reaction reactedAt cursors do not skip same-second ties" do
+    wait_for_next_second()
+
+    message =
+      auth_conn(:post, "/v3.0/messages", %{
+        "receiver" => "bob",
+        "receiverType" => "user",
+        "type" => "text",
+        "data" => %{"text" => "same second reactions"}
+      })
+      |> json()
+      |> get_in(["data"])
+
+    for reaction <- ["red", "green", "blue"] do
+      assert auth_conn(
+               :post,
+               "/v3.0/messages/#{message["id"]}/reactions/#{reaction}",
+               %{},
+               "uid:bob"
+             ).status == 200
+    end
+
+    conn =
+      auth_conn(
+        :get,
+        "/v3.0/messages/#{message["id"]}/reactions?limit=10&cursorField=reactedAt",
+        %{},
+        "uid:bob"
+      )
+
+    all_rows = json(conn)["data"]
+    assert length(all_rows) == 3
+    assert [_same_second] = all_rows |> Enum.map(& &1["reactedAt"]) |> Enum.uniq()
+
+    conn =
+      auth_conn(
+        :get,
+        "/v3.0/messages/#{message["id"]}/reactions?limit=2&cursorField=reactedAt",
+        %{},
+        "uid:bob"
+      )
+
+    first_page = json(conn)
+    assert length(first_page["data"]) == 2
+    cursor = get_in(first_page, ["meta", "previous"])
+    assert cursor["cursorField"] == "reactedAt"
+    assert is_integer(cursor["cursorId"])
+
+    conn =
+      auth_conn(
+        :get,
+        "/v3.0/messages/#{message["id"]}/reactions?limit=2&cursorField=reactedAt&cursorValue=#{cursor["cursorValue"]}&cursorId=#{cursor["cursorId"]}&cursorAffix=prepend",
+        %{},
+        "uid:bob"
+      )
+
+    second_page = json(conn)
+    assert length(second_page["data"]) == 1
+
+    paged_ids =
+      (first_page["data"] ++ second_page["data"])
+      |> Enum.map(& &1["id"])
+      |> Enum.sort()
+
+    all_ids = all_rows |> Enum.map(& &1["id"]) |> Enum.sort()
+    assert paged_ids == all_ids
   end
 
   test "media upload route stores files, serves them, and returns 404 for missing media" do
@@ -1075,5 +1165,15 @@ defmodule OpenChatWeb.ApiRegressionTest do
     # fine. OpenChat returns 200 with success=true even when the user is already gone.
     second = admin_conn(:delete, "/v3/groups/#{room}/members/socket-user-1")
     assert second.status in [200, 404]
+  end
+
+  defp wait_for_next_second do
+    current = OpenChat.Time.now()
+
+    Stream.repeatedly(fn ->
+      Process.sleep(5)
+      OpenChat.Time.now()
+    end)
+    |> Enum.find(&(&1 != current))
   end
 end
