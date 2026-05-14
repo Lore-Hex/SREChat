@@ -3,7 +3,7 @@ defmodule OpenChat.Store.RedisPersistence do
 
   require Logger
 
-  alias OpenChat.Config
+  alias OpenChat.{Config, RedisClient}
 
   @buckets [
     "users",
@@ -219,7 +219,7 @@ defmodule OpenChat.Store.RedisPersistence do
   defp start_redis(url) do
     case Process.whereis(OpenChat.Redis) do
       nil ->
-        case Redix.start_link(url, name: OpenChat.Redis) do
+        case RedisClient.start_link(url, name: OpenChat.Redis) do
           {:ok, pid} -> {:ok, pid}
           {:error, {:already_started, pid}} -> {:ok, pid}
           error -> error
@@ -360,7 +360,7 @@ defmodule OpenChat.Store.RedisPersistence do
   defp read_records(state, record_keys) do
     commands = Enum.map(record_keys, fn {bucket, id} -> ["GET", record_key(bucket, id)] end)
 
-    case Redix.pipeline(OpenChat.Redis, commands) do
+    case RedisClient.pipeline(OpenChat.Redis, commands) do
       {:ok, results} ->
         record_keys
         |> Enum.zip(results)
@@ -587,7 +587,7 @@ defmodule OpenChat.Store.RedisPersistence do
   defp read_counters(state, default_state, counters) do
     commands = Enum.map(counters, fn counter -> ["GET", counter_key(counter)] end)
 
-    case Redix.pipeline(OpenChat.Redis, commands) do
+    case RedisClient.pipeline(OpenChat.Redis, commands) do
       {:ok, results} ->
         counters
         |> Enum.zip(results)
@@ -634,28 +634,12 @@ defmodule OpenChat.Store.RedisPersistence do
     end
   end
 
-  defp commands_for_op({:put, bucket, id, value}) do
+  defp record_put_commands(bucket, id, value) do
     [
       ["SET", record_key(bucket, id), Jason.encode!(value)],
       ["SADD", index_key(bucket), id]
     ]
   end
-
-  defp commands_for_op({:delete, bucket, id}) do
-    [
-      ["DEL", record_key(bucket, id)],
-      ["SREM", index_key(bucket), id]
-    ]
-  end
-
-  defp commands_for_op({:counter, counter, value}) do
-    [counter_max_command(counter, value)]
-  end
-
-  defp commands_for_op({:replace_all, state}),
-    do: delete_prefix_commands() ++ state_commands(state)
-
-  defp commands_for_op(_op), do: []
 
   defp atomic_op({:put, bucket, id, value}) do
     [
@@ -705,7 +689,7 @@ defmodule OpenChat.Store.RedisPersistence do
       |> Enum.flat_map(fn bucket ->
         state
         |> Map.get(bucket, %{})
-        |> Enum.flat_map(fn {id, value} -> commands_for_op(put(bucket, id, value)) end)
+        |> Enum.flat_map(fn {id, value} -> record_put_commands(bucket, id, value) end)
       end)
 
     counter_commands =
@@ -714,21 +698,6 @@ defmodule OpenChat.Store.RedisPersistence do
       end)
 
     bucket_commands ++ counter_commands
-  end
-
-  defp counter_max_command(counter, value) do
-    script = """
-    local current = redis.call("GET", KEYS[1])
-    local current_number = tonumber(current)
-    local candidate = tonumber(ARGV[1]) or 1
-    if not current_number or current_number < candidate then
-      redis.call("SET", KEYS[1], ARGV[1])
-      return ARGV[1]
-    end
-    return current
-    """
-
-    ["EVAL", script, "1", counter_key(counter), to_s(value)]
   end
 
   defp delete_prefix_commands(cursor \\ "0", commands \\ []) do
@@ -756,7 +725,7 @@ defmodule OpenChat.Store.RedisPersistence do
   defp run_pipeline([]), do: {:ok, []}
 
   defp run_pipeline(commands) do
-    case Redix.pipeline(OpenChat.Redis, commands) do
+    case RedisClient.pipeline(OpenChat.Redis, commands) do
       {:ok, results} ->
         {:ok, results}
 
@@ -879,7 +848,7 @@ defmodule OpenChat.Store.RedisPersistence do
   defp lock_scope_parts(scope) when is_list(scope), do: Enum.map(scope, &to_s/1)
   defp lock_scope_parts(scope), do: [to_s(scope)]
 
-  defp command(args), do: Redix.command(OpenChat.Redis, args)
+  defp command(args), do: RedisClient.command(OpenChat.Redis, args)
 
   defp key(parts),
     do: [Config.redis_key_prefix() | parts] |> Enum.map(&to_s/1) |> Enum.join(":")

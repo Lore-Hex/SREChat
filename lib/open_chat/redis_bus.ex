@@ -4,7 +4,7 @@ defmodule OpenChat.RedisBus do
   use GenServer
   require Logger
 
-  alias OpenChat.Config
+  alias OpenChat.{Config, RedisClient}
 
   def start_link(_opts \\ []), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
@@ -34,13 +34,13 @@ defmodule OpenChat.RedisBus do
 
     case Config.redis_url() do
       url when is_binary(url) and url != "" ->
-        case Redix.PubSub.start_link(url, name: OpenChat.RedisPubSub) do
+        case RedisClient.pubsub_start_link(url, name: OpenChat.RedisPubSub) do
           {:ok, pubsub} ->
-            {:ok, _ref} = Redix.PubSub.subscribe(pubsub, state.channel, self())
+            {:ok, _ref} = RedisClient.pubsub_subscribe(pubsub, state.channel, self())
             {:ok, %{state | pubsub: pubsub}}
 
           {:error, {:already_started, pubsub}} ->
-            {:ok, _ref} = Redix.PubSub.subscribe(pubsub, state.channel, self())
+            {:ok, _ref} = RedisClient.pubsub_subscribe(pubsub, state.channel, self())
             {:ok, %{state | pubsub: pubsub}}
 
           {:error, reason} ->
@@ -115,7 +115,7 @@ defmodule OpenChat.RedisBus do
   end
 
   defp safe_command(command) do
-    Redix.command(OpenChat.Redis, command)
+    RedisClient.command(OpenChat.Redis, command)
   catch
     :exit, reason -> {:error, reason}
   end
