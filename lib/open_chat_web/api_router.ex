@@ -323,13 +323,17 @@ defmodule OpenChatWeb.ApiRouter do
 
   get "/messages/:message_id/reactions/:reaction" do
     with_user(conn, fn conn, user, _token ->
-      store_response(conn, Store.reactions(user["uid"], message_id, reaction), 200, 404)
+      reactions_response(
+        conn,
+        Store.reactions(user["uid"], message_id, reaction),
+        conn.query_params
+      )
     end)
   end
 
   get "/messages/:message_id/reactions" do
     with_user(conn, fn conn, user, _token ->
-      store_response(conn, Store.reactions(user["uid"], message_id), 200, 404)
+      reactions_response(conn, Store.reactions(user["uid"], message_id), conn.query_params)
     end)
   end
 
@@ -655,6 +659,17 @@ defmodule OpenChatWeb.ApiRouter do
     JSON.raw(conn, %{"data" => messages, "meta" => cursor_meta(messages, params)})
   end
 
+  defp reactions_response(conn, result, params) do
+    case result do
+      {:ok, reactions} ->
+        {page, meta} = reactions_page_with_meta(reactions, params)
+        JSON.raw(conn, %{"data" => page, "meta" => meta})
+
+      {:error, error} ->
+        JSON.error(conn, error, error_status(error, 404))
+    end
+  end
+
   defp join_group_payload(group) do
     Map.put(group, "data", %{
       "entities" => %{
@@ -677,6 +692,92 @@ defmodule OpenChatWeb.ApiRouter do
         "affix" => affix
       }
     )
+  end
+
+  defp reactions_page_with_meta(reactions, params) do
+    params = params || %{}
+    limit = params |> reaction_limit()
+    affix = params["cursorAffix"] || params["affix"] || "prepend"
+    cursor_field = params["cursorField"] || "id"
+    cursor_value = params["cursorValue"] || params[cursor_field]
+
+    page =
+      reactions
+      |> sort_reactions(affix)
+      |> filter_reaction_cursor(cursor_field, cursor_value, affix)
+      |> Enum.take(limit)
+
+    meta =
+      reactions_pagination_meta(reactions, page, limit, params)
+      |> put_reaction_cursor(page, cursor_field, affix)
+
+    {page, meta}
+  end
+
+  defp sort_reactions(reactions, "append") do
+    Enum.sort_by(reactions, &reaction_sort_key/1, :asc)
+  end
+
+  defp sort_reactions(reactions, _affix) do
+    Enum.sort_by(reactions, &reaction_sort_key/1, :desc)
+  end
+
+  defp reaction_sort_key(reaction) do
+    {to_int(reaction["id"], 0), to_int(reaction["reactedAt"], 0)}
+  end
+
+  defp filter_reaction_cursor(reactions, _field, nil, _affix), do: reactions
+  defp filter_reaction_cursor(reactions, _field, "", _affix), do: reactions
+
+  defp filter_reaction_cursor(reactions, field, cursor_value, "append") do
+    cursor_value = to_int(cursor_value, 0)
+    Enum.filter(reactions, &(reaction_cursor_value(&1, field) > cursor_value))
+  end
+
+  defp filter_reaction_cursor(reactions, field, cursor_value, _affix) do
+    cursor_value = to_int(cursor_value, 0)
+    Enum.filter(reactions, &(reaction_cursor_value(&1, field) < cursor_value))
+  end
+
+  defp reaction_cursor_value(reaction, "reactedAt"), do: to_int(reaction["reactedAt"], 0)
+  defp reaction_cursor_value(reaction, _field), do: to_int(reaction["id"], 0)
+
+  defp reactions_pagination_meta(reactions, page, limit, params) do
+    total = length(reactions)
+
+    %{
+      "pagination" => %{
+        "total" => total,
+        "count" => length(page),
+        "per_page" => limit,
+        "current_page" => to_int(params["page"], 1),
+        "total_pages" => if(total == 0, do: 0, else: ceil(total / limit))
+      }
+    }
+  end
+
+  defp put_reaction_cursor(meta, [], _field, _affix), do: meta
+
+  defp put_reaction_cursor(meta, page, field, affix) do
+    cursor_reaction = List.last(page)
+
+    cursor = %{
+      "cursorField" => field,
+      "cursorValue" => reaction_cursor_value(cursor_reaction, field),
+      "cursorAffix" => affix,
+      "affix" => affix
+    }
+
+    Map.put(meta, if(affix == "append", do: "next", else: "previous"), cursor)
+  end
+
+  defp reaction_limit(params) do
+    params["per_page"]
+    |> Kernel.||(params["limit"])
+    |> Kernel.||(10)
+    |> to_int(10)
+    |> max(1)
+    |> min(20)
   end
 
   defp pagination_meta(rows, params) do

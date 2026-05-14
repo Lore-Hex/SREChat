@@ -433,6 +433,53 @@ defmodule OpenChatWeb.ApiRegressionTest do
     conn = auth_conn(:get, "/v3.0/messages/#{message["id"]}/reactions", %{}, "uid:bob")
     assert [%{"uid" => "bob", "reaction" => "👍", "reactedByMe" => true}] = json(conn)["data"]
 
+    for reaction <- ["😎", "🎉"] do
+      auth_conn(
+        :post,
+        "/v3.0/messages/#{message["id"]}/reactions/#{URI.encode(reaction)}",
+        %{},
+        "uid:bob"
+      )
+    end
+
+    conn = auth_conn(:get, "/v3.0/messages/#{message["id"]}/reactions?limit=2", %{}, "uid:bob")
+    first_page = json(conn)
+    assert length(first_page["data"]) == 2
+    assert get_in(first_page, ["meta", "previous", "cursorField"]) == "id"
+
+    cursor = get_in(first_page, ["meta", "previous", "cursorValue"])
+
+    conn =
+      auth_conn(
+        :get,
+        "/v3.0/messages/#{message["id"]}/reactions?limit=2&cursorField=id&cursorValue=#{cursor}&cursorAffix=prepend",
+        %{},
+        "uid:bob"
+      )
+
+    second_page = json(conn)
+    assert [%{}] = second_page["data"]
+    second_cursor = get_in(second_page, ["meta", "previous", "cursorValue"])
+
+    conn =
+      auth_conn(
+        :get,
+        "/v3.0/messages/#{message["id"]}/reactions?limit=2&cursorField=id&cursorValue=#{second_cursor}&cursorAffix=prepend",
+        %{},
+        "uid:bob"
+      )
+
+    assert json(conn)["data"] == []
+
+    for reaction <- ["😎", "🎉"] do
+      auth_conn(
+        :delete,
+        "/v3.0/messages/#{message["id"]}/reactions/#{URI.encode(reaction)}",
+        %{},
+        "uid:bob"
+      )
+    end
+
     conn =
       auth_conn(
         :post,
