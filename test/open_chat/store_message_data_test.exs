@@ -47,6 +47,42 @@ defmodule OpenChat.StoreMessageDataTest do
     assert data == %{"text" => "photo caption", "metadata" => %{"album" => "summer"}}
   end
 
+  test "normalise mirrors media captions and keeps attachment URL out of message text fields" do
+    previous_upload_dir = Application.get_env(:open_chat, :upload_dir)
+    upload_dir = Path.join(System.tmp_dir!(), "openchat-message-data-#{System.unique_integer()}")
+    source = Path.join(System.tmp_dir!(), "openchat-source-#{System.unique_integer()}.png")
+
+    File.write!(source, "hello")
+    Application.put_env(:open_chat, :upload_dir, upload_dir)
+
+    try do
+      assert {:ok, data} =
+               MessageData.normalise(
+                 %{"data" => %{}, "caption" => "with upload"},
+                 [
+                   %Plug.Upload{
+                     path: source,
+                     filename: "photo.png",
+                     content_type: "image/png"
+                   }
+                 ]
+               )
+
+      assert data["text"] == "with upload"
+      assert data["caption"] == "with upload"
+      assert [%{"url" => url}] = data["attachments"]
+      refute Map.has_key?(data, "url")
+      assert File.exists?(Path.join(upload_dir, Path.basename(url)))
+    after
+      if previous_upload_dir,
+        do: Application.put_env(:open_chat, :upload_dir, previous_upload_dir),
+        else: Application.delete_env(:open_chat, :upload_dir)
+
+      File.rm_rf(upload_dir)
+      File.rm(source)
+    end
+  end
+
   test "normalise persists uploads and returns stable attachment fields" do
     previous_upload_dir = Application.get_env(:open_chat, :upload_dir)
     upload_dir = Path.join(System.tmp_dir!(), "openchat-message-data-#{System.unique_integer()}")
@@ -73,7 +109,8 @@ defmodule OpenChat.StoreMessageDataTest do
       assert [%{"name" => "unsafe_file.txt", "mimeType" => "text/plain"} = attachment] =
                data["attachments"]
 
-      assert data["url"] == attachment["url"]
+      refute Map.has_key?(data, "url")
+      assert data["caption"] == "with upload"
       assert File.exists?(Path.join(upload_dir, Path.basename(attachment["url"])))
     after
       if previous_upload_dir,

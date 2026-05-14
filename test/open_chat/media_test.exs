@@ -110,15 +110,14 @@ defmodule OpenChat.MediaTest do
     }
 
     signed = Media.sign_urls(data)
-    signed_url = get_in(signed, ["data", "url"])
 
     attachment_url =
       signed |> get_in(["data", "attachments"]) |> List.first() |> Map.fetch!("url")
 
-    assert signed_url == attachment_url
-    assert signed_url =~ "https://openchat-test-uploads.s3.test/abc123456-photo.png?"
-    assert signed_url =~ "X-Amz-Expires=900"
-    assert signed_url =~ "X-Amz-Signature=mock"
+    refute Map.has_key?(signed["data"], "url")
+    assert attachment_url =~ "https://openchat-test-uploads.s3.test/abc123456-photo.png?"
+    assert attachment_url =~ "X-Amz-Expires=900"
+    assert attachment_url =~ "X-Amz-Signature=mock"
   end
 
   test "persist_upload rejects large files" do

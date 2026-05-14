@@ -82,7 +82,7 @@ defmodule OpenChat.Media do
     if media_storage() == "s3" do
       map
       |> sign_attachment_urls()
-      |> sign_own_url()
+      |> sign_own_url_unless_attachment_backed()
     else
       map
     end
@@ -96,6 +96,13 @@ defmodule OpenChat.Media do
 
   defp sign_attachment_url(%{} = attachment), do: sign_own_url(attachment)
   defp sign_attachment_url(attachment), do: attachment
+
+  defp sign_own_url_unless_attachment_backed(%{"attachments" => attachments} = map)
+       when is_list(attachments) and attachments != [] do
+    Map.delete(map, "url")
+  end
+
+  defp sign_own_url_unless_attachment_backed(map), do: sign_own_url(map)
 
   defp sign_own_url(%{"url" => url} = map) when is_binary(url) do
     case stored_name_from_url(url) do

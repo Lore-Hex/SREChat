@@ -87,14 +87,14 @@ defmodule OpenChat.StorePubSubFanoutTest do
         assert_receive {:comet_event,
                         %{
                           "body" => %{
-                            "data" => %{"attachments" => [attachment], "url" => signed_url}
+                            "data" => %{"attachments" => [attachment]} = data
                           }
                         }}
 
-        assert signed_url == attachment["url"]
-        assert signed_url =~ "https://openchat-socket-test.s3.test/abc123456-photo.png?"
-        assert signed_url =~ "X-Amz-Expires=600"
-        assert signed_url =~ "X-Amz-Signature=mock"
+        refute Map.has_key?(data, "url")
+        assert attachment["url"] =~ "https://openchat-socket-test.s3.test/abc123456-photo.png?"
+        assert attachment["url"] =~ "X-Amz-Expires=600"
+        assert attachment["url"] =~ "X-Amz-Signature=mock"
       end
     )
   end

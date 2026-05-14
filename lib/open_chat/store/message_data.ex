@@ -17,6 +17,7 @@ defmodule OpenChat.Store.MessageData do
 
   def normalise(params, uploads) do
     base = normalise_data(params["data"] || %{})
+    media_message? = media_message?(params, uploads, base)
 
     base =
       cond do
@@ -28,6 +29,13 @@ defmodule OpenChat.Store.MessageData do
 
         true ->
           base
+      end
+
+    base =
+      if media_message? do
+        Map.put_new(base, "caption", Map.get(base, "text", ""))
+      else
+        base
       end
 
     base =
@@ -51,8 +59,7 @@ defmodule OpenChat.Store.MessageData do
       {:ok, attachments} ->
         {:ok,
          base
-         |> Map.put("attachments", attachments)
-         |> Map.put_new("url", List.first(attachments)["url"])}
+         |> Map.put("attachments", attachments)}
 
       {:error, error} ->
         {:error, error}
@@ -100,6 +107,14 @@ defmodule OpenChat.Store.MessageData do
       {:ok, attachments} -> {:ok, Enum.reverse(attachments)}
       {:error, error} -> {:error, error}
     end
+  end
+
+  defp media_message?(params, uploads, base) do
+    uploads = uploads |> List.wrap() |> List.flatten() |> Enum.reject(&is_nil/1)
+    type = params["type"] |> to_s() |> String.downcase()
+
+    uploads != [] or type in ["image", "video", "audio", "file", "media"] or
+      Map.has_key?(base, "url") or Map.has_key?(base, "attachments")
   end
 
   defp normalise_data(value) when is_binary(value) do

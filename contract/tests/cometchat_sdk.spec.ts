@@ -107,10 +107,13 @@ test('custom messages, media messages, group join, and native reactions', async 
 
     const reacted = await CometChat.addReaction(customSent.getId(), '👍');
 
+    const attachment = mediaSent.getAttachment?.();
+
     return {
       customData: customSent.getData().customData,
       mediaCaption: mediaSent.getCaption(),
-      mediaUrl: mediaSent.getData().url,
+      mediaDataUrl: mediaSent.getData().url,
+      mediaAttachmentUrl: attachment?.getUrl?.(),
       groupReceiver: groupSent.getReceiverId(),
       reactions: reacted.getReactions().map((r: any) => ({ reaction: r.getReaction(), count: r.getCount() })),
     };
@@ -118,7 +121,8 @@ test('custom messages, media messages, group join, and native reactions', async 
 
   expect(result.customData.feature).toBe('contract-custom');
   expect(result.mediaCaption).toBe('tiny image');
-  expect(result.mediaUrl).toBeTruthy();
+  expect(result.mediaDataUrl).toBeFalsy();
+  expect(result.mediaAttachmentUrl).toBeTruthy();
   expect(result.groupReceiver).toBe('lobby');
   expect(result.reactions[0].reaction).toBe('👍');
 });
@@ -314,28 +318,31 @@ test('snowy media message: MediaMessage + setAttachment(Attachment) + setCaption
       CometChat.MESSAGE_TYPE.IMAGE,
       'user'
     );
-    const attachment = new CometChat.Attachment({
+    const sourceAttachment = new CometChat.Attachment({
       name: 'snowy.png',
       extension: 'png',
       mimeType: 'image/png',
       url: 'https://example.test/snowy.png',
     });
-    media.setAttachment(attachment);
+    media.setAttachment(sourceAttachment);
     media.setCaption('hangout caption');
     media.setMetadata({
       recipientUuid: 'bob',
       chatMessage: { type: 'user', message: 'hangout caption' },
     });
     const sent = await CometChat.sendMediaMessage(media);
+    const sentAttachment = sent.getAttachment?.();
     return {
       caption: sent.getCaption?.() ?? sent.getData()?.caption,
-      url: sent.getData()?.url,
+      dataUrl: sent.getData()?.url,
+      attachmentUrl: sentAttachment?.getUrl?.(),
       metadata: sent.getMetadata?.() ?? sent.getData()?.metadata,
     };
   }, ALICE_TOKEN);
 
   expect(result.caption).toBe('hangout caption');
-  expect(result.url).toBeTruthy();
+  expect(result.dataUrl).toBeFalsy();
+  expect(result.attachmentUrl).toBeTruthy();
   expect(result.metadata?.recipientUuid ?? result.metadata?.chatMessage?.type).toBeTruthy();
 });
 
