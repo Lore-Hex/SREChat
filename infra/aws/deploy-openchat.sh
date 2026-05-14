@@ -15,6 +15,15 @@ PRODUCTION_ACCOUNT="829838608284"
 STAGING_DOMAIN="openchat.staging.tt.fm"
 PRODUCTION_DOMAIN="openchat.prod.tt.fm"
 
+STAGING_EXTENSION_DOMAIN="staging.tt.fm"
+PRODUCTION_EXTENSION_DOMAIN="prod.tt.fm"
+
+STAGING_EXTENSION_CERTIFICATE_ARN="arn:aws:acm:us-east-2:036958288468:certificate/83aecf08-0c25-435a-b1e8-c95faf7fff36"
+PRODUCTION_EXTENSION_CERTIFICATE_ARN="arn:aws:acm:us-east-2:829838608284:certificate/881eeab3-edcf-4ef8-9e93-939f9fce2451"
+
+STAGING_CORS_ALLOWED_ORIGINS="https://staging.hang.fm,https://staging.tt.live,https://staging.hangout.fm,https://openchat.staging.tt.fm,http://localhost:3000,http://localhost:4173,http://localhost:5173"
+PRODUCTION_CORS_ALLOWED_ORIGINS="https://hang.fm,https://www.hang.fm,https://hangout.fm,https://www.hangout.fm,https://tt.live,https://www.tt.live,https://openchat.prod.tt.fm"
+
 STAGING_HOSTED_ZONE_ID="Z012303725HTFF0I5JI42"
 PRODUCTION_HOSTED_ZONE_ID="Z10095773LLWNGK1FKJ1Q"
 
@@ -133,6 +142,9 @@ deploy_env() {
   local subnet_1="$7"
   local subnet_2="$8"
   local admin_api_key="$9"
+  local cors_allowed_origins="${10}"
+  local extension_domain="${11}"
+  local extension_certificate_arn="${12}"
   local image_uri="$account.dkr.ecr.$REGION.amazonaws.com/openchat:$TAG"
 
   aws cloudformation deploy \
@@ -145,11 +157,95 @@ deploy_env() {
       EnvironmentName="$env_name" \
       DomainName="$domain" \
       HostedZoneId="$hosted_zone_id" \
+      CorsAllowedOrigins="$cors_allowed_origins" \
+      ExtensionDomain="$extension_domain" \
       VpcId="$vpc_id" \
       PublicSubnet1="$subnet_1" \
       PublicSubnet2="$subnet_2" \
       ImageUri="$image_uri" \
       AdminApiKey="$admin_api_key"
+
+  ensure_extension_routing "$profile" "$env_name" "$hosted_zone_id" "$extension_domain" "$extension_certificate_arn"
+}
+
+ensure_extension_routing() {
+  local profile="$1"
+  local env_name="$2"
+  local hosted_zone_id="$3"
+  local extension_domain="$4"
+  local extension_certificate_arn="$5"
+  local lb_name="openchat-$env_name"
+  local lb_dns lb_zone lb_arn listener_arn existing_certs change_batch
+
+  lb_dns="$(aws elbv2 describe-load-balancers \
+    --profile "$profile" \
+    --region "$REGION" \
+    --names "$lb_name" \
+    --query 'LoadBalancers[0].DNSName' \
+    --output text)"
+
+  lb_zone="$(aws elbv2 describe-load-balancers \
+    --profile "$profile" \
+    --region "$REGION" \
+    --names "$lb_name" \
+    --query 'LoadBalancers[0].CanonicalHostedZoneId' \
+    --output text)"
+
+  lb_arn="$(aws elbv2 describe-load-balancers \
+    --profile "$profile" \
+    --region "$REGION" \
+    --names "$lb_name" \
+    --query 'LoadBalancers[0].LoadBalancerArn' \
+    --output text)"
+
+  listener_arn="$(aws elbv2 describe-listeners \
+    --profile "$profile" \
+    --region "$REGION" \
+    --load-balancer-arn "$lb_arn" \
+    --query 'Listeners[?Port==`443`].ListenerArn | [0]' \
+    --output text)"
+
+  existing_certs="$(aws elbv2 describe-listener-certificates \
+    --profile "$profile" \
+    --region "$REGION" \
+    --listener-arn "$listener_arn" \
+    --query 'Certificates[].CertificateArn' \
+    --output text)"
+
+  if ! grep -Fqx "$extension_certificate_arn" <<<"$(tr '\t' '\n' <<<"$existing_certs")"; then
+    aws elbv2 add-listener-certificates \
+      --profile "$profile" \
+      --region "$REGION" \
+      --listener-arn "$listener_arn" \
+      --certificates CertificateArn="$extension_certificate_arn" >/dev/null
+  fi
+
+  change_batch="$(mktemp)"
+  jq -n \
+    --arg name "reactions-us.$extension_domain" \
+    --arg dns "$lb_dns" \
+    --arg zone "$lb_zone" \
+    '{
+      Changes: [{
+        Action: "UPSERT",
+        ResourceRecordSet: {
+          Name: $name,
+          Type: "A",
+          AliasTarget: {
+            HostedZoneId: $zone,
+            DNSName: $dns,
+            EvaluateTargetHealth: false
+          }
+        }
+      }]
+    }' >"$change_batch"
+
+  aws route53 change-resource-record-sets \
+    --profile "$profile" \
+    --hosted-zone-id "$hosted_zone_id" \
+    --change-batch "file://$change_batch" >/dev/null
+
+  rm -f "$change_batch"
 }
 
 verify_env() {
@@ -191,11 +287,13 @@ main() {
 
   echo "Deploying staging"
   deploy_env staging "$STAGING_PROFILE" "$STAGING_ACCOUNT" "$STAGING_DOMAIN" "$STAGING_HOSTED_ZONE_ID" \
-    "$STAGING_VPC_ID" "$STAGING_SUBNET_1" "$STAGING_SUBNET_2" "$staging_key"
+    "$STAGING_VPC_ID" "$STAGING_SUBNET_1" "$STAGING_SUBNET_2" "$staging_key" \
+    "$STAGING_CORS_ALLOWED_ORIGINS" "$STAGING_EXTENSION_DOMAIN" "$STAGING_EXTENSION_CERTIFICATE_ARN"
 
   echo "Deploying production"
   deploy_env production "$PRODUCTION_PROFILE" "$PRODUCTION_ACCOUNT" "$PRODUCTION_DOMAIN" "$PRODUCTION_HOSTED_ZONE_ID" \
-    "$PRODUCTION_VPC_ID" "$PRODUCTION_SUBNET_1" "$PRODUCTION_SUBNET_2" "$production_key"
+    "$PRODUCTION_VPC_ID" "$PRODUCTION_SUBNET_1" "$PRODUCTION_SUBNET_2" "$production_key" \
+    "$PRODUCTION_CORS_ALLOWED_ORIGINS" "$PRODUCTION_EXTENSION_DOMAIN" "$PRODUCTION_EXTENSION_CERTIFICATE_ARN"
 
   echo "Verifying staging"
   verify_env "$STAGING_PROFILE" openchat-staging openchat-staging "$STAGING_DOMAIN" "$STAGING_ACCOUNT"
