@@ -308,6 +308,61 @@ defmodule OpenChatWeb.ApiRegressionTest do
     assert [%{"entityId" => "alice", "count" => 1}] = json(conn)["data"]
   end
 
+  test "message history wire order matches CometChat fetchPrevious expectations" do
+    sent =
+      for text <- ["wire order a", "wire order b", "wire order c"] do
+        auth_conn(:post, "/v3.0/messages", %{
+          "receiver" => "bob",
+          "receiverType" => "user",
+          "type" => "text",
+          "data" => %{"text" => text}
+        })
+        |> json()
+        |> get_in(["data"])
+      end
+
+    [first, second, third] = sent
+
+    conn =
+      auth_conn(
+        :get,
+        "/v3.0/users/alice/messages?limit=10&timestamp=#{System.system_time(:millisecond)}",
+        %{},
+        "uid:bob"
+      )
+
+    assert Enum.map(json(conn)["data"], &get_in(&1, ["data", "text"])) == [
+             "wire order a",
+             "wire order b",
+             "wire order c"
+           ]
+
+    assert get_in(json(conn), ["meta", "cursor", "id"]) == first["id"]
+
+    conn = auth_conn(:get, "/v3.0/users/alice/messages?limit=2", %{}, "uid:bob")
+
+    assert Enum.map(json(conn)["data"], &get_in(&1, ["data", "text"])) == [
+             "wire order b",
+             "wire order c"
+           ]
+
+    assert get_in(json(conn), ["meta", "cursor", "id"]) == second["id"]
+
+    conn =
+      auth_conn(
+        :get,
+        "/v3.0/users/alice/messages?limit=2&id=#{second["id"]}",
+        %{},
+        "uid:bob"
+      )
+
+    assert Enum.map(json(conn)["data"], &get_in(&1, ["data", "text"])) == [
+             "wire order a"
+           ]
+
+    assert third["id"] > second["id"]
+  end
+
   test "message read, thread, reaction, and receipt APIs enforce participant privacy" do
     parent =
       auth_conn(:post, "/v3.0/messages", %{
@@ -692,6 +747,7 @@ defmodule OpenChatWeb.ApiRegressionTest do
     old_media_storage = Application.get_env(:open_chat, :media_storage)
     old_s3_bucket = Application.get_env(:open_chat, :s3_bucket)
     old_s3_client = Application.get_env(:open_chat, :s3_client)
+    old_s3_ttl = Application.get_env(:open_chat, :s3_presigned_url_ttl_seconds)
     old_public_media_base_url = Application.get_env(:open_chat, :public_media_base_url)
 
     source_path =
@@ -705,12 +761,14 @@ defmodule OpenChatWeb.ApiRegressionTest do
     Application.put_env(:open_chat, :media_storage, "s3")
     Application.put_env(:open_chat, :s3_bucket, "openchat-api-test-uploads")
     Application.put_env(:open_chat, :s3_client, OpenChat.MockS3)
+    Application.put_env(:open_chat, :s3_presigned_url_ttl_seconds, 1200)
     Application.put_env(:open_chat, :public_media_base_url, "https://openchat.example")
 
     on_exit(fn ->
       Application.put_env(:open_chat, :media_storage, old_media_storage)
       Application.put_env(:open_chat, :s3_bucket, old_s3_bucket)
       Application.put_env(:open_chat, :s3_client, old_s3_client)
+      Application.put_env(:open_chat, :s3_presigned_url_ttl_seconds, old_s3_ttl)
       Application.put_env(:open_chat, :public_media_base_url, old_public_media_base_url)
       OpenChat.MockS3.reset()
       File.rm(source_path)
@@ -731,10 +789,12 @@ defmodule OpenChatWeb.ApiRegressionTest do
 
     assert conn.status == 201
     attachment = json(conn)["data"]["data"]["attachments"] |> List.first()
-    assert attachment["url"] =~ ~r(^https://openchat\.example/media/[A-Za-z0-9_-]+-photo\.png$)
+    uri = URI.parse(attachment["url"])
+    assert uri.host == "openchat-api-test-uploads.s3.test"
+    assert uri.query =~ "X-Amz-Expires=1200"
+    assert uri.query =~ "X-Amz-Signature=mock"
 
-    media_path = URI.parse(attachment["url"]).path
-    conn = conn(:get, "/v3.0#{media_path}") |> OpenChatWeb.Endpoint.call([])
+    conn = conn(:get, "/v3.0/media/#{Path.basename(uri.path)}") |> OpenChatWeb.Endpoint.call([])
     assert conn.status == 200
     assert conn.resp_body == "s3 image bytes"
     assert Plug.Conn.get_resp_header(conn, "content-type") |> List.first() =~ "image/png"

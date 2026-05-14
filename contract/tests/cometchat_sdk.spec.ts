@@ -67,7 +67,6 @@ test('text messages, message request builder, conversations, unread, read, delet
     await CometChat.markAsRead(found);
     const convReq = new CometChat.ConversationsRequestBuilder().setLimit(20).setConversationType('user').build();
     const conversations = await convReq.fetchNext();
-    await CometChat.deleteMessage(msgId);
     return {
       foundText: found.getData().text,
       foundSender: found.getSender().getUid(),
@@ -80,6 +79,11 @@ test('text messages, message request builder, conversations, unread, read, delet
   expect(fetched.foundSender).toBe('alice');
   expect(fetched.unreadFromAlice).toBeGreaterThanOrEqual(1);
   expect(fetched.conversationCount).toBeGreaterThanOrEqual(1);
+
+  await alice.evaluate(async (msgId) => {
+    const { CometChat } = window as any;
+    await CometChat.deleteMessage(msgId);
+  }, sent.id);
 });
 
 test('custom messages, media messages, group join, and native reactions', async ({ page }) => {
@@ -192,23 +196,24 @@ test('snowy init flow: AppSettingsBuilder with overrideClientHost + overrideAdmi
 
 test('snowy DM history: MessagesRequestBuilder.setUID().setLimit().setTimestamp(Date.now()).fetchPrevious()', async ({ browser }) => {
   // Mirrors snowy/src/data/chat/dm-chat-utils.tsx fetchCometChatMessagesWithUser().
+  const prefix = `dm-history-${Date.now()}`;
   const alice = await browser.newPage();
   await loadSdk(alice, false);
-  const sentIds = await alice.evaluate(async (token) => {
+  const sentIds = await alice.evaluate(async ({ token, prefix }) => {
     const { CometChat } = window as any;
     await CometChat.login(token);
     const ids: number[] = [];
-    for (const text of ['dm-history a', 'dm-history b', 'dm-history c']) {
+    for (const text of [`${prefix} a`, `${prefix} b`, `${prefix} c`]) {
       const m = new CometChat.TextMessage('bob', text, 'user');
       const sent = await CometChat.sendMessage(m);
       ids.push(sent.getId());
     }
     return ids;
-  }, ALICE_TOKEN);
+  }, { token: ALICE_TOKEN, prefix });
 
   const bob = await browser.newPage();
   await loadSdk(bob, false);
-  const history = await bob.evaluate(async (token) => {
+  const history = await bob.evaluate(async ({ token, prefix }) => {
     const { CometChat } = window as any;
     await CometChat.login(token);
     const req = new CometChat.MessagesRequestBuilder()
@@ -219,37 +224,43 @@ test('snowy DM history: MessagesRequestBuilder.setUID().setLimit().setTimestamp(
     const messages = await req.fetchPrevious();
     return messages
       .map((m: any) => ({ id: m.getId(), text: m.getData()?.text }))
-      .filter((m: any) => typeof m.text === 'string' && m.text.startsWith('dm-history'));
-  }, BOB_TOKEN);
+      .filter((m: any) => typeof m.text === 'string' && m.text.startsWith(prefix));
+  }, { token: BOB_TOKEN, prefix });
 
-  expect(history.map((m) => m.id).sort()).toEqual(sentIds.slice().sort());
-  expect(history.map((m) => m.text).sort()).toEqual(['dm-history a', 'dm-history b', 'dm-history c']);
+  expect(history.map((m) => m.id)).toEqual(sentIds);
+  expect(history.map((m) => m.text)).toEqual([`${prefix} a`, `${prefix} b`, `${prefix} c`]);
 });
 
 test('snowy room history: MessagesRequestBuilder.setGUID().setLimit().setTimestamp(Date.now()).fetchPrevious()', async ({ page }) => {
   // Mirrors snowy/src/data/chat/room-chat-utils.tsx group history fetch.
+  const prefix = `room-history-${Date.now()}`;
   await loadSdk(page, false);
-  const result = await page.evaluate(async (token) => {
+  const result = await page.evaluate(async ({ token, prefix }) => {
     const { CometChat } = window as any;
     await CometChat.login(token);
     await CometChat.joinGroup('lobby');
-    const sent = await CometChat.sendMessage(
-      new CometChat.TextMessage('lobby', 'room-history line', 'group')
-    );
+    const sentIds: number[] = [];
+    for (const text of [`${prefix} a`, `${prefix} b`, `${prefix} c`]) {
+      const sent = await CometChat.sendMessage(new CometChat.TextMessage('lobby', text, 'group'));
+      sentIds.push(sent.getId());
+    }
     const req = new CometChat.MessagesRequestBuilder()
       .setGUID('lobby')
       .setLimit(50)
       .setTimestamp(Date.now())
       .build();
     const messages = await req.fetchPrevious();
+    const history = messages
+      .map((m: any) => ({ id: m.getId(), text: m.getData()?.text, receiverGuid: m.getReceiverId() }))
+      .filter((m: any) => typeof m.text === 'string' && m.text.startsWith(prefix));
     return {
-      sentId: sent.getId(),
-      foundId: messages.find((m: any) => m.getData()?.text === 'room-history line')?.getId(),
-      receiverGuid: messages.find((m: any) => m.getData()?.text === 'room-history line')?.getReceiverId(),
+      sentIds,
+      history,
     };
-  }, ALICE_TOKEN);
-  expect(result.foundId).toBe(result.sentId);
-  expect(result.receiverGuid).toBe('lobby');
+  }, { token: ALICE_TOKEN, prefix });
+  expect(result.history.map((m: any) => m.id)).toEqual(result.sentIds);
+  expect(result.history.map((m: any) => m.text)).toEqual([`${prefix} a`, `${prefix} b`, `${prefix} c`]);
+  expect(result.history.every((m: any) => m.receiverGuid === 'lobby')).toBe(true);
 });
 
 test('snowy custom message: CustomMessage with "ChatMessage" subType + setMetadata({incrementUnreadCount}) round-trips customData', async ({ page }) => {
@@ -461,7 +472,7 @@ test('snowy callExtension reactions with msgId/emoji keys (Hangout wire shape)',
     });
     const builder = new CometChat.ReactionsRequestBuilder()
       .setMessageId(Number(msg.getId()))
-      .setLimit(25);
+      .setLimit(20);
     const req = builder.build();
     const page0 = await req.fetchPrevious();
     return { count: page0.length, first: page0[0]?.getReaction?.() };
@@ -510,7 +521,7 @@ test('snowy getUnreadMessageCountForAllUsers(true) returns a uid->count map', as
   }, ALICE_TOKEN);
 
   const bob = await browser.newPage();
-  await loadSdk(bob, false);
+  await loadSdk(bob, true);
   const unread = await bob.evaluate(async (token) => {
     const { CometChat } = window as any;
     await CometChat.login(token);
@@ -553,10 +564,11 @@ test('snowy markAsRead(message) accepts a message object and clears unread', asy
   }, ALICE_TOKEN);
 
   const bob = await browser.newPage();
-  await loadSdk(bob, false);
+  await loadSdk(bob, true);
   const result = await bob.evaluate(async ({ token, sentId }) => {
     const { CometChat } = window as any;
     await CometChat.login(token);
+    await new Promise((resolve) => setTimeout(resolve, 500));
     const req = new CometChat.MessagesRequestBuilder().setUID('alice').setLimit(5).build();
     const messages = await req.fetchPrevious();
     const target = messages.find((m: any) => String(m.getId()) === String(sentId));

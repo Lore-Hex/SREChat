@@ -34,6 +34,60 @@ defmodule OpenChat.S3Client do
     end
   end
 
+  def presigned_get_url(bucket, key, expires_in \\ Config.s3_presigned_url_ttl_seconds()) do
+    with {:ok, credentials} <- credentials() do
+      region = Config.s3_region()
+      host = "#{bucket}.s3.#{region}.amazonaws.com"
+      now = DateTime.utc_now()
+      date = Calendar.strftime(now, "%Y%m%d")
+      amz_date = Calendar.strftime(now, "%Y%m%dT%H%M%SZ")
+      scope = "#{date}/#{region}/#{@service}/aws4_request"
+      expires_in = normalize_expires_in(expires_in)
+
+      query_params =
+        [
+          {"X-Amz-Algorithm", "AWS4-HMAC-SHA256"},
+          {"X-Amz-Credential", "#{credentials.access_key_id}/#{scope}"},
+          {"X-Amz-Date", amz_date},
+          {"X-Amz-Expires", to_string(expires_in)},
+          {"X-Amz-SignedHeaders", "host"}
+        ]
+        |> maybe_add_security_token_query(credentials)
+
+      canonical_query = canonical_query(query_params)
+
+      canonical_request =
+        [
+          "GET",
+          "/" <> canonical_key(key),
+          canonical_query,
+          "host:#{host}\n",
+          "host",
+          "UNSIGNED-PAYLOAD"
+        ]
+        |> Enum.join("\n")
+
+      string_to_sign =
+        [
+          "AWS4-HMAC-SHA256",
+          amz_date,
+          scope,
+          sha256_hex(canonical_request)
+        ]
+        |> Enum.join("\n")
+
+      signature =
+        credentials.secret_access_key
+        |> signing_key(date, region)
+        |> hmac(string_to_sign)
+        |> Base.encode16(case: :lower)
+
+      signed_query = canonical_query(query_params ++ [{"X-Amz-Signature", signature}])
+
+      {:ok, "https://#{host}/#{canonical_key(key)}?#{signed_query}"}
+    end
+  end
+
   defp request(method, bucket, key, body, content_type) do
     with {:ok, credentials} <- credentials() do
       region = Config.s3_region()
@@ -167,6 +221,15 @@ defmodule OpenChat.S3Client do
 
   defp canonical_key(key), do: URI.encode(key, &URI.char_unreserved?/1)
 
+  defp canonical_query(params) do
+    params
+    |> Enum.map(fn {name, value} -> {aws_uri_encode(name), aws_uri_encode(value)} end)
+    |> Enum.sort()
+    |> Enum.map_join("&", fn {name, value} -> "#{name}=#{value}" end)
+  end
+
+  defp aws_uri_encode(value), do: value |> to_string() |> URI.encode(&URI.char_unreserved?/1)
+
   defp canonical_header_value(value) do
     value
     |> to_string()
@@ -194,6 +257,20 @@ defmodule OpenChat.S3Client do
   end
 
   defp maybe_add_security_token(headers, _credentials), do: headers
+
+  defp maybe_add_security_token_query(params, %{session_token: token})
+       when token not in [nil, ""] do
+    params ++ [{"X-Amz-Security-Token", token}]
+  end
+
+  defp maybe_add_security_token_query(params, _credentials), do: params
+
+  defp normalize_expires_in(value) do
+    case Integer.parse(to_string(value)) do
+      {int, _rest} when int > 0 -> min(int, 604_800)
+      _other -> 3600
+    end
+  end
 
   defp credentials do
     case cached_credentials() do

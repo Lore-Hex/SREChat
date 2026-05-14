@@ -55,6 +55,50 @@ defmodule OpenChat.StorePubSubFanoutTest do
                     }}
   end
 
+  test "message broadcasts sign S3 media URLs at the socket edge" do
+    PubSub.subscribe({:user, "bob"})
+
+    on_exit(fn ->
+      PubSub.unsubscribe({:user, "bob"})
+    end)
+
+    with_open_chat_env(
+      %{
+        media_storage: "s3",
+        s3_bucket: "openchat-socket-test",
+        s3_client: OpenChat.MockS3,
+        s3_presigned_url_ttl_seconds: 600,
+        public_media_base_url: "https://openchat.example"
+      },
+      fn ->
+        PubSubFanout.message(State.default(), %{
+          "id" => 2,
+          "sender" => "alice",
+          "receiver" => "bob",
+          "receiverType" => "user",
+          "data" => %{
+            "url" => "https://openchat.example/media/abc123456-photo.png",
+            "attachments" => [
+              %{"url" => "https://openchat.example/media/abc123456-photo.png"}
+            ]
+          }
+        })
+
+        assert_receive {:comet_event,
+                        %{
+                          "body" => %{
+                            "data" => %{"attachments" => [attachment], "url" => signed_url}
+                          }
+                        }}
+
+        assert signed_url == attachment["url"]
+        assert signed_url =~ "https://openchat-socket-test.s3.test/abc123456-photo.png?"
+        assert signed_url =~ "X-Amz-Expires=600"
+        assert signed_url =~ "X-Amz-Signature=mock"
+      end
+    )
+  end
+
   test "group action and membership changes publish to tuple keys" do
     state =
       State.default()

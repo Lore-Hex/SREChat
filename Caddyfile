@@ -1,8 +1,10 @@
-https://localhost:443 {
+https://localhost:443, https://reactions-us.localhost:443 {
   tls internal
 
   reverse_proxy /v3/* app:4000
   reverse_proxy /v3.0/* app:4000
+  reverse_proxy /v1/* app:4000
+  reverse_proxy /extensions/* app:4000
   reverse_proxy /media/* app:4000
   reverse_proxy /ws app:4000
   reverse_proxy /socket app:4000

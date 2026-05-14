@@ -113,11 +113,12 @@ Runtime environment variables are read from `config/runtime.exs`, so container a
 | `MEDIA_STORAGE` | `local` | Upload backend. Use `s3` for AWS/private S3 storage. |
 | `S3_BUCKET` | unset | Private S3 bucket used when `MEDIA_STORAGE=s3`. |
 | `S3_REGION` | `AWS_REGION` | S3 bucket region. |
+| `S3_PRESIGNED_URL_TTL_SECONDS` | `3600` | Expiration for presigned S3 media URLs returned to clients. S3 caps this at seven days, and ECS role credentials may expire sooner. |
 | `UPLOAD_DIR` | `priv/static/uploads` | Uploaded media storage directory |
 | `REQUEST_BODY_LIMIT` | `10000000` | Max parsed request body size in bytes |
 | `UPLOAD_MAX_BYTES` | `10000000` | Max single uploaded media file size in bytes |
 | `UPLOAD_ALLOWED_MIME_TYPES` | image/audio/video/pdf/text allowlist | Comma-separated allowlist for stored uploads |
-| `PUBLIC_MEDIA_BASE_URL` | unset | Absolute media URL base; otherwise `/media/<file>`. With private S3, keep this pointed at OpenChat so `/media/<file>` proxies through the service. |
+| `PUBLIC_MEDIA_BASE_URL` | unset | Absolute stable media URL base; otherwise `/media/<file>`. With private S3, keep this pointed at OpenChat for stored fallback URLs while outbound payloads are rewritten to presigned S3 URLs. |
 
 ## Admin moderation
 

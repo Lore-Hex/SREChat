@@ -581,7 +581,7 @@ defmodule OpenChatWeb.ApiRouter do
 
   defp store_response(conn, result, success_status \\ 200, error_status \\ 400) do
     case result do
-      {:ok, data} -> JSON.ok(conn, data, success_status)
+      {:ok, data} -> JSON.ok(conn, Media.sign_urls(data), success_status)
       {:error, error} -> JSON.error(conn, error, error_status(error, error_status))
     end
   end
@@ -672,6 +672,8 @@ defmodule OpenChatWeb.ApiRouter do
   end
 
   defp messages_response(conn, messages, params) do
+    messages = message_wire_order(messages, params)
+    messages = Media.sign_urls(messages)
     JSON.raw(conn, %{"data" => messages, "meta" => cursor_meta(messages, params)})
   end
 
@@ -697,7 +699,12 @@ defmodule OpenChatWeb.ApiRouter do
   defp cursor_meta(messages, params) do
     limit = params["per_page"] || params["limit"] || 30
     affix = params["cursorAffix"] || params["affix"] || "prepend"
-    cursor_message = List.first(messages) || %{}
+
+    cursor_message =
+      case affix do
+        "append" -> List.last(messages) || %{}
+        _other -> List.first(messages) || %{}
+      end
 
     pagination_meta(messages, Map.put(params, "limit", limit))
     |> Map.put(
@@ -708,6 +715,13 @@ defmodule OpenChatWeb.ApiRouter do
         "affix" => affix
       }
     )
+  end
+
+  defp message_wire_order(messages, params) do
+    case params["cursorAffix"] || params["affix"] || "prepend" do
+      "append" -> messages
+      _fetch_previous -> Enum.reverse(messages)
+    end
   end
 
   defp reactions_page_with_meta(reactions, params) do

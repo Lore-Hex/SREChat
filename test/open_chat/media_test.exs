@@ -11,6 +11,7 @@ defmodule OpenChat.MediaTest do
     old_media_storage = Application.get_env(:open_chat, :media_storage)
     old_s3_bucket = Application.get_env(:open_chat, :s3_bucket)
     old_s3_client = Application.get_env(:open_chat, :s3_client)
+    old_s3_ttl = Application.get_env(:open_chat, :s3_presigned_url_ttl_seconds)
     old_public_media_base_url = Application.get_env(:open_chat, :public_media_base_url)
     Application.put_env(:open_chat, :upload_dir, upload_dir)
     Application.put_env(:open_chat, :media_storage, "local")
@@ -22,6 +23,7 @@ defmodule OpenChat.MediaTest do
       Application.put_env(:open_chat, :media_storage, old_media_storage)
       Application.put_env(:open_chat, :s3_bucket, old_s3_bucket)
       Application.put_env(:open_chat, :s3_client, old_s3_client)
+      Application.put_env(:open_chat, :s3_presigned_url_ttl_seconds, old_s3_ttl)
       Application.put_env(:open_chat, :public_media_base_url, old_public_media_base_url)
       OpenChat.MockS3.reset()
     end)
@@ -89,6 +91,34 @@ defmodule OpenChat.MediaTest do
     refute File.exists?(Path.join(Config.upload_dir(), stored_name))
 
     File.rm!(path)
+  end
+
+  test "sign_urls returns fresh signed S3 URLs for stored media references" do
+    Application.put_env(:open_chat, :media_storage, "s3")
+    Application.put_env(:open_chat, :s3_bucket, "openchat-test-uploads")
+    Application.put_env(:open_chat, :s3_client, OpenChat.MockS3)
+    Application.put_env(:open_chat, :s3_presigned_url_ttl_seconds, 900)
+    Application.put_env(:open_chat, :public_media_base_url, "https://openchat.example")
+
+    data = %{
+      "data" => %{
+        "url" => "https://openchat.example/media/abc123456-photo.png",
+        "attachments" => [
+          %{"url" => "https://openchat.example/media/abc123456-photo.png"}
+        ]
+      }
+    }
+
+    signed = Media.sign_urls(data)
+    signed_url = get_in(signed, ["data", "url"])
+
+    attachment_url =
+      signed |> get_in(["data", "attachments"]) |> List.first() |> Map.fetch!("url")
+
+    assert signed_url == attachment_url
+    assert signed_url =~ "https://openchat-test-uploads.s3.test/abc123456-photo.png?"
+    assert signed_url =~ "X-Amz-Expires=900"
+    assert signed_url =~ "X-Amz-Signature=mock"
   end
 
   test "persist_upload rejects large files" do

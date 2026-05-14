@@ -178,6 +178,16 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - GET
+              - HEAD
+            AllowedOrigins:
+              - "*"
+            MaxAge: 3600
       LifecycleConfiguration:
         Rules:
           - Id: expire-openchat-media
@@ -311,6 +321,8 @@ Resources:
               Value: !Ref UploadsBucket
             - Name: S3_REGION
               Value: !Ref AWS::Region
+            - Name: S3_PRESIGNED_URL_TTL_SECONDS
+              Value: "3600"
             - Name: UPLOAD_DIR
               Value: /app/priv/static/uploads
             - Name: PUBLIC_MEDIA_BASE_URL

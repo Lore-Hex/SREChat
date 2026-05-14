@@ -104,25 +104,38 @@ defmodule OpenChat.Store.ConversationView do
     category = params["category"]
     timestamp = params["sentAt"] || params["timestamp"]
     id = params["id"] || params["cursorValue"]
+    cursor_id = params["cursorId"] || params["cursor_id"] || if(timestamp, do: id)
     affix = params["cursorAffix"] || params["affix"] || "prepend"
-    cursor_field = params["cursorField"] || if(id, do: "id", else: "sentAt")
+
+    cursor_field =
+      params["cursorField"] || if(timestamp, do: "sentAt", else: if(id, do: "id", else: "sentAt"))
+
+    cursor_value =
+      if(cursor_field == "id", do: id, else: timestamp || params["cursorValue"] || id)
 
     messages
     |> Enum.filter(fn message -> not hide_deleted or blank?(message["deletedAt"]) end)
     |> Enum.filter(fn message -> blank?(type) or message["type"] == type end)
     |> Enum.filter(fn message -> blank?(category) or message["category"] == category end)
-    |> filter_cursor(cursor_field, timestamp || id, affix)
+    |> filter_cursor(cursor_field, cursor_value, cursor_id, affix)
   end
 
-  defp filter_cursor(messages, _field, nil, _affix), do: messages
+  defp filter_cursor(messages, _field, nil, _cursor_id, _affix), do: messages
 
-  defp filter_cursor(messages, field, value, affix) do
-    value_i = to_int(value)
+  defp filter_cursor(messages, field, value, cursor_id, affix) do
     field = if field == "id", do: "id", else: "sentAt"
+    value_i = cursor_value(field, value, affix)
+    cursor_id_i = to_int(cursor_id)
 
     Enum.filter(messages, fn message ->
-      v = to_int(message[field])
-      if affix == "append", do: v > value_i, else: v < value_i
+      if field == "sentAt" and cursor_id_i > 0 do
+        key = {to_int(message["sentAt"]), to_int(message["id"])}
+        cursor = {value_i, cursor_id_i}
+        if affix == "append", do: key > cursor, else: key < cursor
+      else
+        v = to_int(message[field])
+        if affix == "append", do: v > value_i, else: v < value_i
+      end
     end)
   end
 
@@ -214,4 +227,22 @@ defmodule OpenChat.Store.ConversationView do
   end
 
   defp to_int(value), do: value |> to_s() |> to_int()
+
+  defp cursor_value("sentAt", value, affix) do
+    value = to_int(value)
+
+    if value > 10_000_000_000 do
+      seconds = div(value, 1000)
+
+      cond do
+        affix == "append" -> seconds
+        rem(value, 1000) == 0 -> seconds
+        true -> seconds + 1
+      end
+    else
+      value
+    end
+  end
+
+  defp cursor_value(_field, value, _affix), do: to_int(value)
 end

@@ -1,9 +1,11 @@
 defmodule OpenChat.Store.PubSubFanout do
   @moduledoc false
 
-  alias OpenChat.Config
+  alias OpenChat.{Config, Media}
 
   def message(state, message) do
+    message = Media.sign_urls(message)
+
     event = %{
       "appId" => Config.app_id(),
       "receiver" => message["receiver"],
@@ -63,6 +65,7 @@ defmodule OpenChat.Store.PubSubFanout do
   def group_action(state, guid, action, opts) do
     except = Keyword.get(opts, :except)
     keys = group_recipient_keys(state, guid, except: except)
+    action = Media.sign_urls(action)
 
     event = %{
       "appId" => Config.app_id(),

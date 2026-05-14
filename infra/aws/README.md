@@ -13,7 +13,7 @@
   - `chat.example.com`
   - Optional `*.chat.example.com`
 - ElastiCache Redis for chat state.
-- Private S3 bucket for uploaded media. OpenChat serves media back through `/media/...`, so the bucket does not need public access.
+- Private S3 bucket for uploaded media. OpenChat returns presigned S3 URLs in message payloads and keeps `/media/...` as a service-side fallback proxy, so the bucket does not need public access.
 
 ## Environment
 
@@ -30,6 +30,7 @@ REDIS_KEY_PREFIX=open_chat
 MEDIA_STORAGE=s3
 S3_BUCKET=<private-upload-bucket>
 S3_REGION=<aws-region>
+S3_PRESIGNED_URL_TTL_SECONDS=3600
 UPLOAD_DIR=/app/priv/static/uploads
 PUBLIC_MEDIA_BASE_URL=https://chat.example.com
 ```

@@ -51,6 +51,16 @@ defmodule OpenChat.Media do
       else: String.trim_trailing(base, "/") <> "/media/#{URI.encode(filename)}"
   end
 
+  def sign_urls(value) when is_list(value), do: Enum.map(value, &sign_urls/1)
+
+  def sign_urls(%{} = value) do
+    value
+    |> sign_media_map()
+    |> Map.new(fn {key, nested} -> {key, sign_urls(nested)} end)
+  end
+
+  def sign_urls(value), do: value
+
   def stored_name?(filename) when is_binary(filename) do
     Regex.match?(~r/^[A-Za-z0-9_-]{8,}-[A-Za-z0-9._-]+$/, filename)
   end
@@ -67,6 +77,88 @@ defmodule OpenChat.Media do
   end
 
   def fetch(_stored_name), do: {:error, :not_found}
+
+  defp sign_media_map(map) do
+    if media_storage() == "s3" do
+      map
+      |> sign_attachment_urls()
+      |> sign_own_url()
+    else
+      map
+    end
+  end
+
+  defp sign_attachment_urls(%{"attachments" => attachments} = map) when is_list(attachments) do
+    Map.put(map, "attachments", Enum.map(attachments, &sign_attachment_url/1))
+  end
+
+  defp sign_attachment_urls(map), do: map
+
+  defp sign_attachment_url(%{} = attachment), do: sign_own_url(attachment)
+  defp sign_attachment_url(attachment), do: attachment
+
+  defp sign_own_url(%{"url" => url} = map) when is_binary(url) do
+    case stored_name_from_url(url) do
+      nil -> map
+      stored_name -> Map.put(map, "url", signed_media_url(stored_name))
+    end
+  end
+
+  defp sign_own_url(map), do: map
+
+  defp signed_media_url(stored_name) do
+    client = Config.s3_client()
+    bucket = Config.s3_bucket()
+
+    cond do
+      blank?(bucket) ->
+        media_url(stored_name)
+
+      not function_exported?(client, :presigned_get_url, 3) ->
+        media_url(stored_name)
+
+      true ->
+        case client.presigned_get_url(bucket, stored_name, Config.s3_presigned_url_ttl_seconds()) do
+          {:ok, url} -> url
+          _other -> media_url(stored_name)
+        end
+    end
+  end
+
+  defp stored_name_from_url(url) do
+    uri = URI.parse(url)
+    query = uri.query || ""
+
+    cond do
+      String.contains?(query, "X-Amz-Signature=") ->
+        nil
+
+      is_binary(uri.path) ->
+        stored_name_from_path(uri.path, uri.host)
+
+      true ->
+        nil
+    end
+  rescue
+    _error -> nil
+  end
+
+  defp stored_name_from_path(path, host) do
+    segments = String.split(path, "/", trim: true)
+
+    candidate =
+      cond do
+        Enum.at(segments, -2) == "media" -> List.last(segments)
+        s3_host?(host) -> List.last(segments)
+        true -> nil
+      end
+
+    candidate = if is_binary(candidate), do: URI.decode(candidate), else: nil
+    if stored_name?(candidate), do: candidate
+  end
+
+  defp s3_host?(host) when is_binary(host), do: String.contains?(host, ".s3.")
+  defp s3_host?(_host), do: false
 
   defp validate_size(size) do
     max = Config.upload_max_bytes()

@@ -26,6 +26,11 @@ defmodule OpenChat.MockS3 do
     end
   end
 
+  def presigned_get_url(bucket, key, expires_in) do
+    {:ok,
+     "https://#{bucket}.s3.test/#{URI.encode(key)}?X-Amz-Expires=#{expires_in}&X-Amz-Signature=mock"}
+  end
+
   defp ensure_table do
     case :ets.whereis(@table) do
       :undefined -> :ets.new(@table, [:named_table, :public, :set])
