@@ -335,6 +335,8 @@ Resources:
               Value: !Sub open_chat:${EnvironmentName}
             - Name: UPLOAD_DIR
               Value: /app/priv/static/uploads
+            - Name: PUBLIC_MEDIA_BASE_URL
+              Value: !Sub https://${DomainName}
             - Name: EXTENSION_DOMAIN
               Value: !Ref ExtensionDomain
           LogConfiguration:
