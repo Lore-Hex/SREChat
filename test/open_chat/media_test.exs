@@ -120,6 +120,27 @@ defmodule OpenChat.MediaTest do
     assert attachment_url =~ "X-Amz-Signature=mock"
   end
 
+  test "sign_urls strips stale media references from deleted messages" do
+    Application.put_env(:open_chat, :media_storage, "s3")
+    Application.put_env(:open_chat, :s3_bucket, "openchat-test-uploads")
+    Application.put_env(:open_chat, :s3_client, OpenChat.MockS3)
+    Application.put_env(:open_chat, :public_media_base_url, "https://openchat.example")
+
+    signed =
+      Media.sign_urls(%{
+        "deletedAt" => 1_778_788_710,
+        "data" => %{
+          "text" => "deleted caption",
+          "url" => "https://openchat.example/media/missing123-photo.png",
+          "attachments" => [
+            %{"url" => "https://openchat.example/media/missing123-photo.png"}
+          ]
+        }
+      })
+
+    assert signed["data"] == %{"text" => "deleted caption"}
+  end
+
   test "persist_upload rejects large files" do
     old_max = Application.get_env(:open_chat, :upload_max_bytes)
     Application.put_env(:open_chat, :upload_max_bytes, 5)

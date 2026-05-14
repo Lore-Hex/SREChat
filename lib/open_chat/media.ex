@@ -79,6 +79,8 @@ defmodule OpenChat.Media do
   def fetch(_stored_name), do: {:error, :not_found}
 
   defp sign_media_map(map) do
+    map = strip_deleted_media_refs(map)
+
     if media_storage() == "s3" do
       map
       |> sign_attachment_urls()
@@ -87,6 +89,17 @@ defmodule OpenChat.Media do
       map
     end
   end
+
+  defp strip_deleted_media_refs(%{"deletedAt" => deleted_at, "data" => data} = map)
+       when is_map(data) do
+    if blank?(deleted_at) do
+      map
+    else
+      Map.put(map, "data", Map.drop(data, ["attachments", "url"]))
+    end
+  end
+
+  defp strip_deleted_media_refs(map), do: map
 
   defp sign_attachment_urls(%{"attachments" => attachments} = map) when is_list(attachments) do
     Map.put(map, "attachments", Enum.map(attachments, &sign_attachment_url/1))
