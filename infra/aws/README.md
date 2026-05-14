@@ -12,7 +12,8 @@
 - ACM certificate:
   - `chat.example.com`
   - Optional `*.chat.example.com`
-- ElastiCache Redis if durable per-record storage is desired.
+- ElastiCache Redis for chat state.
+- Private S3 bucket for uploaded media. OpenChat serves media back through `/media/...`, so the bucket does not need public access.
 
 ## Environment
 
@@ -26,11 +27,14 @@ COMETCHAT_REGION=us
 EXTENSION_DOMAIN=chat.example.com
 REDIS_URL=redis://<elasticache-primary-endpoint>:6379/0
 REDIS_KEY_PREFIX=open_chat
+MEDIA_STORAGE=s3
+S3_BUCKET=<private-upload-bucket>
+S3_REGION=<aws-region>
 UPLOAD_DIR=/app/priv/static/uploads
 PUBLIC_MEDIA_BASE_URL=https://chat.example.com
 ```
 
-For media durability, mount EFS at `/app/priv/static/uploads` or change media upload code to store files in S3 and return CloudFront URLs.
+Uploaded media expires through the S3 lifecycle policy configured in the CloudFormation stack. The default retention is 30 days.
 
 ## Health checks
 
@@ -41,5 +45,5 @@ Use `GET /v3.0/settings` as a simple health check. It does not require auth.
 - Set a non-empty `COMETCHAT_API_KEY` and keep it only in AWS secrets/config. Admin routes reject missing/invalid API keys unless this variable is intentionally set blank.
 - Replace `uid:<uid>` development tokens with server-minted auth tokens or signed JWT verification.
 - Put AWS WAF/rate limiting in front of public endpoints.
-- Use S3/CloudFront for media files.
+- Keep S3 media buckets private unless a dedicated CDN path is added intentionally.
 - Move from GenServer-mediated writes to operation-specific Redis commands or Postgres if high concurrency or multi-region operation is needed.

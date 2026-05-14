@@ -10,7 +10,7 @@ defmodule OpenChat.Media do
     with {:ok, stat} <- File.stat(upload.path),
          :ok <- validate_size(stat.size),
          :ok <- validate_mime(mime),
-         {:ok, stored_name} <- store(upload.path, filename) do
+         {:ok, stored_name} <- store(upload.path, filename, mime) do
       {:ok,
        %{
          "extension" => stored_name |> Path.extname() |> String.trim_leading("."),
@@ -57,6 +57,17 @@ defmodule OpenChat.Media do
 
   def stored_name?(_filename), do: false
 
+  def fetch(stored_name) when is_binary(stored_name) do
+    with :ok <- validate_stored_name(stored_name) do
+      case media_storage() do
+        "s3" -> fetch_s3(stored_name)
+        _local -> fetch_local(stored_name)
+      end
+    end
+  end
+
+  def fetch(_stored_name), do: {:error, :not_found}
+
   defp validate_size(size) do
     max = Config.upload_max_bytes()
 
@@ -85,15 +96,78 @@ defmodule OpenChat.Media do
     end
   end
 
-  defp store(path, filename) do
+  defp store(path, filename, mime) do
     id = Base.url_encode64(:crypto.strong_rand_bytes(10), padding: false)
     stored_name = id <> "-" <> filename
+
+    case media_storage() do
+      "s3" -> store_s3(path, stored_name, mime)
+      _local -> store_local(path, stored_name)
+    end
+  end
+
+  defp store_local(path, stored_name) do
     dest = Path.join(Config.upload_dir(), stored_name)
 
     with :ok <- File.mkdir_p(Config.upload_dir()),
          :ok <- File.cp(path, dest) do
       {:ok, stored_name}
     end
+  end
+
+  defp store_s3(path, stored_name, mime) do
+    bucket = Config.s3_bucket()
+
+    if blank?(bucket) do
+      {:error, Errors.error("ERR_UPLOAD_FAILED", "S3 bucket is not configured.")}
+    else
+      case Config.s3_client().put_object(bucket, stored_name, path, mime) do
+        {:ok, _result} -> {:ok, stored_name}
+        {:error, %{"code" => _} = error} -> {:error, error}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp fetch_local(stored_name) do
+    path = Path.join(Config.upload_dir(), stored_name)
+
+    if File.exists?(path) do
+      {:ok, %{path: path, content_type: MIME.from_path(path) || "application/octet-stream"}}
+    else
+      {:error, :not_found}
+    end
+  end
+
+  defp fetch_s3(stored_name) do
+    bucket = Config.s3_bucket()
+
+    cond do
+      blank?(bucket) ->
+        {:error, :not_found}
+
+      true ->
+        case Config.s3_client().get_object(bucket, stored_name) do
+          {:ok, %{body: body, content_type: content_type}} ->
+            {:ok, %{body: body, content_type: content_type || media_type(nil, stored_name)}}
+
+          {:error, :not_found} ->
+            {:error, :not_found}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+    end
+  end
+
+  defp validate_stored_name(stored_name) do
+    if stored_name?(stored_name), do: :ok, else: {:error, :not_found}
+  end
+
+  defp media_storage do
+    Config.media_storage()
+    |> String.trim()
+    |> String.downcase()
   end
 
   defp media_type(content_type, filename) do

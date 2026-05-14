@@ -16,7 +16,7 @@ defmodule OpenChat.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :crypto, :public_key, :ssl, :mime],
+      extra_applications: [:logger, :crypto, :public_key, :ssl, :inets, :mime],
       mod: {OpenChat.Application, []}
     ]
   end

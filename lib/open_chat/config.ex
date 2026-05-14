@@ -40,6 +40,17 @@ defmodule OpenChat.Config do
   def ws_port, do: Application.fetch_env!(:open_chat, :ws_port)
   def extension_domain, do: Application.fetch_env!(:open_chat, :extension_domain)
   def upload_dir, do: Application.fetch_env!(:open_chat, :upload_dir)
+  def media_storage, do: Application.get_env(:open_chat, :media_storage, "local") |> to_string()
+  def s3_bucket, do: Application.get_env(:open_chat, :s3_bucket)
+
+  def s3_region do
+    Application.get_env(:open_chat, :s3_region) ||
+      System.get_env("AWS_REGION") ||
+      System.get_env("AWS_DEFAULT_REGION") ||
+      "us-east-1"
+  end
+
+  def s3_client, do: Application.get_env(:open_chat, :s3_client, OpenChat.S3Client)
 
   def request_body_limit,
     do: Application.get_env(:open_chat, :request_body_limit, @default_request_body_limit)

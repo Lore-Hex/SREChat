@@ -688,6 +688,58 @@ defmodule OpenChatWeb.ApiRegressionTest do
     assert json(conn)["error"]["code"] == "ERR_UPLOAD_TYPE_NOT_ALLOWED"
   end
 
+  test "media upload route stores and serves S3-backed files" do
+    old_media_storage = Application.get_env(:open_chat, :media_storage)
+    old_s3_bucket = Application.get_env(:open_chat, :s3_bucket)
+    old_s3_client = Application.get_env(:open_chat, :s3_client)
+    old_public_media_base_url = Application.get_env(:open_chat, :public_media_base_url)
+
+    source_path =
+      Path.join(
+        System.tmp_dir!(),
+        "open-chat-api-s3-source-#{System.unique_integer([:positive])}.png"
+      )
+
+    File.write!(source_path, "s3 image bytes")
+    OpenChat.MockS3.reset()
+    Application.put_env(:open_chat, :media_storage, "s3")
+    Application.put_env(:open_chat, :s3_bucket, "openchat-api-test-uploads")
+    Application.put_env(:open_chat, :s3_client, OpenChat.MockS3)
+    Application.put_env(:open_chat, :public_media_base_url, "https://openchat.example")
+
+    on_exit(fn ->
+      Application.put_env(:open_chat, :media_storage, old_media_storage)
+      Application.put_env(:open_chat, :s3_bucket, old_s3_bucket)
+      Application.put_env(:open_chat, :s3_client, old_s3_client)
+      Application.put_env(:open_chat, :public_media_base_url, old_public_media_base_url)
+      OpenChat.MockS3.reset()
+      File.rm(source_path)
+    end)
+
+    conn =
+      conn(:post, "/v3.0/messages", %{
+        "receiver" => "bob",
+        "receiverType" => "user",
+        "file" => %Plug.Upload{
+          path: source_path,
+          filename: "photo.png",
+          content_type: "image/png"
+        }
+      })
+      |> Plug.Conn.put_req_header("authtoken", "uid:alice")
+      |> OpenChatWeb.Endpoint.call([])
+
+    assert conn.status == 201
+    attachment = json(conn)["data"]["data"]["attachments"] |> List.first()
+    assert attachment["url"] =~ ~r(^https://openchat\.example/media/[A-Za-z0-9_-]+-photo\.png$)
+
+    media_path = URI.parse(attachment["url"]).path
+    conn = conn(:get, "/v3.0#{media_path}") |> OpenChatWeb.Endpoint.call([])
+    assert conn.status == 200
+    assert conn.resp_body == "s3 image bytes"
+    assert Plug.Conn.get_resp_header(conn, "content-type") |> List.first() =~ "image/png"
+  end
+
   test "settings, JWT, user sessions, and logout token revocation routes work together" do
     conn = conn(:get, "/v3.0/settings") |> OpenChatWeb.Endpoint.call([])
     assert conn.status == 200

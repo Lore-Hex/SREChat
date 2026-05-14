@@ -518,6 +518,10 @@ defmodule OpenChatWeb.ApiRouter do
     serve_media(conn, file)
   end
 
+  head "/media/:file" do
+    serve_media(conn, file)
+  end
+
   match "/*path" do
     if extension_host?(conn) do
       handle_extension(conn, extension_name_from_host(conn), Enum.join(path, "/"))
@@ -611,12 +615,24 @@ defmodule OpenChatWeb.ApiRouter do
   defp serve_media(conn, file) do
     decoded = URI.decode(file)
     filename = Path.basename(decoded)
-    path = Path.join(Config.upload_dir(), filename)
 
-    if decoded == filename and Media.stored_name?(filename) and File.exists?(path) do
-      conn
-      |> put_resp_content_type(MIME.from_path(path) || "application/octet-stream")
-      |> send_file(200, path)
+    if decoded == filename and Media.stored_name?(filename) do
+      case Media.fetch(filename) do
+        {:ok, %{path: path, content_type: content_type}} ->
+          conn
+          |> put_resp_content_type(
+            content_type || MIME.from_path(path) || "application/octet-stream"
+          )
+          |> send_file(200, path)
+
+        {:ok, %{body: body, content_type: content_type}} ->
+          conn
+          |> put_resp_content_type(content_type || "application/octet-stream")
+          |> send_resp(200, body)
+
+        _other ->
+          JSON.error(conn, Errors.error("ERR_MEDIA_NOT_FOUND", "Media file was not found."), 404)
+      end
     else
       JSON.error(conn, Errors.error("ERR_MEDIA_NOT_FOUND", "Media file was not found."), 404)
     end

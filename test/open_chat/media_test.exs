@@ -8,11 +8,22 @@ defmodule OpenChat.MediaTest do
     upload_dir = "priv/static/test_uploads"
     File.mkdir_p!(upload_dir)
     old_upload_dir = Application.get_env(:open_chat, :upload_dir)
+    old_media_storage = Application.get_env(:open_chat, :media_storage)
+    old_s3_bucket = Application.get_env(:open_chat, :s3_bucket)
+    old_s3_client = Application.get_env(:open_chat, :s3_client)
+    old_public_media_base_url = Application.get_env(:open_chat, :public_media_base_url)
     Application.put_env(:open_chat, :upload_dir, upload_dir)
+    Application.put_env(:open_chat, :media_storage, "local")
+    OpenChat.MockS3.reset()
 
     on_exit(fn ->
       File.rm_rf!(upload_dir)
       Application.put_env(:open_chat, :upload_dir, old_upload_dir)
+      Application.put_env(:open_chat, :media_storage, old_media_storage)
+      Application.put_env(:open_chat, :s3_bucket, old_s3_bucket)
+      Application.put_env(:open_chat, :s3_client, old_s3_client)
+      Application.put_env(:open_chat, :public_media_base_url, old_public_media_base_url)
+      OpenChat.MockS3.reset()
     end)
 
     :ok
@@ -42,9 +53,42 @@ defmodule OpenChat.MediaTest do
 
     stored_name = result["url"] |> String.replace("/media/", "") |> URI.decode()
     assert File.exists?(Path.join(Config.upload_dir(), stored_name))
+    assert {:ok, %{path: stored_path, content_type: "text/plain"}} = Media.fetch(stored_name)
+    assert File.read!(stored_path) == "hello world"
 
     File.rm!(path)
     Application.put_env(:open_chat, :upload_max_bytes, old_max)
+  end
+
+  test "persist_upload stores media in S3 when configured" do
+    Application.put_env(:open_chat, :media_storage, "s3")
+    Application.put_env(:open_chat, :s3_bucket, "openchat-test-uploads")
+    Application.put_env(:open_chat, :s3_client, OpenChat.MockS3)
+    Application.put_env(:open_chat, :public_media_base_url, "https://openchat.example")
+
+    path = "s3_file.png"
+    File.write!(path, "png bytes")
+
+    upload = %Plug.Upload{
+      path: path,
+      filename: "sample image.png",
+      content_type: "image/png"
+    }
+
+    {:ok, result} = Media.persist_upload(upload)
+
+    assert result["name"] == "sample_image.png"
+    assert result["mimeType"] == "image/png"
+    assert result["size"] == 9
+    assert result["url"] =~ ~r(^https://openchat.example/media/[A-Za-z0-9_-]+-sample_image\.png$)
+
+    stored_name =
+      result["url"] |> String.replace("https://openchat.example/media/", "") |> URI.decode()
+
+    assert {:ok, %{body: "png bytes", content_type: "image/png"}} = Media.fetch(stored_name)
+    refute File.exists?(Path.join(Config.upload_dir(), stored_name))
+
+    File.rm!(path)
   end
 
   test "persist_upload rejects large files" do

@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Scalable OpenChat on ECS Fargate with ALB TLS, Redis, and EFS uploads.
+Description: Scalable OpenChat on ECS Fargate with ALB TLS, Redis, and S3 uploads.
 
 Parameters:
   EnvironmentName:
@@ -42,6 +42,9 @@ Parameters:
   RedisNodeType:
     Type: String
     Default: cache.t4g.micro
+  UploadRetentionDays:
+    Type: Number
+    Default: 30
 
 Resources:
   Cluster:
@@ -80,6 +83,17 @@ Resources:
             Principal:
               Service: ecs-tasks.amazonaws.com
             Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub OpenChat-${EnvironmentName}-S3Uploads
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub arn:aws:s3:::${UploadsBucket}/*
 
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -127,20 +141,6 @@ Resources:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
 
-  EfsSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: !Sub OpenChat ${EnvironmentName} EFS
-      VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 2049
-          ToPort: 2049
-          SourceSecurityGroupId: !Ref ServiceSecurityGroup
-      SecurityGroupEgress:
-        - IpProtocol: -1
-          CidrIp: 0.0.0.0/0
-
   RedisSubnetGroup:
     Type: AWS::ElastiCache::SubnetGroup
     Properties:
@@ -164,43 +164,30 @@ Resources:
       SecurityGroupIds:
         - !Ref RedisSecurityGroup
 
-  UploadsFileSystem:
-    Type: AWS::EFS::FileSystem
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
-      Encrypted: true
-      FileSystemTags:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-openchat-media
+            Status: Enabled
+            ExpirationInDays: !Ref UploadRetentionDays
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+      Tags:
         - Key: Name
           Value: !Sub openchat-${EnvironmentName}-uploads
-
-  UploadsAccessPoint:
-    Type: AWS::EFS::AccessPoint
-    Properties:
-      FileSystemId: !Ref UploadsFileSystem
-      PosixUser:
-        Uid: "0"
-        Gid: "0"
-      RootDirectory:
-        Path: /uploads
-        CreationInfo:
-          OwnerUid: "0"
-          OwnerGid: "0"
-          Permissions: "0755"
-
-  UploadsMountTarget1:
-    Type: AWS::EFS::MountTarget
-    Properties:
-      FileSystemId: !Ref UploadsFileSystem
-      SubnetId: !Ref PublicSubnet1
-      SecurityGroups:
-        - !Ref EfsSecurityGroup
-
-  UploadsMountTarget2:
-    Type: AWS::EFS::MountTarget
-    Properties:
-      FileSystemId: !Ref UploadsFileSystem
-      SubnetId: !Ref PublicSubnet2
-      SecurityGroups:
-        - !Ref EfsSecurityGroup
 
   Certificate:
     Type: AWS::CertificateManager::Certificate
@@ -274,9 +261,6 @@ Resources:
 
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
-    DependsOn:
-      - UploadsMountTarget1
-      - UploadsMountTarget2
     Properties:
       Family: !Sub openchat-${EnvironmentName}
       Cpu: !Ref TaskCpu
@@ -289,14 +273,6 @@ Resources:
         OperatingSystemFamily: LINUX
       ExecutionRoleArn: !GetAtt ExecutionRole.Arn
       TaskRoleArn: !GetAtt TaskRole.Arn
-      Volumes:
-        - Name: uploads
-          EFSVolumeConfiguration:
-            FilesystemId: !Ref UploadsFileSystem
-            TransitEncryption: ENABLED
-            AuthorizationConfig:
-              AccessPointId: !Ref UploadsAccessPoint
-              IAM: DISABLED
       ContainerDefinitions:
         - Name: openchat
           Image: !Ref ImageUri
@@ -304,10 +280,6 @@ Resources:
           PortMappings:
             - ContainerPort: 4000
               Protocol: tcp
-          MountPoints:
-            - SourceVolume: uploads
-              ContainerPath: /app/priv/static/uploads
-              ReadOnly: false
           Environment:
             - Name: PORT
               Value: "4000"
@@ -333,6 +305,12 @@ Resources:
                 - Host: !GetAtt Redis.PrimaryEndPoint.Address
             - Name: REDIS_KEY_PREFIX
               Value: !Sub open_chat:${EnvironmentName}
+            - Name: MEDIA_STORAGE
+              Value: s3
+            - Name: S3_BUCKET
+              Value: !Ref UploadsBucket
+            - Name: S3_REGION
+              Value: !Ref AWS::Region
             - Name: UPLOAD_DIR
               Value: /app/priv/static/uploads
             - Name: PUBLIC_MEDIA_BASE_URL
@@ -412,3 +390,5 @@ Outputs:
     Value: !GetAtt Redis.PrimaryEndPoint.Address
   LoadBalancerDnsName:
     Value: !GetAtt LoadBalancer.DNSName
+  UploadsBucketName:
+    Value: !Ref UploadsBucket
