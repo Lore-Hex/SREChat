@@ -43,12 +43,14 @@ defmodule OpenChat.StoreExtendedTest do
 
   test "group deletion cleans up members and messages" do
     {:ok, _} = Store.join_group("lobby", "alice")
-    {:ok, msg} = Store.send_message("alice", %{
-      "receiver" => "lobby",
-      "receiverType" => "group",
-      "type" => "text",
-      "data" => %{"text" => "hello"}
-    })
+
+    {:ok, msg} =
+      Store.send_message("alice", %{
+        "receiver" => "lobby",
+        "receiverType" => "group",
+        "type" => "text",
+        "data" => %{"text" => "hello"}
+      })
 
     assert {:ok, _} = Store.get_group("lobby")
     assert {:ok, _} = Store.get_message(msg["id"])
@@ -58,14 +60,14 @@ defmodule OpenChat.StoreExtendedTest do
 
     assert :error = Store.get_group("lobby")
     assert :error = Store.get_message(msg["id"])
-    
+
     assert {:error, %{"code" => "ERR_GUID_NOT_FOUND"}} = Store.group_members("lobby")
   end
 
   test "searching users and groups" do
     {:ok, _} = Store.upsert_user(%{"uid" => "user_abc", "name" => "Apple"})
     {:ok, _} = Store.upsert_user(%{"uid" => "user_def", "name" => "Banana"})
-    
+
     {:ok, users} = Store.list_users(%{"search" => "Apple"})
     assert length(users) == 1
     assert List.first(users)["name"] == "Apple"
@@ -91,7 +93,7 @@ defmodule OpenChat.StoreExtendedTest do
   test "banning and unbanning group members" do
     {:ok, _} = Store.join_group("lobby", "alice")
     {:ok, _} = Store.ban_group_member("lobby", "alice")
-    
+
     {:ok, banned} = Store.banned_group_members("lobby")
     assert Enum.any?(banned, &(&1["uid"] == "alice"))
 

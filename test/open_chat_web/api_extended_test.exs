@@ -1,6 +1,6 @@
 defmodule OpenChatWeb.ApiExtendedTest do
   use OpenChat.HttpCase, async: false
-  
+
   alias OpenChat.Store
 
   setup do
@@ -11,7 +11,7 @@ defmodule OpenChatWeb.ApiExtendedTest do
   test "user search via API" do
     Store.upsert_user(%{"uid" => "search_1", "name" => "FindMe"})
     Store.upsert_user(%{"uid" => "search_2", "name" => "Other"})
-    
+
     conn = auth_conn(:get, "/v3.0/users?search=FindMe", %{}, "uid:alice")
     assert conn.status == 200
     users = json(conn)["data"]
@@ -21,7 +21,7 @@ defmodule OpenChatWeb.ApiExtendedTest do
 
   test "group search via API" do
     Store.upsert_group(%{"guid" => "search_g1", "name" => "HiddenGroup"})
-    
+
     conn = auth_conn(:get, "/v3.0/groups?search=Hidden", %{}, "uid:alice")
     assert conn.status == 200
     groups = json(conn)["data"]
@@ -31,10 +31,10 @@ defmodule OpenChatWeb.ApiExtendedTest do
 
   test "DELETE /me revokes token" do
     {:ok, %{"authToken" => token}} = Store.create_auth_token("carol")
-    
+
     conn = auth_conn(:delete, "/v3.0/me", %{}, token)
     assert conn.status == 200
-    
+
     # Try to use it again
     conn = auth_conn(:get, "/v3.0/me", %{}, token)
     assert conn.status == 401
@@ -55,7 +55,7 @@ defmodule OpenChatWeb.ApiExtendedTest do
 
     conn = admin_conn(:put, "/v3/users", %{"uidsToActivate" => ["bob"]})
     assert conn.status == 200
-    
+
     {:ok, user} = Store.get_user("bob")
     refute user["deactivatedAt"]
   end

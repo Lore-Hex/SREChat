@@ -15,7 +15,7 @@ defmodule OpenChat.UserListTest do
 
     {:ok, users} = Store.list_users()
     uids = Enum.map(users, & &1["uid"])
-    
+
     assert "active_1" in uids
     refute "deactivated_1" in uids
   end

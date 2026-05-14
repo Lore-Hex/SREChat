@@ -2,7 +2,6 @@ defmodule OpenChat.SecurityTest do
   use ExUnit.Case, async: false
 
   alias OpenChat.Store
-  alias OpenChat.PubSub
 
   setup do
     Store.reset!()
@@ -10,17 +9,28 @@ defmodule OpenChat.SecurityTest do
   end
 
   test "deactivated user cannot perform any actions" do
-    {:ok, %{"authToken" => token, "uid" => uid}} = Store.create_auth_token("victim")
+    {:ok, %{"uid" => uid}} = Store.create_auth_token("victim")
     Store.delete_user("victim")
 
     # Cannot send message
-    assert {:error, _} = Store.send_message(uid, %{"receiver" => "alice", "receiverType" => "user", "data" => %{"text" => "hi"}})
-    
+    assert {:error, _} =
+             Store.send_message(uid, %{
+               "receiver" => "alice",
+               "receiverType" => "user",
+               "data" => %{"text" => "hi"}
+             })
+
     # Cannot join group
     assert {:error, _} = Store.join_group("lobby", uid)
 
     # Cannot add reaction
-    {:ok, msg} = Store.send_message("alice", %{"receiver" => "bob", "receiverType" => "user", "data" => %{"text" => "react me"}})
+    {:ok, msg} =
+      Store.send_message("alice", %{
+        "receiver" => "bob",
+        "receiverType" => "user",
+        "data" => %{"text" => "react me"}
+      })
+
     assert {:error, _} = Store.add_reaction(uid, msg["id"], "👍")
   end
 
@@ -29,35 +39,37 @@ defmodule OpenChat.SecurityTest do
     Store.delete_user("dead_user")
 
     # Cannot send message to them
-    assert {:error, %{"code" => "ERR_UID_NOT_FOUND"}} = Store.send_message("alice", %{
-      "receiver" => "dead_user",
-      "receiverType" => "user",
-      "data" => %{"text" => "you there?"}
-    })
+    assert {:error, %{"code" => "ERR_UID_NOT_FOUND"}} =
+             Store.send_message("alice", %{
+               "receiver" => "dead_user",
+               "receiverType" => "user",
+               "data" => %{"text" => "you there?"}
+             })
 
     # Cannot block them (actually block might be okay, but list_users hides them)
     # CometChat usually doesn't block "not found" users.
   end
 
   test "soft deleted message interactions" do
-    {:ok, msg} = Store.send_message("alice", %{
-      "receiver" => "bob",
-      "receiverType" => "user",
-      "data" => %{"text" => "original"}
-    })
+    {:ok, msg} =
+      Store.send_message("alice", %{
+        "receiver" => "bob",
+        "receiverType" => "user",
+        "data" => %{"text" => "original"}
+      })
 
     Store.delete_message("alice", msg["id"])
 
     # Cannot edit
-    assert {:error, %{"message" => "Deleted messages cannot be edited or deleted."}} = 
-      Store.edit_message("alice", msg["id"], %{"data" => %{"text" => "edited"}})
+    assert {:error, %{"message" => "Deleted messages cannot be edited or deleted."}} =
+             Store.edit_message("alice", msg["id"], %{"data" => %{"text" => "edited"}})
 
     # Cannot react
-    assert {:error, %{"message" => "Cannot react to a deleted message."}} = 
-      Store.add_reaction("bob", msg["id"], "👍")
+    assert {:error, %{"message" => "Cannot react to a deleted message."}} =
+             Store.add_reaction("bob", msg["id"], "👍")
 
     # Cannot unreact
-    assert {:error, %{"message" => "Cannot unreact to a deleted message."}} = 
-      Store.remove_reaction("bob", msg["id"], "👍")
+    assert {:error, %{"message" => "Cannot unreact to a deleted message."}} =
+             Store.remove_reaction("bob", msg["id"], "👍")
   end
 end

@@ -9,11 +9,12 @@ defmodule OpenChat.ReactionTest do
   end
 
   test "cannot react to a deleted message" do
-    {:ok, msg} = Store.send_message("alice", %{
-      "receiver" => "bob",
-      "receiverType" => "user",
-      "data" => %{"text" => "hello"}
-    })
+    {:ok, msg} =
+      Store.send_message("alice", %{
+        "receiver" => "bob",
+        "receiverType" => "user",
+        "data" => %{"text" => "hello"}
+      })
 
     # Delete message
     {:ok, _} = Store.delete_message("alice", msg["id"])

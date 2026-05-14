@@ -13,11 +13,12 @@ defmodule OpenChat.MutationEdgeCaseTest do
     Store.ensure_user("deactivated_receiver")
     Store.delete_user("deactivated_receiver")
 
-    result = Store.send_message("active_sender", %{
-      "receiver" => "deactivated_receiver",
-      "receiverType" => "user",
-      "data" => %{"text" => "hello"}
-    })
+    result =
+      Store.send_message("active_sender", %{
+        "receiver" => "deactivated_receiver",
+        "receiverType" => "user",
+        "data" => %{"text" => "hello"}
+      })
 
     # This should probably fail
     assert {:error, %{"code" => "ERR_UID_NOT_FOUND"}} = result
@@ -27,21 +28,28 @@ defmodule OpenChat.MutationEdgeCaseTest do
     Store.ensure_user("deactivated_sender")
     Store.delete_user("deactivated_sender")
 
-    result = Store.send_message("deactivated_sender", %{
-      "receiver" => "alice",
-      "receiverType" => "user",
-      "data" => %{"text" => "hello"}
-    }, [], admin?: false)
+    result =
+      Store.send_message(
+        "deactivated_sender",
+        %{
+          "receiver" => "alice",
+          "receiverType" => "user",
+          "data" => %{"text" => "hello"}
+        },
+        [],
+        admin?: false
+      )
 
     assert {:error, %{"code" => "ERR_NO_AUTH"}} = result
   end
 
   test "deleting an already deleted message returns the same action" do
-    {:ok, msg} = Store.send_message("alice", %{
-      "receiver" => "bob",
-      "receiverType" => "user",
-      "data" => %{"text" => "delete me"}
-    })
+    {:ok, msg} =
+      Store.send_message("alice", %{
+        "receiver" => "bob",
+        "receiverType" => "user",
+        "data" => %{"text" => "delete me"}
+      })
 
     {:ok, action1} = Store.delete_message("alice", msg["id"])
     assert action1["data"]["action"] == "deleted"
