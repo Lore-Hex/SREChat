@@ -579,6 +579,10 @@ defmodule OpenChatWeb.ApiRouter do
     store_response(conn, Store.remove_reaction(uid, message_id, reaction))
   end
 
+  defp reaction_response(conn, :toggle, uid, message_id, reaction) do
+    store_response(conn, Store.toggle_reaction(uid, message_id, reaction))
+  end
+
   defp store_response(conn, result, success_status \\ 200, error_status \\ 400) do
     case result do
       {:ok, data} -> JSON.ok(conn, Media.sign_urls(data), success_status)
@@ -594,7 +598,14 @@ defmodule OpenChatWeb.ApiRouter do
       params = Map.merge(conn.query_params || %{}, conn.body_params || %{})
       message_id = params["messageId"] || params["msgId"] || params["id"] || params["message_id"]
       reaction = params["reaction"] || params["emoji"] || params["emojiCode"]
-      action = params["action"] || params["operation"] || String.downcase(conn.method)
+
+      action =
+        case params["action"] || params["operation"] do
+          value when is_binary(value) -> String.downcase(value)
+          _other -> nil
+        end
+
+      method = String.downcase(conn.method)
 
       cond do
         blank?(message_id) ->
@@ -606,8 +617,14 @@ defmodule OpenChatWeb.ApiRouter do
         action in ["delete", "remove", "removed", "unreact"] ->
           reaction_response(conn, :remove, user["uid"], message_id, reaction)
 
-        true ->
+        action in ["add", "added", "react"] ->
           reaction_response(conn, :add, user["uid"], message_id, reaction)
+
+        method == "delete" ->
+          reaction_response(conn, :remove, user["uid"], message_id, reaction)
+
+        true ->
+          reaction_response(conn, :toggle, user["uid"], message_id, reaction)
       end
     end)
   end

@@ -44,26 +44,24 @@ defmodule OpenChat.Store.MessageState do
 
   @spec refresh_reactions(map(), map(), term()) :: map()
   def refresh_reactions(state, message, current_uid) do
+    reaction_map = get_in(state, ["reactions", to_s(message["id"])]) || %{}
+
     counts =
-      state
-      |> get_in(["reactions", to_s(message["id"])])
-      |> case do
-        nil ->
-          []
+      reaction_map
+      |> Enum.reject(fn {_reaction, by_uid} -> map_size(by_uid) == 0 end)
+      |> Enum.map(fn {reaction, by_uid} ->
+        %{
+          "reaction" => reaction,
+          "count" => map_size(by_uid),
+          "reactedByMe" => Map.has_key?(by_uid, current_uid)
+        }
+      end)
 
-        reaction_map ->
-          reaction_map
-          |> Enum.reject(fn {_reaction, by_uid} -> map_size(by_uid) == 0 end)
-          |> Enum.map(fn {reaction, by_uid} ->
-            %{
-              "reaction" => reaction,
-              "count" => map_size(by_uid),
-              "reactedByMe" => Map.has_key?(by_uid, current_uid)
-            }
-          end)
-      end
+    data =
+      (message["data"] || %{})
+      |> Map.put("reactions", counts)
+      |> put_reaction_extension_metadata(reaction_map)
 
-    data = (message["data"] || %{}) |> Map.put("reactions", counts)
     Map.put(message, "data", data)
   end
 
@@ -145,4 +143,52 @@ defmodule OpenChat.Store.MessageState do
   defp to_s(nil), do: ""
   defp to_s(value) when is_binary(value), do: value
   defp to_s(value), do: to_string(value)
+
+  defp put_reaction_extension_metadata(data, reaction_map) do
+    metadata = data["metadata"] || %{}
+    injected = metadata["@injected"] || %{}
+    extensions = injected["extensions"] || %{}
+    reactions = reaction_extension_payload(reaction_map)
+
+    extensions =
+      if map_size(reactions) == 0 do
+        Map.delete(extensions, "reactions")
+      else
+        Map.put(extensions, "reactions", reactions)
+      end
+
+    injected =
+      if map_size(extensions) == 0 do
+        Map.delete(injected, "extensions")
+      else
+        Map.put(injected, "extensions", extensions)
+      end
+
+    metadata =
+      if map_size(injected) == 0 do
+        Map.delete(metadata, "@injected")
+      else
+        Map.put(metadata, "@injected", injected)
+      end
+
+    if map_size(metadata) == 0 do
+      Map.delete(data, "metadata")
+    else
+      Map.put(data, "metadata", metadata)
+    end
+  end
+
+  defp reaction_extension_payload(reaction_map) do
+    reaction_map
+    |> Enum.reduce(%{}, fn {reaction, by_uid}, acc ->
+      users =
+        by_uid
+        |> Enum.reduce(%{}, fn {uid, reaction_obj}, users ->
+          reacted_by = reaction_obj["reactedBy"] || %{}
+          Map.put(users, uid, %{"name" => reacted_by["name"] || uid})
+        end)
+
+      if map_size(users) == 0, do: acc, else: Map.put(acc, reaction, users)
+    end)
+  end
 end

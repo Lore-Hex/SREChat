@@ -160,6 +160,9 @@ defmodule OpenChat.Store do
   def remove_reaction(uid, id, reaction),
     do: call({:remove_reaction, to_s(uid), to_s(id), reaction})
 
+  def toggle_reaction(uid, id, reaction),
+    do: call({:toggle_reaction, to_s(uid), to_s(id), reaction})
+
   def reactions(uid, id, reaction \\ nil),
     do: call({:reactions, to_s(uid), to_s(id), reaction})
 
@@ -877,7 +880,7 @@ defmodule OpenChat.Store do
       case Map.fetch(state["messages"], id) do
         {:ok, message} ->
           case Access.message(state, uid, message, opts) do
-            :ok -> {:ok, message}
+            :ok -> {:ok, hydrate_message_for_viewer(state, uid, message)}
             {:error, error} -> {:error, error}
           end
 
@@ -940,7 +943,7 @@ defmodule OpenChat.Store do
 
         message ->
           case Access.message(state, uid, message, opts) do
-            :ok -> {:ok, message}
+            :ok -> {:ok, hydrate_message_for_viewer(state, uid, message)}
             {:error, error} -> {:error, error}
           end
       end
@@ -950,14 +953,24 @@ defmodule OpenChat.Store do
 
   def handle_call({:messages_for_user, uid, peer_uid, params}, _from, state) do
     conv_id = user_conversation_id(uid, peer_uid)
-    messages = ConversationView.messages(state, conv_id, params)
+
+    messages =
+      state
+      |> ConversationView.messages(conv_id, params)
+      |> hydrate_messages_for_viewer(state, uid)
+
     {:reply, {:ok, messages}, state}
   end
 
   def handle_call({:messages_for_group, uid, guid, params}, _from, state) do
     if GroupState.read_allowed?(state, guid, uid) do
       conv_id = group_conversation_id(guid)
-      messages = ConversationView.messages(state, conv_id, params)
+
+      messages =
+        state
+        |> ConversationView.messages(conv_id, params)
+        |> hydrate_messages_for_viewer(state, uid)
+
       {:reply, {:ok, messages}, state}
     else
       {:reply, {:error, Errors.not_member(guid)}, state}
@@ -972,6 +985,7 @@ defmodule OpenChat.Store do
       messages =
         ids
         |> ConversationView.messages_by_ids(state, params)
+        |> hydrate_messages_for_viewer(state, uid)
 
       {:reply, {:ok, messages}, state}
     else
@@ -1099,39 +1113,10 @@ defmodule OpenChat.Store do
       if message["deletedAt"] do
         {:reply, {:error, Errors.forbidden("Cannot react to a deleted message.")}, state}
       else
-        reaction = URI.decode(to_s(reaction))
-        now = Time.now()
-        {reaction_id, state} = take_counter(state, "next_reaction_id")
-        user = state |> UserState.get_or_default(uid) |> UserState.public()
+        {:reply, reply, state} =
+          add_reaction_reply(state, uid, id, URI.decode(to_s(reaction)), message)
 
-        reaction_obj =
-          Entities.reaction(%{
-            "id" => reaction_id,
-            "messageId" => message["id"],
-            "reaction" => reaction,
-            "uid" => uid,
-            "reactedAt" => now,
-            "reactedBy" => user
-          })
-
-        state =
-          update_in(state, ["reactions", id], fn reaction_map ->
-            Map.update(reaction_map || %{}, reaction, %{uid => reaction_obj}, fn by_uid ->
-              Map.put(by_uid || %{}, uid, reaction_obj)
-            end)
-          end)
-
-        message = MessageState.refresh_reactions(state, message, uid)
-        state = put_in(state, ["messages", id], message)
-        PubSubFanout.reaction(state, message, reaction_obj, "message_reaction_added", uid)
-
-        persist_ops(
-          PersistenceOps.reactions(state, id) ++
-            [RedisPersistence.put("messages", id, message)] ++
-            PersistenceOps.next_reaction_id(state)
-        )
-
-        {:reply, {:ok, message}, state}
+        {:reply, reply, state}
       end
     else
       :error -> {:reply, {:error, Errors.message_not_found(id)}, state}
@@ -1145,29 +1130,32 @@ defmodule OpenChat.Store do
       if message["deletedAt"] do
         {:reply, {:error, Errors.forbidden("Cannot unreact to a deleted message.")}, state}
       else
+        {:reply, reply, state} =
+          remove_reaction_reply(state, uid, id, URI.decode(to_s(reaction)), message)
+
+        {:reply, reply, state}
+      end
+    else
+      :error -> {:reply, {:error, Errors.message_not_found(id)}, state}
+      {:error, error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  def handle_call({:toggle_reaction, uid, id, reaction}, _from, state) do
+    with {:ok, message} <- Map.fetch(state["messages"], id),
+         :ok <- Access.message(state, uid, message) do
+      if message["deletedAt"] do
+        {:reply, {:error, Errors.forbidden("Cannot react to a deleted message.")}, state}
+      else
         reaction = URI.decode(to_s(reaction))
 
-        reaction_obj =
-          get_in(state, ["reactions", id, reaction, uid]) ||
-            Entities.reaction(%{
-              "messageId" => message["id"],
-              "reaction" => reaction,
-              "uid" => uid,
-              "reactedAt" => Time.now(),
-              "reactedBy" => state |> UserState.get_or_default(uid) |> UserState.public()
-            })
-
-        state = MessageState.remove_reaction(state, id, reaction, uid)
-
-        message = MessageState.refresh_reactions(state, message, uid)
-        state = put_in(state, ["messages", id], message)
-        PubSubFanout.reaction(state, message, reaction_obj, "message_reaction_removed", uid)
-
-        persist_ops(
-          PersistenceOps.reactions(state, id) ++ [RedisPersistence.put("messages", id, message)]
-        )
-
-        {:reply, {:ok, message}, state}
+        if get_in(state, ["reactions", id, reaction, uid]) do
+          {:reply, reply, state} = remove_reaction_reply(state, uid, id, reaction, message)
+          {:reply, reply, state}
+        else
+          {:reply, reply, state} = add_reaction_reply(state, uid, id, reaction, message)
+          {:reply, reply, state}
+        end
       end
     else
       :error -> {:reply, {:error, Errors.message_not_found(id)}, state}
@@ -1374,6 +1362,73 @@ defmodule OpenChat.Store do
     |> MessageData.put_entity("sender", "user", UserState.public(sender))
     |> MessageData.put_entity("receiver", message["receiverType"], receiver_entity)
   end
+
+  defp add_reaction_reply(state, uid, id, reaction, message) do
+    now = Time.now()
+    {reaction_id, state} = take_counter(state, "next_reaction_id")
+    user = state |> UserState.get_or_default(uid) |> UserState.public()
+
+    reaction_obj =
+      Entities.reaction(%{
+        "id" => reaction_id,
+        "messageId" => message["id"],
+        "reaction" => reaction,
+        "uid" => uid,
+        "reactedAt" => now,
+        "reactedBy" => user
+      })
+
+    state =
+      update_in(state, ["reactions", id], fn reaction_map ->
+        Map.update(reaction_map || %{}, reaction, %{uid => reaction_obj}, fn by_uid ->
+          Map.put(by_uid || %{}, uid, reaction_obj)
+        end)
+      end)
+
+    message = MessageState.refresh_reactions(state, message, uid)
+    state = put_in(state, ["messages", id], message)
+    PubSubFanout.reaction(state, message, reaction_obj, "message_reaction_added", uid)
+    PubSubFanout.message_update(state, message)
+
+    persist_ops(
+      PersistenceOps.reactions(state, id) ++
+        [RedisPersistence.put("messages", id, message)] ++
+        PersistenceOps.next_reaction_id(state)
+    )
+
+    {:reply, {:ok, message}, state}
+  end
+
+  defp remove_reaction_reply(state, uid, id, reaction, message) do
+    reaction_obj =
+      get_in(state, ["reactions", id, reaction, uid]) ||
+        Entities.reaction(%{
+          "messageId" => message["id"],
+          "reaction" => reaction,
+          "uid" => uid,
+          "reactedAt" => Time.now(),
+          "reactedBy" => state |> UserState.get_or_default(uid) |> UserState.public()
+        })
+
+    state = MessageState.remove_reaction(state, id, reaction, uid)
+
+    message = MessageState.refresh_reactions(state, message, uid)
+    state = put_in(state, ["messages", id], message)
+    PubSubFanout.reaction(state, message, reaction_obj, "message_reaction_removed", uid)
+    PubSubFanout.message_update(state, message)
+
+    persist_ops(
+      PersistenceOps.reactions(state, id) ++ [RedisPersistence.put("messages", id, message)]
+    )
+
+    {:reply, {:ok, message}, state}
+  end
+
+  defp hydrate_messages_for_viewer(messages, state, uid),
+    do: Enum.map(messages, &hydrate_message_for_viewer(state, uid, &1))
+
+  defp hydrate_message_for_viewer(state, uid, message),
+    do: MessageState.refresh_reactions(state, message, uid)
 
   defp delete_conversation_indexes(state, conv_ids) do
     {state, %{conversation_ids: conv_ids, touched_user_buckets: touched}} =

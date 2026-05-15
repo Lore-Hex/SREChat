@@ -208,6 +208,15 @@ defmodule OpenChat.Store.RequestPlan do
     mutate(message_scope(id), [{"messages", id}, {"reactions", id}, {"users", uid}])
   end
 
+  def build({:toggle_reaction, uid, id, _reaction}) do
+    mutate(message_scope(id), [
+      {"messages", id},
+      {"reactions", id},
+      {"users", uid},
+      {:counter, "next_reaction_id"}
+    ])
+  end
+
   def build({:reactions, _uid, id, _reaction}), do: read([{"messages", id}, {"reactions", id}])
   def build(_request), do: read([])
 

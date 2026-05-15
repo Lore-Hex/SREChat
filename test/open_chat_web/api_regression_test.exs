@@ -485,6 +485,18 @@ defmodule OpenChatWeb.ApiRegressionTest do
     assert [%{"reaction" => "👍", "count" => 1}] =
              get_in(json(conn), ["data", "data", "reactions"])
 
+    assert get_in(json(conn), [
+             "data",
+             "data",
+             "metadata",
+             "@injected",
+             "extensions",
+             "reactions",
+             "👍",
+             "bob",
+             "name"
+           ]) == "Bob Example"
+
     conn = auth_conn(:get, "/v3.0/messages/#{message["id"]}/reactions", %{}, "uid:bob")
     assert [%{"uid" => "bob", "reaction" => "👍", "reactedByMe" => true}] = json(conn)["data"]
 
@@ -584,6 +596,32 @@ defmodule OpenChatWeb.ApiRegressionTest do
       )
 
     refute Enum.any?(get_in(json(conn), ["data", "data", "reactions"]), &(&1["reaction"] == "🔥"))
+
+    conn =
+      auth_conn(
+        :post,
+        "/v3.0/extensions/reactions/v1/react",
+        %{
+          "msgId" => message["id"],
+          "emoji" => "🎧"
+        },
+        "uid:alice"
+      )
+
+    assert Enum.any?(get_in(json(conn), ["data", "data", "reactions"]), &(&1["reaction"] == "🎧"))
+
+    conn =
+      auth_conn(
+        :post,
+        "/v3.0/extensions/reactions/v1/react",
+        %{
+          "msgId" => message["id"],
+          "emoji" => "🎧"
+        },
+        "uid:alice"
+      )
+
+    refute Enum.any?(get_in(json(conn), ["data", "data", "reactions"]), &(&1["reaction"] == "🎧"))
 
     conn =
       auth_conn(:delete, "/v3.0/messages/#{message["id"]}/reactions/%F0%9F%91%8D", %{}, "uid:bob")

@@ -9,6 +9,7 @@ const APP_ID = process.env.COMETCHAT_APP_ID || 'local-app';
 const TARGET_HOST = process.env.OPENCHAT_TARGET_HOST || 'localhost:8443/v3.0';
 const ALICE_TOKEN = process.env.ALICE_TOKEN || 'uid:alice';
 const BOB_TOKEN = process.env.BOB_TOKEN || 'uid:bob';
+const ADMIN_API_KEY = process.env.OPENCHAT_ADMIN_API_KEY || (TARGET_HOST.startsWith('localhost') ? 'local-api-key' : '');
 
 async function loadSdk(page: any, autoSocket = false) {
   await page.goto(`https://${TARGET_HOST}/settings`);
@@ -392,7 +393,7 @@ test('snowy listeners: addMessageListener fires onTextMessageReceived / onCustom
   expect(events.find((e: any) => e.kind === 'text' && e.text === 'listener text')).toBeTruthy();
   expect(events.find((e: any) => e.kind === 'custom' && e.subType === 'ChatMessage')).toBeTruthy();
   // The deleted action's "on" entity points back to the original message id.
-  expect(events.find((e: any) => e.kind === 'deleted')).toBeTruthy();
+  expect(events.find((e: any) => e.kind === 'deleted' && String(e.id) === String(aliceSentText.textId))).toBeTruthy();
 
   await bob.evaluate(() => {
     const { CometChat } = (window as any);
@@ -486,6 +487,133 @@ test('snowy callExtension reactions with msgId/emoji keys (Hangout wire shape)',
   }, ALICE_TOKEN);
   expect(result.count).toBeGreaterThanOrEqual(1);
   expect(result.first).toBe('🔥');
+});
+
+test('snowy callExtension reactions toggle and propagate through regular message listeners', async ({ browser }) => {
+  const bob = await browser.newPage();
+  await loadSdk(bob, true);
+  await bob.evaluate(async (token) => {
+    const { CometChat } = window as any;
+    await CometChat.login(token);
+    (window as any).__reactionEvents = [];
+    CometChat.addMessageListener(
+      'HANGOUT_REACTION_LISTENER',
+      new CometChat.MessageListener({
+        onTextMessageReceived: (m: any) => {
+          const metadata = m.getMetadata?.() || {};
+          (window as any).__reactionEvents.push({
+            id: m.getId(),
+            reactions: metadata?.['@injected']?.extensions?.reactions || {},
+          });
+        },
+      })
+    );
+  }, BOB_TOKEN);
+
+  const alice = await browser.newPage();
+  await loadSdk(alice, false);
+  const msgId = await alice.evaluate(async (token) => {
+    const { CometChat } = window as any;
+    await CometChat.login(token);
+    const msg = await CometChat.sendMessage(new CometChat.TextMessage('bob', 'snowy propagated reaction', 'user'));
+    await CometChat.callExtension('reactions', 'POST', 'v1/react', {
+      msgId: msg.getId(),
+      emoji: '🎧',
+    });
+    return msg.getId();
+  }, ALICE_TOKEN);
+
+  await bob.waitForFunction(
+    ({ msgId }) => ((window as any).__reactionEvents || []).some((e: any) =>
+      String(e.id) === String(msgId) && e.reactions?.['🎧']?.alice?.name
+    ),
+    { msgId },
+    { timeout: 15_000 }
+  );
+
+  await alice.evaluate(async (msgId) => {
+    const { CometChat } = window as any;
+    await CometChat.callExtension('reactions', 'POST', 'v1/react', {
+      msgId,
+      emoji: '🎧',
+    });
+  }, msgId);
+
+  const removed = await alice.evaluate(async (msgId) => {
+    const { CometChat } = window as any;
+    const builder = new CometChat.ReactionsRequestBuilder()
+      .setMessageId(Number(msgId))
+      .setLimit(20);
+    const request = builder.build();
+    const page = await request.fetchPrevious();
+    return page.map((r: any) => r.getReaction?.());
+  }, msgId);
+
+  expect(removed).not.toContain('🎧');
+
+  await bob.evaluate(() => {
+    const { CometChat } = (window as any);
+    CometChat.removeMessageListener('HANGOUT_REACTION_LISTENER');
+  });
+});
+
+test('socket admin system song messages are readable as snowy text chat messages', async ({ page, request }) => {
+  test.skip(!ADMIN_API_KEY, 'Requires an OpenChat admin API key.');
+  await loadSdk(page, false);
+  const room = 'contract-system-room';
+
+  await request.post(`https://${TARGET_HOST}/groups`, {
+    headers: { apiKey: ADMIN_API_KEY },
+    data: { guid: room, type: 'public' },
+  });
+
+  await page.evaluate(async ({ token, room }) => {
+    const { CometChat } = window as any;
+    await CometChat.login(token);
+    try {
+      await CometChat.joinGroup(room);
+    } catch (e: any) {
+      if (e?.code !== 'ERR_ALREADY_JOINED') throw e;
+    }
+  }, { token: ALICE_TOKEN, room });
+
+  const song = { spotifyId: 'sp-contract', title: 'Contract Anthem' };
+  const sent = await request.post(`https://${TARGET_HOST}/messages`, {
+    headers: { apiKey: ADMIN_API_KEY },
+    data: {
+      type: 'text',
+      receiverType: 'group',
+      category: 'message',
+      receiver: room,
+      data: {
+        text: '<@uid:alice> played',
+        metadata: {
+          chatMessage: {
+            type: 'room',
+            songs: [{ type: 'ChatMusicInfo', song }],
+          },
+        },
+      },
+    },
+  });
+  expect(sent.ok()).toBeTruthy();
+
+  const result = await page.evaluate(async (room) => {
+    const { CometChat } = window as any;
+    const req = new CometChat.MessagesRequestBuilder().setGUID(room).setLimit(10).build();
+    const messages = await req.fetchPrevious();
+    const found = messages.find((m: any) => m.getData?.()?.text === '<@uid:alice> played');
+    return {
+      text: found?.getData?.()?.text,
+      metadata: found?.getMetadata?.(),
+      receiver: found?.getReceiverId?.(),
+    };
+  }, room);
+
+  expect(result.receiver).toBe(room);
+  expect(result.text).toBe('<@uid:alice> played');
+  expect(result.metadata?.chatMessage?.type).toBe('room');
+  expect(result.metadata?.chatMessage?.songs?.[0]?.song?.spotifyId).toBe('sp-contract');
 });
 
 test('snowy ReactionsRequestBuilder paginated fetch (loops until empty)', async ({ page }) => {

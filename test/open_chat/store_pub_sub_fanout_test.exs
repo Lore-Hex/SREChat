@@ -55,6 +55,30 @@ defmodule OpenChat.StorePubSubFanoutTest do
                     }}
   end
 
+  test "message update broadcasts include the original sender for group reaction reconciliation" do
+    state =
+      State.default()
+      |> put_in(["members", "room"], %{"alice" => %{}, "bob" => %{}})
+
+    PubSub.subscribe({:user, "alice"})
+    PubSub.subscribe({:user, "bob"})
+
+    on_exit(fn ->
+      PubSub.unsubscribe({:user, "alice"})
+      PubSub.unsubscribe({:user, "bob"})
+    end)
+
+    PubSubFanout.message_update(state, %{
+      "id" => 2,
+      "sender" => "alice",
+      "receiver" => "room",
+      "receiverType" => "group"
+    })
+
+    assert_receive {:comet_event, %{"type" => "message", "body" => %{"id" => 2}}}
+    assert_receive {:comet_event, %{"type" => "message", "body" => %{"id" => 2}}}
+  end
+
   test "message broadcasts sign S3 media URLs at the socket edge" do
     PubSub.subscribe({:user, "bob"})
 

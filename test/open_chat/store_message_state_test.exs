@@ -50,7 +50,10 @@ defmodule OpenChat.StoreMessageStateTest do
     state =
       State.default()
       |> put_in(["reactions", "10"], %{
-        "👍" => %{"alice" => %{"uid" => "alice"}, "bob" => %{"uid" => "bob"}},
+        "👍" => %{
+          "alice" => %{"uid" => "alice", "reactedBy" => %{"name" => "Alice"}},
+          "bob" => %{"uid" => "bob", "reactedBy" => %{"name" => "Bob"}}
+        },
         "🔥" => %{}
       })
 
@@ -59,6 +62,40 @@ defmodule OpenChat.StoreMessageStateTest do
     assert get_in(message, ["data", "reactions"]) == [
              %{"reaction" => "👍", "count" => 2, "reactedByMe" => true}
            ]
+
+    assert get_in(message, [
+             "data",
+             "metadata",
+             "@injected",
+             "extensions",
+             "reactions",
+             "👍"
+           ]) == %{
+             "alice" => %{"name" => "Alice"},
+             "bob" => %{"name" => "Bob"}
+           }
+  end
+
+  test "refresh_reactions removes stale legacy extension metadata when final reaction is removed" do
+    message =
+      MessageState.refresh_reactions(
+        State.default(),
+        %{
+          "id" => 10,
+          "data" => %{
+            "metadata" => %{
+              "@injected" => %{
+                "extensions" => %{
+                  "reactions" => %{"👍" => %{"alice" => %{"name" => "Alice"}}}
+                }
+              }
+            }
+          }
+        },
+        "bob"
+      )
+
+    refute get_in(message, ["data", "metadata", "@injected", "extensions", "reactions"])
   end
 
   test "remove_reaction removes empty reaction buckets and preserves other users" do

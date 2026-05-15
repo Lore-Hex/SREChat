@@ -19,6 +19,22 @@ defmodule OpenChat.Store.PubSubFanout do
     OpenChat.PubSub.broadcast(recipient_keys(state, message), event)
   end
 
+  def message_update(state, message) do
+    message = Media.sign_urls(message)
+
+    event = %{
+      "appId" => Config.app_id(),
+      "receiver" => message["receiver"],
+      "receiverType" => message["receiverType"],
+      "deviceId" => "server",
+      "type" => "message",
+      "sender" => to_s(message["sender"]),
+      "body" => message
+    }
+
+    OpenChat.PubSub.broadcast(update_recipient_keys(state, message), event)
+  end
+
   def reaction(state, message, reaction_obj, action, actor_uid) do
     event = %{
       "appId" => Config.app_id(),
@@ -107,7 +123,17 @@ defmodule OpenChat.Store.PubSubFanout do
     group_recipient_keys(state, to_s(message["receiver"]), except: sender)
   end
 
-  def group_recipient_keys(state, guid, opts) do
+  def update_recipient_keys(_state, %{"receiverType" => "user"} = message) do
+    sender = to_s(message["sender"])
+    receiver = to_s(message["receiver"])
+    [{:user, receiver}, {:user, sender}]
+  end
+
+  def update_recipient_keys(state, %{"receiverType" => "group"} = message) do
+    group_recipient_keys(state, to_s(message["receiver"]))
+  end
+
+  def group_recipient_keys(state, guid, opts \\ []) do
     except = opts |> Keyword.get(:except) |> to_s()
     members = state["members"] |> Map.get(to_s(guid), %{})
 
