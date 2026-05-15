@@ -14,6 +14,7 @@
   - Optional `*.chat.example.com`
 - ElastiCache Redis for chat state.
 - Private S3 bucket for uploaded media. OpenChat returns presigned S3 URLs in message payloads and keeps `/media/...` as a service-side fallback proxy, so the bucket does not need public access.
+- ECS runs multiple tasks behind the ALB. Redis is the durable state backend, scoped locks serialize room/conversation/message mutations, and Redis Pub/Sub refreshes peer task caches before websocket fanout.
 
 ## Environment
 

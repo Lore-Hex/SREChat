@@ -168,6 +168,12 @@ defmodule OpenChat.Store do
 
   def call_on(server, request), do: call(server, request)
 
+  def refresh_from_pubsub(keys, event), do: refresh_from_pubsub(__MODULE__, keys, event)
+
+  def refresh_from_pubsub(server, keys, event) do
+    GenServer.call(server, {:refresh_from_pubsub, keys, event}, :infinity)
+  end
+
   defp call(request), do: call(__MODULE__, request)
 
   defp call(server, request) do
@@ -205,6 +211,16 @@ defmodule OpenChat.Store do
       from,
       refresh_request_state(request, state, refresh)
     )
+  end
+
+  def handle_call({:refresh_from_pubsub, keys, event}, _from, state) do
+    refresh =
+      keys
+      |> pubsub_key_refresh_keys()
+      |> Kernel.++(event_refresh_keys(event))
+      |> Enum.uniq()
+
+    {:reply, :ok, RedisPersistence.refresh_keys(State.default(), state, refresh)}
   end
 
   def handle_call(:reset, _from, _state) do
@@ -509,7 +525,6 @@ defmodule OpenChat.Store do
 
             {action_id, state} = take_counter(state, "next_id")
             action = MessageState.group_action(action_id, state, uid, group, uid, "joined")
-            PubSubFanout.group_action(state, guid, action, except: uid)
 
             persist_ops(
               PersistenceOps.user(state, [uid]) ++
@@ -519,6 +534,7 @@ defmodule OpenChat.Store do
                 PersistenceOps.next_id(state)
             )
 
+            PubSubFanout.group_action(state, guid, action, except: uid)
             PubSubFanout.membership_changed([uid])
             {:reply, {:ok, group}, state}
         end
@@ -529,14 +545,13 @@ defmodule OpenChat.Store do
     state = GroupState.remove_member(state, guid, uid)
     group = state["groups"][guid]
 
-    state =
+    {state, action} =
       if group do
         {action_id, state} = take_counter(state, "next_id")
         action = MessageState.group_action(action_id, state, uid, group, uid, "left")
-        PubSubFanout.group_action(state, guid, action, except: uid)
-        state
+        {state, action}
       else
-        state
+        {state, nil}
       end
 
     persist_ops(
@@ -546,6 +561,7 @@ defmodule OpenChat.Store do
         PersistenceOps.next_id(state)
     )
 
+    if action, do: PubSubFanout.group_action(state, guid, action, except: uid)
     PubSubFanout.membership_changed([uid])
     {:reply, {:ok, %{"success" => true}}, state}
   end
@@ -759,8 +775,8 @@ defmodule OpenChat.Store do
 
       {:ok, message, state} ->
         {state, retention_ops} = MessageState.store_with_retention(state, message)
-        PubSubFanout.message(state, message)
         persist_ops(PersistenceOps.message_create(state, message) ++ retention_ops)
+        PubSubFanout.message(state, message)
         {:reply, {:ok, message}, state}
     end
   end
@@ -802,7 +818,6 @@ defmodule OpenChat.Store do
               )
 
             {state, retention_ops} = MessageState.store_with_retention(state, action)
-            PubSubFanout.message(state, action)
 
             persist_ops(
               [RedisPersistence.put("messages", id, message)] ++
@@ -810,6 +825,7 @@ defmodule OpenChat.Store do
                 retention_ops ++ PersistenceOps.next_id(state)
             )
 
+            PubSubFanout.message(state, action)
             {:reply, {:ok, action}, state}
 
           {:error, error} ->
@@ -853,7 +869,6 @@ defmodule OpenChat.Store do
               )
 
             {state, retention_ops} = MessageState.store_with_retention(state, action)
-            PubSubFanout.message(state, action)
 
             persist_ops(
               [RedisPersistence.put("messages", id, message)] ++
@@ -863,6 +878,7 @@ defmodule OpenChat.Store do
                 PersistenceOps.next_id(state)
             )
 
+            PubSubFanout.message(state, action)
             {:reply, {:ok, action}, state}
 
           {:error, error} ->
@@ -1223,6 +1239,122 @@ defmodule OpenChat.Store do
     )
   end
 
+  defp pubsub_key_refresh_keys(keys) do
+    keys
+    |> List.wrap()
+    |> Enum.flat_map(fn
+      {:user, uid} ->
+        user_cache_keys(uid)
+
+      {:group, guid} ->
+        group_cache_keys(guid)
+
+      _other ->
+        []
+    end)
+  end
+
+  defp event_refresh_keys(%{"type" => "message", "body" => %{} = message}) do
+    message_cache_keys(message) ++ action_subject_message_keys(message)
+  end
+
+  defp event_refresh_keys(%{"type" => "reaction", "body" => %{} = body}) do
+    message_id = body["messageId"] || body["message_id"] || body["id"]
+    message_record_keys(message_id) ++ [{"reactions", message_id}]
+  end
+
+  defp event_refresh_keys(%{"type" => "receipts", "sender" => uid, "body" => %{} = body} = event) do
+    receiver_type = event["receiverType"] || body["receiverType"] || body["type"] || "user"
+    receiver = event["receiver"] || body["receiver"] || body["receiverId"]
+    conv_id = body["conversationId"] || conversation_id_for(uid, receiver_type, receiver)
+
+    [
+      {"reads", uid},
+      {"delivered", uid},
+      {"unread_counts", uid},
+      {"conversation_latest", conv_id},
+      {"conversation_users", conv_id}
+    ]
+  end
+
+  defp event_refresh_keys(_event), do: []
+
+  defp message_cache_keys(message) do
+    conv_id =
+      message["conversationId"] ||
+        conversation_id_for(message["sender"], message["receiverType"], message["receiver"])
+
+    parent_id = message["parentId"] || message["parentMessageId"]
+    muid = message["muid"]
+
+    message_record_keys(message["id"]) ++
+      [
+        {"reactions", message["id"]},
+        {"conversation_messages", conv_id},
+        {"conversation_latest", conv_id},
+        {"conversation_users", conv_id},
+        {"message_muids", muid}
+      ] ++
+      message_record_keys(parent_id) ++
+      if(blank?(parent_id), do: [], else: [{"thread_messages", parent_id}]) ++
+      user_cache_keys(message["sender"]) ++ receiver_cache_keys(message)
+  end
+
+  defp action_subject_message_keys(message) do
+    case get_in(message, ["data", "entities", "on", "entity"]) do
+      %{"id" => _id, "conversationId" => _conv_id} = subject -> message_cache_keys(subject)
+      %{"id" => id} -> message_record_keys(id) ++ [{"reactions", id}]
+      _other -> []
+    end
+  end
+
+  defp receiver_cache_keys(%{"receiverType" => "group", "receiver" => guid}),
+    do: group_cache_keys(guid)
+
+  defp receiver_cache_keys(%{"receiver" => uid}), do: user_cache_keys(uid)
+  defp receiver_cache_keys(_message), do: []
+
+  defp user_cache_keys(uid) do
+    uid = to_s(uid)
+
+    if blank?(uid) do
+      []
+    else
+      [
+        {"users", uid},
+        {"user_groups", uid},
+        {"user_conversations", uid},
+        {"unread_counts", uid},
+        {"reads", uid},
+        {"delivered", uid},
+        {"hidden_conversations", uid},
+        {"blocks", uid}
+      ]
+    end
+  end
+
+  defp group_cache_keys(guid) do
+    guid = to_s(guid)
+
+    if blank?(guid) do
+      []
+    else
+      conv_id = group_conversation_id(guid)
+
+      [
+        {"groups", guid},
+        {"members", guid},
+        {"banned", guid},
+        {"conversation_messages", conv_id},
+        {"conversation_latest", conv_id},
+        {"conversation_users", conv_id}
+      ]
+    end
+  end
+
+  defp message_record_keys(value),
+    do: if(blank?(value) or to_s(value) == "0", do: [], else: [{"messages", value}])
+
   defp take_counter(state, counter) do
     fallback = max(to_int(state[counter]), 1)
     value = RedisPersistence.take_counter(counter, fallback)
@@ -1385,10 +1517,9 @@ defmodule OpenChat.Store do
         end)
       end)
 
-    message = MessageState.refresh_reactions(state, message, uid)
+    message = MessageState.refresh_reactions(state, message, nil)
     state = put_in(state, ["messages", id], message)
-    PubSubFanout.reaction(state, message, reaction_obj, "message_reaction_added", uid)
-    PubSubFanout.message_update(state, message)
+    reply_message = hydrate_message_for_viewer(state, uid, message)
 
     persist_ops(
       PersistenceOps.reactions(state, id) ++
@@ -1396,7 +1527,9 @@ defmodule OpenChat.Store do
         PersistenceOps.next_reaction_id(state)
     )
 
-    {:reply, {:ok, message}, state}
+    PubSubFanout.reaction(state, message, reaction_obj, "message_reaction_added", uid)
+    PubSubFanout.message_update(state, message)
+    {:reply, {:ok, reply_message}, state}
   end
 
   defp remove_reaction_reply(state, uid, id, reaction, message) do
@@ -1412,16 +1545,17 @@ defmodule OpenChat.Store do
 
     state = MessageState.remove_reaction(state, id, reaction, uid)
 
-    message = MessageState.refresh_reactions(state, message, uid)
+    message = MessageState.refresh_reactions(state, message, nil)
     state = put_in(state, ["messages", id], message)
-    PubSubFanout.reaction(state, message, reaction_obj, "message_reaction_removed", uid)
-    PubSubFanout.message_update(state, message)
+    reply_message = hydrate_message_for_viewer(state, uid, message)
 
     persist_ops(
       PersistenceOps.reactions(state, id) ++ [RedisPersistence.put("messages", id, message)]
     )
 
-    {:reply, {:ok, message}, state}
+    PubSubFanout.reaction(state, message, reaction_obj, "message_reaction_removed", uid)
+    PubSubFanout.message_update(state, message)
+    {:reply, {:ok, reply_message}, state}
   end
 
   defp hydrate_messages_for_viewer(messages, state, uid),

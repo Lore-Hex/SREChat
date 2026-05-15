@@ -506,7 +506,13 @@ defmodule OpenChat.RedisMockTest do
 
   defp stop_name(name) do
     if pid = Process.whereis(name) do
-      GenServer.stop(pid, :normal, 1_000)
+      try do
+        GenServer.stop(pid, :normal, 1_000)
+      catch
+        :exit, {:noproc, _} -> :ok
+        :exit, :noproc -> :ok
+      end
+
       wait_until_stopped(name)
     end
   end

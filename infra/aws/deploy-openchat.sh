@@ -5,6 +5,9 @@ REGION="${AWS_REGION:-us-east-2}"
 TAG="${OPENCHAT_IMAGE_TAG:-$(git rev-parse --short HEAD)}"
 STACK_NAME="${OPENCHAT_STACK_NAME:-openchat-scalable}"
 TEMPLATE_FILE="${OPENCHAT_TEMPLATE_FILE:-infra/aws/openchat-ecs-fargate.yaml}"
+DESIRED_COUNT="${OPENCHAT_DESIRED_COUNT:-2}"
+MIN_CAPACITY="${OPENCHAT_MIN_CAPACITY:-2}"
+MAX_CAPACITY="${OPENCHAT_MAX_CAPACITY:-6}"
 
 STAGING_PROFILE="${OPENCHAT_STAGING_PROFILE:-tt-staging}"
 PRODUCTION_PROFILE="${OPENCHAT_PRODUCTION_PROFILE:-awsproduction-ttfm}"
@@ -163,7 +166,10 @@ deploy_env() {
       PublicSubnet1="$subnet_1" \
       PublicSubnet2="$subnet_2" \
       ImageUri="$image_uri" \
-      AdminApiKey="$admin_api_key"
+      AdminApiKey="$admin_api_key" \
+      DesiredCount="$DESIRED_COUNT" \
+      MinCapacity="$MIN_CAPACITY" \
+      MaxCapacity="$MAX_CAPACITY"
 
   ensure_extension_routing "$profile" "$env_name" "$hosted_zone_id" "$extension_domain" "$extension_certificate_arn"
 }

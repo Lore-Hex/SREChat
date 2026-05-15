@@ -961,6 +961,95 @@ defmodule OpenChat.RedisPersistenceTest do
     end)
   end
 
+  test "peer Store refreshes local cache from Redis pubsub event keys", context do
+    with_redis(context, fn ->
+      peer = start_peer_store!()
+
+      try do
+        guid = "pubsub-refresh-room"
+
+        assert {:ok, _group} = Store.upsert_group(%{"guid" => guid, "type" => "public"})
+
+        assert {:ok, _members} =
+                 Store.add_group_members(guid, ["pubsub-a", "pubsub-b"], "participant")
+
+        assert :ok =
+                 Store.refresh_from_pubsub(peer, [{:user, "pubsub-b"}], %{
+                   "type" => "membership_changed"
+                 })
+
+        assert get_in(:sys.get_state(peer), ["members", guid, "pubsub-b", "uid"]) == "pubsub-b"
+
+        assert {:ok, message} =
+                 Store.send_message("pubsub-a", %{
+                   "receiver" => guid,
+                   "receiverType" => "group",
+                   "type" => "text",
+                   "data" => %{"text" => "visible across stores"}
+                 })
+
+        id = to_string(message["id"])
+        conv_id = message["conversationId"]
+
+        refute get_in(:sys.get_state(peer), ["messages", id])
+
+        assert :ok =
+                 Store.refresh_from_pubsub(peer, [{:user, "pubsub-b"}], %{
+                   "type" => "message",
+                   "sender" => "pubsub-a",
+                   "receiver" => guid,
+                   "receiverType" => "group",
+                   "body" => message
+                 })
+
+        peer_state = :sys.get_state(peer)
+        assert get_in(peer_state, ["messages", id, "data", "text"]) == "visible across stores"
+        assert id in get_in(peer_state, ["conversation_messages", conv_id])
+
+        assert get_in(peer_state, ["conversation_users", conv_id]) |> Enum.sort() == [
+                 "pubsub-a",
+                 "pubsub-b"
+               ]
+
+        assert {:ok, reacted} = Store.add_reaction("pubsub-b", message["id"], "👍")
+
+        assert :ok =
+                 Store.refresh_from_pubsub(peer, [{:user, "pubsub-a"}], %{
+                   "type" => "reaction",
+                   "sender" => "pubsub-b",
+                   "receiver" => guid,
+                   "receiverType" => "group",
+                   "body" => %{"messageId" => message["id"], "reaction" => "👍"}
+                 })
+
+        peer_state = :sys.get_state(peer)
+        assert get_in(peer_state, ["reactions", id, "👍", "pubsub-b", "uid"]) == "pubsub-b"
+
+        assert get_in(peer_state, ["messages", id, "data", "reactions"]) == [
+                 %{"count" => 1, "reactedByMe" => false, "reaction" => "👍"}
+               ]
+
+        assert {:ok, removed} = Store.remove_reaction("pubsub-b", message["id"], "👍")
+
+        assert :ok =
+                 Store.refresh_from_pubsub(peer, [{:user, "pubsub-a"}], %{
+                   "type" => "message",
+                   "sender" => "pubsub-b",
+                   "receiver" => guid,
+                   "receiverType" => "group",
+                   "body" => removed
+                 })
+
+        peer_state = :sys.get_state(peer)
+        refute get_in(peer_state, ["reactions", id, "👍", "pubsub-b"])
+        assert get_in(peer_state, ["messages", id, "data", "reactions"]) == []
+        assert reacted["id"] == removed["id"]
+      after
+        stop_peer_store(peer)
+      end
+    end)
+  end
+
   test "peer Store processes observe edit and delete actions through latest indexes", context do
     with_redis(context, fn ->
       peer = start_peer_store!()
