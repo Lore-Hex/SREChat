@@ -1050,6 +1050,122 @@ defmodule OpenChat.RedisPersistenceTest do
     end)
   end
 
+  test "reported room chat regressions survive peer refresh, delete actions, and Redis reload",
+       context do
+    with_redis(context, fn ->
+      peer = start_peer_store!()
+
+      try do
+        guid = "reported-redis-room"
+        conv_id = Conversations.group_conversation_id(guid)
+
+        assert {:ok, _group} = Store.upsert_group(%{"guid" => guid, "type" => "public"})
+
+        assert {:ok, _members} =
+                 Store.add_group_members(guid, ["reported-alice", "reported-bob"], "participant")
+
+        assert :ok =
+                 Store.refresh_from_pubsub(peer, [{:group, guid}], %{
+                   "type" => "membership_changed"
+                 })
+
+        assert {:ok, keep} =
+                 Store.send_message("reported-alice", %{
+                   "receiver" => guid,
+                   "receiverType" => "group",
+                   "data" => %{"text" => "keep visible after delete"}
+                 })
+
+        assert :ok =
+                 Store.refresh_from_pubsub(peer, [{:group, guid}], %{
+                   "type" => "message",
+                   "sender" => "reported-alice",
+                   "receiver" => guid,
+                   "receiverType" => "group",
+                   "body" => keep
+                 })
+
+        assert {:ok, remove} =
+                 Store.send_message("reported-alice", %{
+                   "receiver" => guid,
+                   "receiverType" => "group",
+                   "data" => %{"text" => "delete only this message"}
+                 })
+
+        assert {:ok, reacted} = Store.add_reaction("reported-bob", keep["id"], "🎧")
+
+        assert :ok =
+                 Store.refresh_from_pubsub(peer, [{:group, guid}], %{
+                   "type" => "reaction",
+                   "sender" => "reported-bob",
+                   "receiver" => guid,
+                   "receiverType" => "group",
+                   "body" => %{"messageId" => keep["id"], "reaction" => "🎧"}
+                 })
+
+        keep_id = to_string(keep["id"])
+        remove_id = to_string(remove["id"])
+
+        assert get_in(:sys.get_state(peer), ["messages", keep_id, "data", "reactions"]) == [
+                 %{"count" => 1, "reactedByMe" => false, "reaction" => "🎧"}
+               ]
+
+        assert {:ok, deleted_action} = Store.delete_message("reported-alice", remove["id"])
+
+        assert :ok =
+                 Store.refresh_from_pubsub(peer, [{:group, guid}], %{
+                   "type" => "message",
+                   "sender" => "reported-alice",
+                   "receiver" => guid,
+                   "receiverType" => "group",
+                   "body" => deleted_action
+                 })
+
+        peer_state = :sys.get_state(peer)
+        assert keep_id in get_in(peer_state, ["conversation_messages", conv_id])
+        assert remove_id in get_in(peer_state, ["conversation_messages", conv_id])
+
+        assert to_string(deleted_action["id"]) in get_in(peer_state, [
+                 "conversation_messages",
+                 conv_id
+               ])
+
+        assert get_in(peer_state, ["messages", keep_id, "data", "text"]) ==
+                 "keep visible after delete"
+
+        assert get_in(peer_state, ["messages", remove_id, "deletedAt"])
+        assert reacted["id"] == keep["id"]
+
+        assert {:ok, peer_visible} =
+                 Store.call_on(
+                   peer,
+                   {:messages_for_group, "reported-bob", guid, %{"limit" => 10}}
+                 )
+
+        assert Enum.any?(peer_visible, &(&1["id"] == keep["id"]))
+        assert Enum.any?(peer_visible, &(&1["id"] == deleted_action["id"]))
+
+        restart_store!()
+
+        assert {:ok, reloaded_visible} =
+                 Store.messages_for_group("reported-bob", guid, %{
+                   "limit" => 10,
+                   "hideDeleted" => "true",
+                   "category" => "message"
+                 })
+
+        assert Enum.map(reloaded_visible, &get_in(&1, ["data", "text"])) == [
+                 "keep visible after delete"
+               ]
+
+        assert {:ok, [reloaded_reaction]} = Store.reactions("reported-alice", keep["id"], "🎧")
+        assert reloaded_reaction["uid"] == "reported-bob"
+      after
+        stop_peer_store(peer)
+      end
+    end)
+  end
+
   test "peer Store processes observe edit and delete actions through latest indexes", context do
     with_redis(context, fn ->
       peer = start_peer_store!()

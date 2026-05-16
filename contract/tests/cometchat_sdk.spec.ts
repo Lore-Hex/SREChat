@@ -87,7 +87,7 @@ test('text messages, message request builder, conversations, unread, read, delet
   }, sent.id);
 });
 
-test('custom messages, media messages, group join, and native reactions', async ({ page }) => {
+test('custom messages, media messages, group join, and native reactions', async ({ page, request }) => {
   await loadSdk(page, false);
 
   const result = await page.evaluate(async (token) => {
@@ -124,6 +124,9 @@ test('custom messages, media messages, group join, and native reactions', async 
   expect(result.mediaCaption).toBe('tiny image');
   expect(result.mediaDataUrl).toBeFalsy();
   expect(result.mediaAttachmentUrl).toBeTruthy();
+  const mediaUrl = new URL(result.mediaAttachmentUrl, `https://${TARGET_HOST}`).toString();
+  const mediaFetch = await request.get(mediaUrl);
+  expect(mediaFetch.status()).toBeLessThan(400);
   expect(result.groupReceiver).toBe('lobby');
   expect(result.reactions[0].reaction).toBe('👍');
 });
@@ -557,6 +560,133 @@ test('snowy callExtension reactions toggle and propagate through regular message
   });
 });
 
+test('reported room smoke: two users in one room see text, reactions, deletes, and remaining history', async ({ browser, request }) => {
+  test.skip(!ADMIN_API_KEY, 'Requires an OpenChat admin API key.');
+  const room = `reported-room-${Date.now()}`;
+
+  const create = await request.post(`https://${TARGET_HOST}/groups`, {
+    headers: { apiKey: ADMIN_API_KEY },
+    data: { guid: room, type: 'public' },
+  });
+  expect(create.ok()).toBeTruthy();
+
+  const bob = await browser.newPage();
+  await loadSdk(bob, true);
+  await bob.evaluate(async ({ token, room }) => {
+    const { CometChat } = window as any;
+    await CometChat.login(token);
+    try {
+      await CometChat.joinGroup(room);
+    } catch (e: any) {
+      if (e?.code !== 'ERR_ALREADY_JOINED') throw e;
+    }
+    (window as any).__roomEvents = [];
+    CometChat.addMessageListener(
+      'REPORTED_ROOM_BOB',
+      new CometChat.MessageListener({
+        onTextMessageReceived: (m: any) => (window as any).__roomEvents.push({
+          kind: 'text',
+          id: m.getId(),
+          text: m.getData()?.text,
+          reactions: m.getMetadata?.()?.['@injected']?.extensions?.reactions || {},
+        }),
+        onMessageDeleted: (m: any) => (window as any).__roomEvents.push({
+          kind: 'deleted',
+          id: m.getId(),
+          onId: m.getData()?.entities?.on?.entity?.id,
+        }),
+      })
+    );
+  }, { token: BOB_TOKEN, room });
+
+  const alice = await browser.newPage();
+  await loadSdk(alice, true);
+  const sent = await alice.evaluate(async ({ token, room }) => {
+    const { CometChat } = window as any;
+    await CometChat.login(token);
+    try {
+      await CometChat.joinGroup(room);
+    } catch (e: any) {
+      if (e?.code !== 'ERR_ALREADY_JOINED') throw e;
+    }
+    const keep = await CometChat.sendMessage(
+      new CometChat.TextMessage(room, `keep-visible-${Date.now()}`, 'group')
+    );
+    const remove = await CometChat.sendMessage(
+      new CometChat.TextMessage(room, `delete-only-this-${Date.now()}`, 'group')
+    );
+    return {
+      keepId: keep.getId(),
+      keepText: keep.getData()?.text,
+      removeId: remove.getId(),
+      removeText: remove.getData()?.text,
+    };
+  }, { token: ALICE_TOKEN, room });
+
+  await bob.waitForFunction(
+    ({ keepText, removeText }) => {
+      const events = (window as any).__roomEvents || [];
+      return events.some((e: any) => e.kind === 'text' && e.text === keepText)
+        && events.some((e: any) => e.kind === 'text' && e.text === removeText);
+    },
+    { keepText: sent.keepText, removeText: sent.removeText },
+    { timeout: 15_000 }
+  );
+
+  await bob.evaluate(async (keepId) => {
+    const { CometChat } = window as any;
+    await CometChat.callExtension('reactions', 'POST', 'v1/react', {
+      msgId: keepId,
+      emoji: '🎧',
+    });
+  }, sent.keepId);
+
+  const reactionSeenByAlice = await alice.evaluate(async ({ room, keepId }) => {
+    const { CometChat } = window as any;
+    const req = new CometChat.MessagesRequestBuilder().setGUID(room).setLimit(20).build();
+    const messages = await req.fetchPrevious();
+    const keep = messages.find((m: any) => String(m.getId()) === String(keepId));
+    return keep?.getMetadata?.()?.['@injected']?.extensions?.reactions || {};
+  }, { room, keepId: sent.keepId });
+  expect(reactionSeenByAlice?.['🎧']?.bob?.name).toBeTruthy();
+
+  await alice.evaluate(async (removeId) => {
+    const { CometChat } = window as any;
+    await CometChat.deleteMessage(removeId);
+  }, sent.removeId);
+
+  await bob.waitForFunction(
+    ({ removeId }) => ((window as any).__roomEvents || []).some((e: any) =>
+      e.kind === 'deleted' && String(e.id) === String(removeId)
+    ),
+    { removeId: sent.removeId },
+    { timeout: 15_000 }
+  );
+
+  const history = await bob.evaluate(async ({ room, keepId, removeId }) => {
+    const { CometChat } = window as any;
+    const req = new CometChat.MessagesRequestBuilder().setGUID(room).setLimit(20).build();
+    const messages = await req.fetchPrevious();
+    return messages.map((m: any) => ({
+      id: String(m.getId()),
+      category: m.getCategory?.(),
+      action: m.getData?.()?.action,
+      text: m.getData?.()?.text,
+      deletedAt: m.getDeletedAt?.(),
+      onId: m.getData?.()?.entities?.on?.entity?.id,
+    })).filter((m: any) => [String(keepId), String(removeId)].includes(m.id) || String(m.onId) === String(removeId));
+  }, { room, keepId: sent.keepId, removeId: sent.removeId });
+
+  expect(history.some((m: any) => m.id === String(sent.keepId) && m.text === sent.keepText)).toBeTruthy();
+  expect(history.some((m: any) => m.id === String(sent.removeId) && m.deletedAt)).toBeTruthy();
+  expect(history.some((m: any) => m.action === 'deleted' && String(m.onId) === String(sent.removeId))).toBeTruthy();
+
+  await bob.evaluate(() => {
+    const { CometChat } = (window as any);
+    CometChat.removeMessageListener('REPORTED_ROOM_BOB');
+  });
+});
+
 test('socket admin system song messages are readable as snowy text chat messages', async ({ page, request }) => {
   test.skip(!ADMIN_API_KEY, 'Requires an OpenChat admin API key.');
   await loadSdk(page, false);
@@ -614,6 +744,80 @@ test('socket admin system song messages are readable as snowy text chat messages
   expect(result.text).toBe('<@uid:alice> played');
   expect(result.metadata?.chatMessage?.type).toBe('room');
   expect(result.metadata?.chatMessage?.songs?.[0]?.song?.spotifyId).toBe('sp-contract');
+});
+
+test('reported system song messages fan out live to joined room clients', async ({ page, request }) => {
+  test.skip(!ADMIN_API_KEY, 'Requires an OpenChat admin API key.');
+  const room = `reported-system-live-${Date.now()}`;
+
+  const create = await request.post(`https://${TARGET_HOST}/groups`, {
+    headers: { apiKey: ADMIN_API_KEY },
+    data: { guid: room, type: 'public' },
+  });
+  expect(create.ok()).toBeTruthy();
+
+  await loadSdk(page, true);
+  await page.evaluate(async ({ token, room }) => {
+    const { CometChat } = window as any;
+    await CometChat.login(token);
+    try {
+      await CometChat.joinGroup(room);
+    } catch (e: any) {
+      if (e?.code !== 'ERR_ALREADY_JOINED') throw e;
+    }
+    (window as any).__systemEvents = [];
+    CometChat.addMessageListener(
+      'REPORTED_SYSTEM_LIVE',
+      new CometChat.MessageListener({
+        onTextMessageReceived: (m: any) => (window as any).__systemEvents.push({
+          text: m.getData?.()?.text,
+          metadata: m.getMetadata?.(),
+          receiver: m.getReceiverId?.(),
+        }),
+      })
+    );
+  }, { token: ALICE_TOKEN, room });
+
+  // joinGroup completes through REST, then the active socket refreshes its group
+  // subscriptions from the membership_changed event. Give that sync a moment
+  // before posting the system message we expect to arrive live.
+  await page.waitForTimeout(1500);
+
+  const song = { spotifyId: `sp-live-${Date.now()}`, title: 'Live Contract Anthem' };
+  const sent = await request.post(`https://${TARGET_HOST}/messages`, {
+    headers: { apiKey: ADMIN_API_KEY },
+    data: {
+      type: 'text',
+      receiverType: 'group',
+      category: 'message',
+      receiver: room,
+      data: {
+        text: '<@uid:alice> played live',
+        metadata: {
+          chatMessage: {
+            type: 'room',
+            songs: [{ type: 'ChatMusicInfo', song }],
+          },
+        },
+      },
+    },
+  });
+  expect(sent.ok()).toBeTruthy();
+
+  await page.waitForFunction(
+    ({ room, spotifyId }) => ((window as any).__systemEvents || []).some((e: any) =>
+      e.receiver === room
+        && e.text === '<@uid:alice> played live'
+        && e.metadata?.chatMessage?.songs?.[0]?.song?.spotifyId === spotifyId
+    ),
+    { room, spotifyId: song.spotifyId },
+    { timeout: 15_000 }
+  );
+
+  await page.evaluate(() => {
+    const { CometChat } = (window as any);
+    CometChat.removeMessageListener('REPORTED_SYSTEM_LIVE');
+  });
 });
 
 test('snowy ReactionsRequestBuilder paginated fetch (loops until empty)', async ({ page }) => {

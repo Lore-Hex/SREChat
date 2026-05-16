@@ -710,6 +710,7 @@ defmodule OpenChatWeb.ApiRegressionTest do
 
   test "media upload route stores files, serves them, and returns 404 for missing media" do
     old_upload_dir = Application.get_env(:open_chat, :upload_dir)
+    old_upload_max_bytes = Application.get_env(:open_chat, :upload_max_bytes)
 
     upload_dir =
       Path.join(System.tmp_dir!(), "open-chat-api-test-#{System.unique_integer([:positive])}")
@@ -723,9 +724,11 @@ defmodule OpenChatWeb.ApiRegressionTest do
     File.mkdir_p!(upload_dir)
     File.write!(source_path, "uploaded text")
     Application.put_env(:open_chat, :upload_dir, upload_dir)
+    Application.put_env(:open_chat, :upload_max_bytes, 1_000)
 
     on_exit(fn ->
       Application.put_env(:open_chat, :upload_dir, old_upload_dir)
+      Application.put_env(:open_chat, :upload_max_bytes, old_upload_max_bytes)
       File.rm_rf!(upload_dir)
       File.rm(source_path)
     end)
@@ -779,6 +782,24 @@ defmodule OpenChatWeb.ApiRegressionTest do
 
     assert conn.status == 400
     assert json(conn)["error"]["code"] == "ERR_UPLOAD_TYPE_NOT_ALLOWED"
+
+    Application.put_env(:open_chat, :upload_max_bytes, 4)
+
+    conn =
+      conn(:post, "/v3.0/messages", %{
+        "receiver" => "bob",
+        "receiverType" => "user",
+        "file" => %Plug.Upload{
+          path: source_path,
+          filename: "too-large.txt",
+          content_type: "text/plain"
+        }
+      })
+      |> Plug.Conn.put_req_header("authtoken", "uid:alice")
+      |> OpenChatWeb.Endpoint.call([])
+
+    assert conn.status == 400
+    assert json(conn)["error"]["code"] == "ERR_UPLOAD_TOO_LARGE"
   end
 
   test "media upload route stores and serves S3-backed files" do
