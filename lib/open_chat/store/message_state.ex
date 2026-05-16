@@ -22,6 +22,7 @@ defmodule OpenChat.Store.MessageState do
 
   @spec store(map(), map()) :: map()
   def store(state, message) do
+    message = expose_metadata(message)
     id_key = to_s(message["id"])
     conv_id = message["conversationId"]
 
@@ -62,7 +63,27 @@ defmodule OpenChat.Store.MessageState do
       |> Map.put("reactions", counts)
       |> put_reaction_extension_metadata(reaction_map)
 
-    Map.put(message, "data", data)
+    message
+    |> Map.put("data", data)
+    |> expose_metadata()
+  end
+
+  @spec expose_metadata(map()) :: map()
+  def expose_metadata(message) do
+    data = message["data"] || %{}
+    data_metadata = data["metadata"]
+    top_metadata = message["metadata"]
+
+    cond do
+      is_map(data_metadata) and map_size(data_metadata) > 0 ->
+        Map.put(message, "metadata", data_metadata)
+
+      is_map(top_metadata) and map_size(top_metadata) > 0 ->
+        Map.put(message, "data", Map.put(data, "metadata", top_metadata))
+
+      true ->
+        message
+    end
   end
 
   @spec remove_reaction(map(), term(), term(), term()) :: map()

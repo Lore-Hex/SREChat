@@ -192,6 +192,54 @@ defmodule OpenChatWeb.ApiRegressionTest do
     assert json(conn)["error"]["code"] == "ERR_NOT_A_MEMBER"
   end
 
+  test "text message metadata is exposed for the Hangout history converter" do
+    room = "api-metadata-room"
+
+    assert admin_conn(:post, "/v3/groups", %{"guid" => room, "type" => "public"}).status == 201
+    assert auth_conn(:post, "/v3.0/groups/#{room}/members", %{}, "uid:alice").status == 200
+
+    metadata = %{
+      "recipientUuid" => room,
+      "chatMessage" => %{
+        "uuid" => "api-metadata-chat-uuid",
+        "message" => "metadata text",
+        "type" => "user",
+        "userName" => "Alice",
+        "userUuid" => "alice"
+      }
+    }
+
+    conn =
+      auth_conn(:post, "/v3.0/messages", %{
+        "receiver" => room,
+        "receiverType" => "group",
+        "type" => "text",
+        "category" => "message",
+        "data" => %{
+          "text" => "metadata text",
+          "metadata" => metadata
+        }
+      })
+
+    assert conn.status == 201
+    sent = json(conn)["data"]
+    assert get_in(sent, ["data", "metadata", "chatMessage", "message"]) == "metadata text"
+    assert get_in(sent, ["metadata", "chatMessage", "message"]) == "metadata text"
+
+    conn =
+      auth_conn(
+        :get,
+        "/v3.0/groups/#{room}/messages?limit=10&timestamp=#{System.system_time(:millisecond)}",
+        %{},
+        "uid:alice"
+      )
+
+    assert conn.status == 200
+    [history] = json(conn)["data"]
+    assert get_in(history, ["data", "metadata", "chatMessage", "message"]) == "metadata text"
+    assert get_in(history, ["metadata", "chatMessage", "message"]) == "metadata text"
+  end
+
   test "group member write APIs require owner or moderator privileges for user tokens" do
     assert admin_conn(:post, "/v3/groups", %{
              "guid" => "api-member-security",

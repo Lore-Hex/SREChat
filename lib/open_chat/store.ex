@@ -1470,7 +1470,8 @@ defmodule OpenChat.Store do
                       |> MessageData.put_entity("sender", "user", UserState.public(sender))
                       |> MessageData.put_entity("receiver", receiver_type, receiver_entity)
 
-                    {:ok, Map.put(message, "data", data), state}
+                    {:ok, message |> Map.put("data", data) |> MessageState.expose_metadata(),
+                     state}
 
                   {:error, error} ->
                     {:error, error}

@@ -271,6 +271,67 @@ test('snowy room history: MessagesRequestBuilder.setGUID().setLimit().setTimesta
   expect(result.history.every((m: any) => m.receiverGuid === 'lobby')).toBe(true);
 });
 
+test(
+  'snowy text metadata: TextMessage.setMetadata() round-trips through room history',
+  async ({ page, request }) => {
+    // Hangout drops fetched messages whose CometChat TextMessage.getMetadata()
+    // does not contain metadata.chatMessage.
+    const room = `metadata-room-${Date.now()}`;
+    const text = `metadata text ${Date.now()}`;
+    const group = await request.post(`https://${TARGET_HOST}/groups`, {
+      headers: { apiKey: ADMIN_API_KEY },
+      data: { guid: room, type: 'public' },
+    });
+    expect(group.ok()).toBeTruthy();
+
+    await loadSdk(page, false);
+    const result = await page.evaluate(async ({ token, room, text }) => {
+      const { CometChat } = window as any;
+      await CometChat.login(token);
+      try {
+        await CometChat.joinGroup(room);
+      } catch (e: any) {
+        if (e?.code !== 'ERR_ALREADY_JOINED') throw e;
+      }
+
+      const metadata = {
+        recipientUuid: room,
+        chatMessage: {
+          uuid: `chat-${Date.now()}`,
+          message: text,
+          type: 'user',
+          userName: 'Alice',
+          userUuid: 'alice',
+        },
+      };
+      const msg = new CometChat.TextMessage(room, text, 'group');
+      msg.setMetadata(metadata);
+      const sent = await CometChat.sendMessage(msg);
+
+      const req = new CometChat.MessagesRequestBuilder()
+        .setGUID(room)
+        .setLimit(10)
+        .setTimestamp(Date.now())
+        .build();
+      const messages = await req.fetchPrevious();
+      const found = messages.find(
+        (m: any) => String(m.getId()) === String(sent.getId()),
+      );
+
+      return {
+        sentMetadata: sent.getMetadata?.(),
+        historyMetadata: found?.getMetadata?.(),
+        historyText: found?.getData?.()?.text,
+      };
+    }, { token: ALICE_TOKEN, room, text });
+
+    expect(result.sentMetadata?.chatMessage?.message).toBe(text);
+    expect(result.historyText).toBe(text);
+    expect(result.historyMetadata?.chatMessage?.message).toBe(text);
+    expect(result.historyMetadata?.recipientUuid).toBe(room);
+  },
+);
+
 test('snowy custom message: CustomMessage with "ChatMessage" subType + setMetadata({incrementUnreadCount}) round-trips customData', async ({ page }) => {
   // Mirrors snowy/src/data/chat/cometchat-utils.ts sendCustomMessage(). The customData
   // object carries the full Hangout chat envelope (songs, playlist, consumable, mentions).

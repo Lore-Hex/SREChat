@@ -129,6 +129,7 @@ defmodule OpenChat.Media do
   defp signed_media_url(stored_name) do
     client = Config.s3_client()
     bucket = Config.s3_bucket()
+    Code.ensure_loaded(client)
 
     cond do
       blank?(bucket) ->
