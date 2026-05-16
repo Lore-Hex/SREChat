@@ -621,6 +621,165 @@ test('snowy callExtension reactions toggle and propagate through regular message
   });
 });
 
+test('snowy media and GIF-style custom message reactions survive live updates and history', async ({ browser, request }) => {
+  test.skip(!ADMIN_API_KEY, 'Requires an OpenChat admin API key.');
+  const room = `mixed-reaction-room-${Date.now()}`;
+
+  const create = await request.post(`https://${TARGET_HOST}/groups`, {
+    headers: { apiKey: ADMIN_API_KEY },
+    data: { guid: room, type: 'public' },
+  });
+  expect(create.ok()).toBeTruthy();
+
+  const bob = await browser.newPage();
+  await loadSdk(bob, true);
+  await bob.evaluate(async ({ token, room }) => {
+    const { CometChat } = window as any;
+    await CometChat.login(token);
+    try {
+      await CometChat.joinGroup(room);
+    } catch (e: any) {
+      if (e?.code !== 'ERR_ALREADY_JOINED') throw e;
+    }
+    (window as any).__mixedReactionEvents = [];
+    const record = (kind: string, m: any) => {
+      (window as any).__mixedReactionEvents.push({
+        kind,
+        id: String(m.getId()),
+        reactions: m.getMetadata?.()?.['@injected']?.extensions?.reactions || {},
+      });
+    };
+    CometChat.addMessageListener(
+      'MIXED_REACTION_BOB',
+      new CometChat.MessageListener({
+        onCustomMessageReceived: (m: any) => record('custom', m),
+        onMediaMessageReceived: (m: any) => record('media', m),
+      })
+    );
+  }, { token: BOB_TOKEN, room });
+
+  const alice = await browser.newPage();
+  await loadSdk(alice, true);
+  const sent = await alice.evaluate(async ({ token, room }) => {
+    const { CometChat } = window as any;
+    await CometChat.login(token);
+    try {
+      await CometChat.joinGroup(room);
+    } catch (e: any) {
+      if (e?.code !== 'ERR_ALREADY_JOINED') throw e;
+    }
+
+    const custom = new CometChat.CustomMessage(room, 'group', 'ChatMessage', {
+      message: {
+        type: 'ChatGif',
+        webp: 'https://media.tenor.com/3Wk6Ji3ydhAAAAAC/seinfeld-jerry.gif',
+      },
+      uuid: `gif-${Date.now()}`,
+      id: -1,
+      userName: 'Alice',
+      userUuid: 'alice',
+      avatarId: 'avatar',
+      type: 'user',
+    });
+    custom.setMetadata({ incrementUnreadCount: true });
+    const customSent = await CometChat.sendCustomMessage(custom);
+
+    const file = new File([new Blob(['tiny image payload'], { type: 'image/png' })], 'mixed.png', { type: 'image/png' });
+    const media = new CometChat.MediaMessage(room, file, CometChat.MESSAGE_TYPE.IMAGE, 'group');
+    media.setCaption('mixed media');
+    media.setMetadata({
+      chatMessage: {
+        uuid: `media-${Date.now()}`,
+        message: 'mixed media',
+        type: 'user',
+        userName: 'Alice',
+        userUuid: 'alice',
+        avatarId: 'avatar',
+      },
+    });
+    const mediaSent = await CometChat.sendMediaMessage(media);
+
+    return {
+      customId: String(customSent.getId()),
+      mediaId: String(mediaSent.getId()),
+    };
+  }, { token: ALICE_TOKEN, room });
+
+  await alice.evaluate(() => {
+    const { CometChat } = window as any;
+    (window as any).__mixedReactionEvents = [];
+    const record = (m: any) => {
+      (window as any).__mixedReactionEvents.push({
+        id: String(m.getId()),
+        reactions: m.getMetadata?.()?.['@injected']?.extensions?.reactions || {},
+      });
+    };
+    CometChat.addMessageListener(
+      'MIXED_REACTION_ALICE',
+      new CometChat.MessageListener({
+        onCustomMessageReceived: record,
+        onMediaMessageReceived: record,
+      })
+    );
+  });
+
+  await bob.waitForFunction(
+    ({ customId, mediaId }) => {
+      const events = (window as any).__mixedReactionEvents || [];
+      return events.some((e: any) => e.kind === 'custom' && e.id === customId)
+        && events.some((e: any) => e.kind === 'media' && e.id === mediaId);
+    },
+    sent,
+    { timeout: 15_000 }
+  );
+
+  await bob.evaluate(async ({ customId, mediaId }) => {
+    const { CometChat } = window as any;
+    await CometChat.callExtension('reactions', 'POST', 'v1/react', {
+      msgId: customId,
+      emoji: '🔥',
+    });
+    await CometChat.callExtension('reactions', 'POST', 'v1/react', {
+      msgId: mediaId,
+      emoji: '🎧',
+    });
+  }, sent);
+
+  await alice.waitForFunction(
+    ({ customId, mediaId }) => {
+      const events = (window as any).__mixedReactionEvents || [];
+      return events.some((e: any) => e.id === customId && e.reactions?.['🔥']?.bob?.name)
+        && events.some((e: any) => e.id === mediaId && e.reactions?.['🎧']?.bob?.name);
+    },
+    sent,
+    { timeout: 15_000 }
+  );
+
+  const history = await alice.evaluate(async ({ room, customId, mediaId }) => {
+    const { CometChat } = window as any;
+    const req = new CometChat.MessagesRequestBuilder().setGUID(room).setLimit(20).build();
+    const messages = await req.fetchPrevious();
+    const custom = messages.find((m: any) => String(m.getId()) === customId);
+    const media = messages.find((m: any) => String(m.getId()) === mediaId);
+    return {
+      customReactions: custom?.getMetadata?.()?.['@injected']?.extensions?.reactions || {},
+      mediaReactions: media?.getMetadata?.()?.['@injected']?.extensions?.reactions || {},
+    };
+  }, { room, ...sent });
+
+  expect(history.customReactions?.['🔥']?.bob?.name).toBeTruthy();
+  expect(history.mediaReactions?.['🎧']?.bob?.name).toBeTruthy();
+
+  await bob.evaluate(() => {
+    const { CometChat } = (window as any);
+    CometChat.removeMessageListener('MIXED_REACTION_BOB');
+  });
+  await alice.evaluate(() => {
+    const { CometChat } = (window as any);
+    CometChat.removeMessageListener('MIXED_REACTION_ALICE');
+  }).catch(() => undefined);
+});
+
 test('reported room smoke: two users in one room see text, reactions, deletes, and remaining history', async ({ browser, request }) => {
   test.skip(!ADMIN_API_KEY, 'Requires an OpenChat admin API key.');
   const room = `reported-room-${Date.now()}`;
