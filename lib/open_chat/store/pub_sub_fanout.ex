@@ -2,9 +2,10 @@ defmodule OpenChat.Store.PubSubFanout do
   @moduledoc false
 
   alias OpenChat.{Config, Media}
+  alias OpenChat.Store.MessageData
 
   def message(state, message) do
-    message = Media.sign_urls(message)
+    message = message |> MessageData.ensure_media_wire_shape() |> Media.sign_urls()
 
     event = %{
       "appId" => Config.app_id(),
@@ -20,7 +21,7 @@ defmodule OpenChat.Store.PubSubFanout do
   end
 
   def message_update(state, message) do
-    message = Media.sign_urls(message)
+    message = message |> MessageData.ensure_media_wire_shape() |> Media.sign_urls()
 
     event = %{
       "appId" => Config.app_id(),
@@ -81,7 +82,7 @@ defmodule OpenChat.Store.PubSubFanout do
   def group_action(state, guid, action, opts) do
     except = Keyword.get(opts, :except)
     keys = group_recipient_keys(state, guid, except: except)
-    action = Media.sign_urls(action)
+    action = action |> MessageData.ensure_media_wire_shape() |> Media.sign_urls()
 
     event = %{
       "appId" => Config.app_id(),

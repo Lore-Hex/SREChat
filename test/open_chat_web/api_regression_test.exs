@@ -1272,6 +1272,50 @@ defmodule OpenChatWeb.ApiRegressionTest do
              chat_message_envelope["songs"]
   end
 
+  test "history and live payloads do not expose malformed legacy media messages to the SDK" do
+    room = "ttfm-legacy-media-room"
+    assert admin_conn(:post, "/v3/groups", %{"guid" => room, "type" => "public"}).status == 201
+    assert auth_conn(:post, "/v3.0/groups/#{room}/members", %{}, "uid:alice").status in [200, 201]
+    assert auth_conn(:post, "/v3.0/groups/#{room}/members", %{}, "uid:bob").status in [200, 201]
+
+    assert {:ok, _subscription} = OpenChat.PubSub.subscribe({:user, "bob"})
+
+    conn =
+      admin_conn(:post, "/v3/messages", %{
+        "sender" => "alice",
+        "receiver" => room,
+        "receiverType" => "group",
+        "category" => "message",
+        "type" => "image",
+        "data" => %{
+          "metadata" => %{
+            "chatMessage" => %{
+              "message" => "",
+              "media" => %{"name" => "missing-upload.png", "type" => "image/png"}
+            }
+          }
+        }
+      })
+
+    assert conn.status in [200, 201]
+    sent = json(conn)["data"]
+    assert sent["type"] == "text"
+    assert get_in(sent, ["data", "text"]) == "missing-upload.png"
+    refute Map.has_key?(sent["data"], "attachments")
+
+    assert_receive {:comet_event, event}
+    assert get_in(event, ["body", "type"]) == "text"
+    assert get_in(event, ["body", "data", "text"]) == "missing-upload.png"
+
+    fetch_conn = auth_conn(:get, "/v3.0/groups/#{room}/messages?limit=10", %{}, "uid:bob")
+    assert fetch_conn.status == 200
+    [fetched | _rest] = json(fetch_conn)["data"]
+    assert fetched["id"] == sent["id"]
+    assert fetched["type"] == "text"
+    assert get_in(fetched, ["data", "text"]) == "missing-upload.png"
+    refute Map.has_key?(fetched["data"], "attachments")
+  end
+
   test "user-service admin flow: create user, mint auth token, /me round-trips, then delete via admin" do
     # Mirrors hangout/user-service/src/comet-chat/comet-chat.service.ts createCometChatUser
     # + createAuthToken + isAuthTokenValid + downstream cleanup. Each step uses the same

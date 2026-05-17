@@ -4,6 +4,7 @@ defmodule OpenChatWeb.ApiRouter do
   import Plug.Conn
   alias OpenChat.{Config, Errors, Media, Store, Time}
   alias OpenChat.Store.AuthTokens
+  alias OpenChat.Store.MessageData
   alias OpenChatWeb.{Auth, JSON}
 
   plug(:match)
@@ -585,8 +586,15 @@ defmodule OpenChatWeb.ApiRouter do
 
   defp store_response(conn, result, success_status \\ 200, error_status \\ 400) do
     case result do
-      {:ok, data} -> JSON.ok(conn, Media.sign_urls(data), success_status)
-      {:error, error} -> JSON.error(conn, error, error_status(error, error_status))
+      {:ok, data} ->
+        JSON.ok(
+          conn,
+          data |> MessageData.ensure_media_wire_shape() |> Media.sign_urls(),
+          success_status
+        )
+
+      {:error, error} ->
+        JSON.error(conn, error, error_status(error, error_status))
     end
   end
 
@@ -689,8 +697,12 @@ defmodule OpenChatWeb.ApiRouter do
   end
 
   defp messages_response(conn, messages, params) do
-    messages = message_wire_order(messages, params)
-    messages = Media.sign_urls(messages)
+    messages =
+      messages
+      |> message_wire_order(params)
+      |> Enum.map(&MessageData.ensure_media_wire_shape/1)
+      |> Media.sign_urls()
+
     JSON.raw(conn, %{"data" => messages, "meta" => cursor_meta(messages, params)})
   end
 
