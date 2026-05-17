@@ -74,6 +74,14 @@ defmodule OpenChat.StoreMessageStateTest do
              "alice" => %{"name" => "Alice"},
              "bob" => %{"name" => "Bob"}
            }
+
+    assert get_in(message, [
+             "data",
+             "metadata",
+             "@injected",
+             "extensions",
+             "profanity-filter"
+           ]) == %{"message_clean" => "", "profanity" => "no"}
   end
 
   test "refresh_reactions removes stale legacy extension metadata when final reaction is removed" do

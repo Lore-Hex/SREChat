@@ -175,7 +175,9 @@ defmodule OpenChat.Store.MessageState do
       if map_size(reactions) == 0 do
         Map.delete(extensions, "reactions")
       else
-        Map.put(extensions, "reactions", reactions)
+        extensions
+        |> Map.put("reactions", reactions)
+        |> Map.put_new("profanity-filter", default_profanity_filter(data))
       end
 
     injected =
@@ -197,6 +199,13 @@ defmodule OpenChat.Store.MessageState do
     else
       Map.put(data, "metadata", metadata)
     end
+  end
+
+  defp default_profanity_filter(data) do
+    %{
+      "message_clean" => data["text"] || get_in(data, ["customData", "message"]) || "",
+      "profanity" => "no"
+    }
   end
 
   defp reaction_extension_payload(reaction_map) do
