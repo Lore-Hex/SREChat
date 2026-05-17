@@ -154,4 +154,42 @@ defmodule OpenChat.StoreMessageDataTest do
              "receiver" => %{"entityType" => "group", "entity" => %{"guid" => "room"}}
            }
   end
+
+  test "ensure_media_wire_shape restores attachment data from legacy URL media" do
+    message =
+      MessageData.ensure_media_wire_shape(%{
+        "type" => "image",
+        "data" => %{
+          "url" => "https://cdn.example.com/media/photo.png",
+          "metadata" => %{
+            "chatMessage" => %{
+              "media" => %{"name" => "photo.png", "type" => "image/png"}
+            }
+          }
+        }
+      })
+
+    assert [%{"url" => "https://cdn.example.com/media/photo.png", "name" => "photo.png"}] =
+             get_in(message, ["data", "attachments"])
+  end
+
+  test "ensure_media_wire_shape downgrades unrecoverable legacy media so SDK history cannot throw" do
+    message =
+      MessageData.ensure_media_wire_shape(%{
+        "type" => "image",
+        "data" => %{
+          "metadata" => %{
+            "chatMessage" => %{
+              "message" => "",
+              "media" => %{"name" => "missing.png", "type" => "image/png"}
+            }
+          }
+        }
+      })
+
+    assert message["type"] == "text"
+    assert get_in(message, ["data", "text"]) == "missing.png"
+    refute Map.has_key?(message["data"], "attachments")
+    refute Map.has_key?(message["data"], "url")
+  end
 end

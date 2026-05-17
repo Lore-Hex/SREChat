@@ -3,6 +3,8 @@ defmodule OpenChat.Store.MessageData do
 
   alias OpenChat.Media
 
+  @media_types ~w(image video audio file media)
+
   def infer_type(params, uploads) do
     data = normalise_data(params["data"] || %{})
 
@@ -92,6 +94,22 @@ defmodule OpenChat.Store.MessageData do
     )
   end
 
+  def ensure_media_wire_shape(%{"type" => type, "data" => data} = message)
+      when is_map(data) and type in @media_types do
+    cond do
+      valid_attachments?(data["attachments"]) ->
+        message
+
+      url = attachment_url(data, message) ->
+        put_in(message, ["data", "attachments"], [attachment_from(url, data, message)])
+
+      true ->
+        downgrade_broken_media(message)
+    end
+  end
+
+  def ensure_media_wire_shape(message), do: message
+
   defp upload_attachments(uploads) do
     uploads
     |> List.wrap()
@@ -115,6 +133,73 @@ defmodule OpenChat.Store.MessageData do
 
     uploads != [] or type in ["image", "video", "audio", "file", "media"] or
       Map.has_key?(base, "url") or Map.has_key?(base, "attachments")
+  end
+
+  defp valid_attachments?([%{"url" => url} | _]) when is_binary(url) and url != "", do: true
+  defp valid_attachments?(_other), do: false
+
+  defp attachment_url(data, message) do
+    first_present([
+      data["url"],
+      get_in(data, ["metadata", "chatMessage", "media", "uri"]),
+      get_in(data, ["metadata", "chatMessage", "media", "url"]),
+      get_in(data, ["metadata", "chatMessage", "imageUrls", Access.at(0)]),
+      get_in(message, ["metadata", "chatMessage", "media", "uri"]),
+      get_in(message, ["metadata", "chatMessage", "media", "url"]),
+      get_in(message, ["metadata", "chatMessage", "imageUrls", Access.at(0)])
+    ])
+  end
+
+  defp attachment_from(url, data, message) do
+    name =
+      first_present([
+        get_in(data, ["metadata", "chatMessage", "media", "name"]),
+        get_in(message, ["metadata", "chatMessage", "media", "name"]),
+        Path.basename(URI.parse(url).path || ""),
+        "media"
+      ])
+
+    mime =
+      first_present([
+        get_in(data, ["metadata", "chatMessage", "media", "type"]),
+        get_in(message, ["metadata", "chatMessage", "media", "type"]),
+        MIME.from_path(name),
+        "application/octet-stream"
+      ])
+
+    %{
+      "extension" => name |> Path.extname() |> String.trim_leading("."),
+      "mimeType" => mime,
+      "name" => name,
+      "url" => url
+    }
+  end
+
+  defp downgrade_broken_media(%{"data" => data} = message) do
+    text =
+      first_present([
+        data["text"],
+        data["caption"],
+        get_in(data, ["metadata", "chatMessage", "message"]),
+        get_in(data, ["metadata", "chatMessage", "media", "name"]),
+        get_in(message, ["metadata", "chatMessage", "message"]),
+        get_in(message, ["metadata", "chatMessage", "media", "name"]),
+        ""
+      ])
+
+    message
+    |> Map.put("type", "text")
+    |> put_in(["data", "text"], text)
+    |> update_in(["data"], &Map.drop(&1 || %{}, ["attachments", "url"]))
+  end
+
+  defp first_present(values) do
+    Enum.find(values, fn
+      value when is_binary(value) -> value != ""
+      nil -> false
+      false -> false
+      _value -> true
+    end)
   end
 
   defp normalise_data(value) when is_binary(value) do

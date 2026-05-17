@@ -1563,7 +1563,10 @@ defmodule OpenChat.Store do
     do: Enum.map(messages, &hydrate_message_for_viewer(state, uid, &1))
 
   defp hydrate_message_for_viewer(state, uid, message),
-    do: MessageState.refresh_reactions(state, message, uid)
+    do:
+      state
+      |> MessageState.refresh_reactions(message, uid)
+      |> MessageData.ensure_media_wire_shape()
 
   defp delete_conversation_indexes(state, conv_ids) do
     {state, %{conversation_ids: conv_ids, touched_user_buckets: touched}} =
