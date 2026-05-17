@@ -309,6 +309,8 @@ Resources:
               Value: "12000000"
             - Name: UPLOAD_MAX_BYTES
               Value: "10000000"
+            - Name: DM_HISTORY_CONNECT_GRACE_MS
+              Value: "600"
             - Name: SEED_USERS_JSON
               Value: "[]"
             - Name: SEED_GROUPS_JSON

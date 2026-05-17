@@ -9,6 +9,7 @@ defmodule OpenChat.Config do
   @default_group_unread_fanout_limit 1_000
   @default_group_presence_ttl_seconds 1_800
   @default_group_max_presence 5_000
+  @default_dm_history_connect_grace_ms 0
   @default_upload_allowed_mime_types ~w(
     image/jpeg
     image/png
@@ -86,6 +87,10 @@ defmodule OpenChat.Config do
 
   def group_max_presence,
     do: integer_env(:group_max_presence, @default_group_max_presence)
+
+  def dm_history_connect_grace_ms,
+    do:
+      non_negative_integer_env(:dm_history_connect_grace_ms, @default_dm_history_connect_grace_ms)
 
   def public_group_reads_enabled?,
     do: boolean_env(:public_group_reads_enabled, true)
@@ -170,6 +175,19 @@ defmodule OpenChat.Config do
       value ->
         case Integer.parse(to_string(value)) do
           {int, _rest} when int > 0 -> int
+          _other -> fallback
+        end
+    end
+  end
+
+  defp non_negative_integer_env(key, fallback) do
+    case Application.get_env(:open_chat, key, fallback) do
+      value when is_integer(value) and value >= 0 ->
+        value
+
+      value ->
+        case Integer.parse(to_string(value)) do
+          {int, _rest} when int >= 0 -> int
           _other -> fallback
         end
     end

@@ -291,8 +291,12 @@ defmodule OpenChatWeb.ApiRouter do
   get "/users/:list_id/messages" do
     with_user(conn, fn conn, user, _token ->
       case Store.messages_for_user(user["uid"], list_id, conn.query_params) do
-        {:ok, messages} -> messages_response(conn, messages, conn.query_params)
-        {:error, e} -> JSON.error(conn, e, 400)
+        {:ok, messages} ->
+          wait_for_dm_history_connect_grace()
+          messages_response(conn, messages, conn.query_params)
+
+        {:error, e} ->
+          JSON.error(conn, e, 400)
       end
     end)
   end
@@ -570,6 +574,19 @@ defmodule OpenChatWeb.ApiRouter do
   defp send_message_response(conn, sender_uid, params, status \\ 200, opts \\ []) do
     result = Store.send_message(sender_uid, params, uploads_from_params(conn.params), opts)
     store_response(conn, result, status)
+  end
+
+  defp wait_for_dm_history_connect_grace do
+    case Config.dm_history_connect_grace_ms() do
+      ms when is_integer(ms) and ms > 0 ->
+        # CometChat JS marks messages read over WebSocket immediately after
+        # fetchPrevious(); this keeps OpenChat from outrunning the SDK's
+        # connection-status transition on fast history responses.
+        Process.sleep(ms)
+
+      _other ->
+        :ok
+    end
   end
 
   defp reaction_response(conn, :add, uid, message_id, reaction) do

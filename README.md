@@ -118,6 +118,7 @@ Runtime environment variables are read from `config/runtime.exs`, so container a
 | `REQUEST_BODY_LIMIT` | `10000000` | Max parsed request body size in bytes |
 | `UPLOAD_MAX_BYTES` | `10000000` | Max single uploaded media file size in bytes |
 | `UPLOAD_ALLOWED_MIME_TYPES` | image/audio/video/pdf/text allowlist | Comma-separated allowlist for stored uploads |
+| `DM_HISTORY_CONNECT_GRACE_MS` | `600` outside tests, `0` in tests | Compatibility delay on direct-message history responses so the CometChat JS SDK WebSocket state is connected before immediate `markAsRead()` calls. Set `0` to disable. |
 | `PUBLIC_MEDIA_BASE_URL` | unset | Absolute stable media URL base; otherwise `/media/<file>`. With private S3, keep this pointed at OpenChat for stored fallback URLs while outbound payloads are rewritten to presigned S3 URLs. |
 
 ## Admin moderation

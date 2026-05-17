@@ -67,6 +67,25 @@ defmodule OpenChatWeb.ApiTest do
              json(conn)["data"]
   end
 
+  test "DM history endpoint can hold a short SDK websocket grace period" do
+    with_open_chat_env(%{dm_history_connect_grace_ms: 25}, fn ->
+      auth_conn(:post, "/v3.0/messages", %{
+        "receiver" => "bob",
+        "receiverType" => "user",
+        "type" => "text",
+        "category" => "message",
+        "data" => %{"text" => "history grace"}
+      })
+
+      {elapsed_us, conn} =
+        :timer.tc(fn -> auth_conn(:get, "/v3.0/users/alice/messages?limit=10", %{}, "uid:bob") end)
+
+      assert conn.status == 200
+      assert [%{"data" => %{"text" => "history grace"}}] = json(conn)["data"]
+      assert elapsed_us >= 20_000
+    end)
+  end
+
   test "admin v3 routes cover TTFM server-side CometChat calls" do
     assert admin_conn(:post, "/v3/users", %{
              "uid" => "dj-1",
@@ -197,5 +216,25 @@ defmodule OpenChatWeb.ApiTest do
     conn = auth_conn(:delete, "/v3.0/messages/#{msg["id"]}")
     action = json(conn)["data"]
     assert action["data"]["action"] == "deleted"
+  end
+
+  defp with_open_chat_env(overrides, fun) do
+    previous =
+      Map.new(overrides, fn {key, _value} ->
+        {key, Application.get_env(:open_chat, key)}
+      end)
+
+    Enum.each(overrides, fn {key, value} ->
+      Application.put_env(:open_chat, key, value)
+    end)
+
+    try do
+      fun.()
+    after
+      Enum.each(previous, fn
+        {key, nil} -> Application.delete_env(:open_chat, key)
+        {key, value} -> Application.put_env(:open_chat, key, value)
+      end)
+    end
   end
 end

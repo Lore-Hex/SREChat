@@ -11,6 +11,7 @@ default_group_message_retention_days = 30
 default_group_unread_fanout_limit = 1_000
 default_group_presence_ttl_seconds = 1_800
 default_group_max_presence = 5_000
+default_dm_history_connect_grace_ms = if config_env() == :test, do: 0, else: 600
 
 default_upload_allowed_mime_types =
   "image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm,audio/mpeg,audio/mp4,audio/ogg,audio/webm,application/pdf,text/plain"
@@ -20,6 +21,22 @@ integer_env = fn name, default ->
     nil -> default
     "" -> default
     value -> String.to_integer(value)
+  end
+end
+
+non_negative_integer_env = fn name, default ->
+  case System.get_env(name) do
+    nil ->
+      default
+
+    "" ->
+      default
+
+    value ->
+      case Integer.parse(value) do
+        {int, _rest} when int >= 0 -> int
+        _other -> default
+      end
   end
 end
 
@@ -69,6 +86,8 @@ config :open_chat,
   group_presence_ttl_seconds:
     integer_env.("GROUP_PRESENCE_TTL_SECONDS", default_group_presence_ttl_seconds),
   group_max_presence: integer_env.("GROUP_MAX_PRESENCE", default_group_max_presence),
+  dm_history_connect_grace_ms:
+    non_negative_integer_env.("DM_HISTORY_CONNECT_GRACE_MS", default_dm_history_connect_grace_ms),
   public_group_reads_enabled: boolean_env.("PUBLIC_GROUP_READS_ENABLED", true),
   public_group_joins_as_visits: boolean_env.("PUBLIC_GROUP_JOINS_AS_VISITS", false),
   media_storage: System.get_env("MEDIA_STORAGE") || "local",
