@@ -509,6 +509,14 @@ defmodule OpenChat.StoreRegressionTest do
     fourth_id = messages |> Enum.at(3) |> Map.fetch!("id")
     assert {:ok, _action} = Store.delete_message("alice", fourth_id)
 
+    assert {:ok, default_visible_messages} = Store.messages_for_user("bob", "alice", %{})
+    refute Enum.any?(default_visible_messages, &(&1["id"] == fourth_id))
+
+    assert {:ok, debug_messages} =
+             Store.messages_for_user("bob", "alice", %{"hideDeleted" => "false"})
+
+    assert Enum.any?(debug_messages, &(&1["id"] == fourth_id and &1["deletedAt"]))
+
     assert {:ok, visible_messages} =
              Store.messages_for_user("bob", "alice", %{
                "hideDeleted" => "true",

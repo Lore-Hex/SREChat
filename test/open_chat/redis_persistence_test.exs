@@ -1143,6 +1143,7 @@ defmodule OpenChat.RedisPersistenceTest do
                  )
 
         assert Enum.any?(peer_visible, &(&1["id"] == keep["id"]))
+        refute Enum.any?(peer_visible, &(&1["id"] == remove_id))
         assert Enum.any?(peer_visible, &(&1["id"] == deleted_action["id"]))
 
         restart_store!()

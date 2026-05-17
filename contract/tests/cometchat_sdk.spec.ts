@@ -898,8 +898,16 @@ test('reported room smoke: two users in one room see text, reactions, deletes, a
   }, { room, keepId: sent.keepId, removeId: sent.removeId });
 
   expect(history.some((m: any) => m.id === String(sent.keepId) && m.text === sent.keepText)).toBeTruthy();
-  expect(history.some((m: any) => m.id === String(sent.removeId) && m.deletedAt)).toBeTruthy();
+  expect(history.some((m: any) => m.id === String(sent.removeId))).toBeFalsy();
   expect(history.some((m: any) => m.action === 'deleted' && String(m.onId) === String(sent.removeId))).toBeTruthy();
+
+  const debugHistory = await request.get(`https://${TARGET_HOST}/groups/${room}/messages`, {
+    headers: { authToken: BOB_TOKEN },
+    params: { per_page: 20, hideDeleted: 'false' },
+  });
+  expect(debugHistory.ok()).toBeTruthy();
+  const debugMessages = (await debugHistory.json()).data;
+  expect(debugMessages.some((m: any) => String(m.id) === String(sent.removeId) && m.deletedAt)).toBeTruthy();
 
   await bob.evaluate(() => {
     const { CometChat } = (window as any);

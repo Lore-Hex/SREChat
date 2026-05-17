@@ -99,7 +99,7 @@ defmodule OpenChat.Store.ConversationView do
 
   defp filter_messages(messages, params) do
     params = stringify_keys(params)
-    hide_deleted = truthy?(params["hideDeleted"] || params["hideDeletedMessages"])
+    hide_deleted = hide_deleted?(params)
     type = params["type"]
     category = params["category"]
     timestamp = params["sentAt"] || params["timestamp"]
@@ -208,7 +208,13 @@ defmodule OpenChat.Store.ConversationView do
   defp stringify_keys(list) when is_list(list), do: Enum.map(list, &stringify_keys/1)
   defp stringify_keys(other), do: other
 
-  defp truthy?(value), do: value in [true, 1, "1", "true", "TRUE", "yes"]
+  defp hide_deleted?(params) do
+    case params["hideDeleted"] || params["hideDeletedMessages"] do
+      value when value in [false, 0, "0", "false", "FALSE", "no", "NO"] -> false
+      _other -> true
+    end
+  end
+
   defp blank?(value), do: value in [nil, "", false]
   defp clamp(value, lo, hi), do: value |> Kernel.max(lo) |> Kernel.min(hi)
 
