@@ -31,6 +31,24 @@ defmodule OpenChat.CoreTest do
     assert raw_conn.status == 200
     assert Jason.decode!(raw_conn.resp_body) == %{"meta" => %{"count" => 2}}
 
+    media_conn =
+      OpenChatWeb.JSON.raw(conn(:get, "/"), %{
+        "data" => [
+          %{
+            "type" => "image",
+            "data" => %{
+              "metadata" => %{
+                "chatMessage" => %{"media" => %{"name" => "missing.png"}}
+              }
+            }
+          }
+        ]
+      })
+
+    [message] = Jason.decode!(media_conn.resp_body)["data"]
+    assert message["type"] == "text"
+    assert get_in(message, ["data", "text"]) == "missing.png"
+
     error = OpenChat.Errors.forbidden("Nope.")
     error_conn = OpenChatWeb.JSON.error(conn(:get, "/"), error, 403)
     assert error_conn.status == 403

@@ -192,4 +192,26 @@ defmodule OpenChat.StoreMessageDataTest do
     refute Map.has_key?(message["data"], "attachments")
     refute Map.has_key?(message["data"], "url")
   end
+
+  test "ensure_media_wire_shapes recursively sanitizes response envelopes" do
+    body =
+      MessageData.ensure_media_wire_shapes(%{
+        "data" => [
+          %{
+            "type" => "image",
+            "data" => %{
+              "metadata" => %{
+                "chatMessage" => %{
+                  "media" => %{"name" => "missing.png", "type" => "image/png"}
+                }
+              }
+            }
+          }
+        ]
+      })
+
+    [message] = body["data"]
+    assert message["type"] == "text"
+    assert get_in(message, ["data", "text"]) == "missing.png"
+  end
 end

@@ -110,6 +110,17 @@ defmodule OpenChat.Store.MessageData do
 
   def ensure_media_wire_shape(message), do: message
 
+  def ensure_media_wire_shapes(value) when is_list(value),
+    do: Enum.map(value, &ensure_media_wire_shapes/1)
+
+  def ensure_media_wire_shapes(%{} = value) do
+    value
+    |> ensure_media_wire_shape()
+    |> Map.new(fn {key, nested} -> {key, ensure_media_wire_shapes(nested)} end)
+  end
+
+  def ensure_media_wire_shapes(value), do: value
+
   defp upload_attachments(uploads) do
     uploads
     |> List.wrap()
