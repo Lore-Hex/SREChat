@@ -25,7 +25,7 @@ defmodule OpenChat.LoadPerfTest do
     messages = env_int("OPENCHAT_LOAD_MESSAGES", 2_000)
     minimum = env_int("OPENCHAT_MIN_STORE_MSG_PER_SEC", 300)
 
-    {ids, seconds} =
+    {sent, seconds} =
       timed(fn ->
         Enum.map(1..messages, fn i ->
           sender = load_user(i, users)
@@ -39,12 +39,14 @@ defmodule OpenChat.LoadPerfTest do
                      "data" => %{"text" => "load #{i}"}
                    })
 
-          message["id"]
+          message
         end)
       end)
 
+    ids = message_ids(sent)
     assert Enum.uniq(ids) == ids
     assert_rate("store direct messages", messages, seconds, minimum)
+    assert_direct_histories_recorded(sent)
 
     assert {:ok, [_ | _]} =
              Store.messages_for_user(load_user(2, users), load_user(1, users), %{"limit" => 100})
@@ -58,7 +60,7 @@ defmodule OpenChat.LoadPerfTest do
     total = concurrency * per_worker
     minimum = env_int("OPENCHAT_MIN_CONCURRENT_STORE_MSG_PER_SEC", 200)
 
-    {ids, seconds} =
+    {sent, seconds} =
       timed(fn ->
         concurrent_map(1..total, concurrency, fn i ->
           assert {:ok, message} =
@@ -69,15 +71,17 @@ defmodule OpenChat.LoadPerfTest do
                      "data" => %{"text" => "concurrent store #{i}"}
                    })
 
-          message["id"]
+          message
         end)
       end)
 
+    ids = message_ids(sent)
     assert length(ids) == total
     assert ids |> MapSet.new() |> MapSet.size() == total
     assert Enum.min(ids) == 1
     assert Enum.max(ids) == total
     assert_rate("concurrent store messages", total, seconds, minimum)
+    assert_direct_histories_recorded(sent)
   end
 
   test "deep conversations keep unread and conversation reads on cursor indexes" do
@@ -99,6 +103,7 @@ defmodule OpenChat.LoadPerfTest do
       end)
 
     latest_id = List.last(sent)["id"]
+    assert_direct_histories_recorded(sent)
 
     {results, seconds} =
       timed(fn ->
@@ -146,6 +151,7 @@ defmodule OpenChat.LoadPerfTest do
 
     assert_rate("group messages", messages, seconds, minimum)
     last_id = List.last(sent)["id"]
+    assert_group_history_recorded(List.first(uids), guid, sent)
 
     receipt_users = Enum.take(uids, min(members, 100))
 
@@ -165,9 +171,11 @@ defmodule OpenChat.LoadPerfTest do
       env_int("OPENCHAT_MIN_RECEIPT_PER_SEC", 100)
     )
 
-    assert {:ok, conversation} = Store.conversation(List.first(uids), "group", guid)
-    assert conversation["lastDeliveredMessageId"] == to_string(last_id)
-    assert conversation["lastReadMessageId"] == to_string(last_id)
+    Enum.each(receipt_users, fn uid ->
+      assert {:ok, conversation} = Store.conversation(uid, "group", guid)
+      assert conversation["lastDeliveredMessageId"] == to_string(last_id)
+      assert conversation["lastReadMessageId"] == to_string(last_id)
+    end)
   end
 
   test "top public room load keeps transient visits, fanout, and history bounded" do
@@ -231,9 +239,16 @@ defmodule OpenChat.LoadPerfTest do
         first = Enum.min_by(sent, & &1["id"])
         latest = Enum.max_by(sent, & &1["id"])
 
+        retained_messages =
+          sent
+          |> Enum.sort_by(&to_int(&1["id"]), :desc)
+          |> Enum.take(min(retained, messages))
+
         if messages > retained do
           assert :error = Store.get_message(first["id"])
         end
+
+        assert_group_history_recorded(List.first(member_uids), guid, retained_messages)
 
         assert {:ok, messages_page} = Store.messages_for_group(List.first(visitor_uids), guid)
         assert length(messages_page) == min(retained, 30)
@@ -251,7 +266,7 @@ defmodule OpenChat.LoadPerfTest do
     messages = env_int("OPENCHAT_LOAD_HTTP_MESSAGES", 500)
     minimum = env_int("OPENCHAT_MIN_HTTP_MSG_PER_SEC", 100)
 
-    {_responses, seconds} =
+    {sent, seconds} =
       timed(fn ->
         Enum.map(1..messages, fn i ->
           body = %{
@@ -268,11 +283,14 @@ defmodule OpenChat.LoadPerfTest do
             |> Endpoint.call([])
 
           assert response.status == 201
-          response
+          get_in(Jason.decode!(response.resp_body), ["data"])
         end)
       end)
 
     assert_rate("HTTP messages", messages, seconds, minimum)
+    ids = message_ids(sent)
+    assert ids |> MapSet.new() |> MapSet.size() == messages
+    assert_http_user_history_recorded("uid:http-load-b", "http-load-a", sent)
 
     response =
       conn(:get, "/v3.0/users/http-load-a/messages?limit=100")
@@ -289,7 +307,7 @@ defmodule OpenChat.LoadPerfTest do
     total = concurrency * per_worker
     minimum = env_int("OPENCHAT_MIN_CONCURRENT_HTTP_MSG_PER_SEC", 100)
 
-    {ids, seconds} =
+    {sent, seconds} =
       timed(fn ->
         concurrent_map(1..total, concurrency, fn i ->
           body = %{
@@ -306,13 +324,15 @@ defmodule OpenChat.LoadPerfTest do
             |> Endpoint.call([])
 
           assert response.status == 201
-          get_in(Jason.decode!(response.resp_body), ["data", "id"])
+          get_in(Jason.decode!(response.resp_body), ["data"])
         end)
       end)
 
+    ids = message_ids(sent)
     assert length(ids) == total
     assert ids |> MapSet.new() |> MapSet.size() == total
     assert_rate("concurrent HTTP messages", total, seconds, minimum)
+    assert_http_user_history_recorded("uid:http-concurrent-b", "http-concurrent-a", sent)
   end
 
   test "Redis write-through load uses scoped refresh and monotonic counters" do
@@ -322,7 +342,7 @@ defmodule OpenChat.LoadPerfTest do
 
       Redix.command!(context.redis, ["SET", redis_key(context, "counter", "next_id"), "10"])
 
-      {ids, seconds} =
+      {sent, seconds} =
         timed(fn ->
           Enum.map(1..messages, fn i ->
             sender = "redis-load-#{rem(i, 20)}"
@@ -336,13 +356,16 @@ defmodule OpenChat.LoadPerfTest do
                        "data" => %{"text" => "redis #{i}"}
                      })
 
-            message["id"]
+            message
           end)
         end)
 
+      ids = message_ids(sent)
       assert Enum.uniq(ids) == ids
       assert Enum.min(ids) >= 10
       assert redis_get(context, "counter", "next_id") == to_string(Enum.max(ids) + 1)
+      assert_direct_histories_recorded(sent)
+      assert_redis_messages_recorded(context, sent)
       assert_rate("Redis messages", messages, seconds, minimum)
     end)
   end
@@ -356,7 +379,7 @@ defmodule OpenChat.LoadPerfTest do
 
       Redix.command!(context.redis, ["SET", redis_key(context, "counter", "next_id"), "100"])
 
-      {ids, seconds} =
+      {sent, seconds} =
         timed(fn ->
           concurrent_map(1..total, concurrency, fn i ->
             lane = rem(i, concurrency)
@@ -369,15 +392,18 @@ defmodule OpenChat.LoadPerfTest do
                        "data" => %{"text" => "redis concurrent #{i}"}
                      })
 
-            message["id"]
+            message
           end)
         end)
 
+      ids = message_ids(sent)
       assert length(ids) == total
       assert ids |> MapSet.new() |> MapSet.size() == total
       assert Enum.min(ids) >= 100
       assert redis_get(context, "counter", "next_id") == to_string(Enum.max(ids) + 1)
       assert length(redis_members(context, "index", "messages")) == total
+      assert_direct_histories_recorded(sent)
+      assert_redis_messages_recorded(context, sent)
       assert_rate("concurrent Redis messages", total, seconds, minimum)
     end)
   end
@@ -395,7 +421,7 @@ defmodule OpenChat.LoadPerfTest do
 
         Redix.command!(context.redis, ["SET", redis_key(context, "counter", "next_id"), "500"])
 
-        {ids, seconds} =
+        {sent, seconds} =
           timed(fn ->
             concurrent_map(1..total, concurrency, fn i ->
               lane = rem(i, lanes)
@@ -411,7 +437,7 @@ defmodule OpenChat.LoadPerfTest do
                            "data" => %{"text" => "primary peer #{i}"}
                          })
 
-                message["id"]
+                message
               else
                 assert {:ok, message} =
                          Store.call_on(
@@ -425,15 +451,19 @@ defmodule OpenChat.LoadPerfTest do
                             }, [], []}
                          )
 
-                message["id"]
+                message
               end
             end)
           end)
 
+        ids = message_ids(sent)
         assert length(ids) == total
         assert ids |> MapSet.new() |> MapSet.size() == total
         assert redis_get(context, "counter", "next_id") == to_string(Enum.max(ids) + 1)
         assert length(redis_members(context, "index", "messages")) == total
+        assert_direct_histories_recorded(sent)
+        assert_direct_histories_recorded(peer, sent)
+        assert_redis_messages_recorded(context, sent)
         assert_rate("Redis peer store messages", total, seconds, minimum)
       after
         stop_peer_store(peer)
@@ -452,7 +482,7 @@ defmodule OpenChat.LoadPerfTest do
         total = lanes * per_lane
         minimum = env_int("OPENCHAT_MIN_REDIS_MIXED_OP_PER_SEC", 20)
 
-        {_ids, write_seconds} =
+        {sent, write_seconds} =
           timed(fn ->
             concurrent_map(1..total, concurrency, fn i ->
               lane = rem(i, lanes)
@@ -462,10 +492,10 @@ defmodule OpenChat.LoadPerfTest do
 
               if rem(i, 2) == 0 do
                 assert {:ok, message} = Store.send_message(sender, mixed_message(receiver, i))
-                message["id"]
+                message
               else
                 assert {:ok, message} = Store.call_on(peer, request)
-                message["id"]
+                message
               end
             end)
           end)
@@ -485,6 +515,8 @@ defmodule OpenChat.LoadPerfTest do
           end)
 
         assert length(read_results) == lanes
+        assert_direct_histories_recorded(sent)
+        assert_direct_histories_recorded(peer, sent)
 
         assert_rate(
           "Redis mixed peer write/read ops",
@@ -537,9 +569,139 @@ defmodule OpenChat.LoadPerfTest do
       assert lookups |> MapSet.new() |> MapSet.size() == messages
       assert "redis-index-a" in redis_members(context, "index", "user_conversations")
       assert "redis-index-b" in redis_members(context, "index", "user_conversations")
+      assert_direct_histories_recorded(sent)
+      assert_redis_messages_recorded(context, sent)
+
+      Enum.each(sent, fn message ->
+        assert redis_json(context, "message_muids", message["muid"]) == to_string(message["id"])
+      end)
+
       assert_rate("Redis indexed reads", messages * 2, read_seconds, minimum)
     end)
   end
+
+  defp assert_direct_histories_recorded(messages),
+    do: assert_direct_histories_recorded(OpenChat.Store, messages)
+
+  defp assert_direct_histories_recorded(server, messages) do
+    messages
+    |> Enum.group_by(fn message -> {to_s(message["sender"]), to_s(message["receiver"])} end)
+    |> Enum.each(fn {{sender, receiver}, expected} ->
+      fetched = fetch_all_user_messages(server, receiver, sender)
+      assert_messages_match(fetched, expected)
+
+      assert {:ok, conversation} =
+               store_call(server, {:conversation, receiver, "user", sender})
+
+      latest = Enum.max_by(expected, &to_int(&1["id"]))
+      assert conversation["latestMessageId"] == to_s(latest["id"])
+      assert conversation["unreadMessageCount"] == length(expected)
+    end)
+  end
+
+  defp assert_group_history_recorded(viewer_uid, guid, expected),
+    do: assert_group_history_recorded(OpenChat.Store, viewer_uid, guid, expected)
+
+  defp assert_group_history_recorded(server, viewer_uid, guid, expected) do
+    fetched = fetch_all_group_messages(server, viewer_uid, guid)
+    assert_messages_match(fetched, expected)
+
+    assert {:ok, conversation} = store_call(server, {:conversation, viewer_uid, "group", guid})
+    latest = Enum.max_by(expected, &to_int(&1["id"]))
+    assert conversation["latestMessageId"] == to_s(latest["id"])
+  end
+
+  defp assert_http_user_history_recorded(auth_token, peer_uid, expected) do
+    fetched = fetch_all_http_user_messages(auth_token, peer_uid)
+    assert_messages_match(fetched, expected)
+  end
+
+  defp assert_redis_messages_recorded(context, expected) do
+    expected_ids = expected |> Enum.map(&to_s(&1["id"])) |> MapSet.new()
+    redis_ids = context |> redis_members("index", "messages") |> MapSet.new()
+    assert redis_ids == expected_ids
+
+    Enum.each(expected, fn message ->
+      assert redis_json(context, "messages", message["id"]) |> message_signature() ==
+               message_signature(message)
+    end)
+  end
+
+  defp fetch_all_user_messages(server, uid, peer_uid) do
+    fetch_all_pages(fn params ->
+      store_call(server, {:messages_for_user, uid, peer_uid, params})
+    end)
+  end
+
+  defp fetch_all_group_messages(server, uid, guid) do
+    fetch_all_pages(fn params ->
+      store_call(server, {:messages_for_group, uid, guid, params})
+    end)
+  end
+
+  defp fetch_all_http_user_messages(auth_token, peer_uid) do
+    fetch_all_pages(fn params ->
+      path = "/v3.0/users/#{peer_uid}/messages?#{URI.encode_query(params)}"
+
+      response =
+        conn(:get, path)
+        |> Plug.Conn.put_req_header("authtoken", auth_token)
+        |> Endpoint.call([])
+
+      assert response.status == 200
+      %{"data" => messages} = Jason.decode!(response.resp_body)
+      {:ok, messages}
+    end)
+  end
+
+  defp fetch_all_pages(fetch_page, cursor \\ nil, acc \\ []) do
+    params =
+      %{"limit" => 100, "cursorField" => "id"}
+      |> maybe_put("cursorValue", cursor)
+      |> maybe_put("cursorAffix", if(cursor, do: "prepend"))
+
+    assert {:ok, page} = fetch_page.(params)
+    acc = acc ++ page
+
+    if length(page) < 100 do
+      acc
+    else
+      next_cursor = page |> List.last() |> Map.fetch!("id") |> to_s()
+      fetch_all_pages(fetch_page, next_cursor, acc)
+    end
+  end
+
+  defp assert_messages_match(fetched, expected) do
+    expected_by_id =
+      Map.new(expected, fn message -> {to_s(message["id"]), message_signature(message)} end)
+
+    fetched_by_id =
+      Map.new(fetched, fn message -> {to_s(message["id"]), message_signature(message)} end)
+
+    assert Map.keys(fetched_by_id) |> MapSet.new() == Map.keys(expected_by_id) |> MapSet.new()
+
+    Enum.each(expected_by_id, fn {id, expected_signature} ->
+      assert fetched_by_id[id] == expected_signature
+    end)
+  end
+
+  defp message_signature(message) do
+    %{
+      "sender" => to_s(message["sender"]),
+      "receiver" => to_s(message["receiver"]),
+      "receiverType" => to_s(message["receiverType"]),
+      "type" => to_s(message["type"]),
+      "category" => to_s(message["category"]),
+      "text" => get_in(message, ["data", "text"])
+    }
+  end
+
+  defp message_ids(messages), do: Enum.map(messages, &to_int(&1["id"]))
+
+  defp store_call(server, request), do: Store.call_on(server, request)
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp with_redis(fun) do
     redis_url = System.get_env("REDIS_TEST_URL") || "redis://localhost:6379/15"
@@ -696,6 +858,13 @@ defmodule OpenChat.LoadPerfTest do
     value
   end
 
+  defp redis_json(context, part_a, part_b) do
+    case redis_get(context, part_a, to_s(part_b)) do
+      nil -> nil
+      json -> Jason.decode!(json)
+    end
+  end
+
   defp redis_members(context, parts) when is_list(parts) do
     {:ok, members} = Redix.command(context.redis, ["SMEMBERS", redis_key(context, parts)])
     members
@@ -705,6 +874,20 @@ defmodule OpenChat.LoadPerfTest do
 
   defp redis_key(context, parts) when is_list(parts), do: Enum.join([context.prefix | parts], ":")
   defp redis_key(context, part_a, part_b), do: redis_key(context, [part_a, part_b])
+
+  defp to_s(nil), do: ""
+  defp to_s(value) when is_binary(value), do: value
+  defp to_s(value), do: to_string(value)
+
+  defp to_int(nil), do: 0
+  defp to_int(value) when is_integer(value), do: value
+
+  defp to_int(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _rest} -> int
+      :error -> 0
+    end
+  end
 
   defp delete_prefix(redis, prefix, cursor \\ "0") do
     {:ok, [next_cursor, keys]} =
