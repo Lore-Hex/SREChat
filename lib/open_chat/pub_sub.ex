@@ -1,23 +1,27 @@
 defmodule OpenChat.PubSub do
   @moduledoc false
 
+  require Logger
+
   def subscribe(key), do: Registry.register(__MODULE__, key, %{})
   def unsubscribe(key), do: Registry.unregister(__MODULE__, key)
 
   def broadcast(keys, event) when is_list(keys) do
     keys = Enum.uniq(keys)
+    publish_result = OpenChat.RedisBus.publish(keys, event)
+    warn_publish_failure(publish_result)
     local_broadcast(keys, event)
-    OpenChat.RedisBus.publish(keys, event)
-    :ok
+    publish_result
   end
 
   def broadcast(key, event), do: broadcast([key], event)
 
   def broadcast_system(keys, event) when is_list(keys) do
     keys = Enum.uniq(keys)
+    publish_result = OpenChat.RedisBus.publish_system(keys, event)
+    warn_publish_failure(publish_result)
     local_system_broadcast(keys, event)
-    OpenChat.RedisBus.publish_system(keys, event)
-    :ok
+    publish_result
   end
 
   def broadcast_system(key, event), do: broadcast_system([key], event)
@@ -44,5 +48,11 @@ defmodule OpenChat.PubSub do
     end)
 
     :ok
+  end
+
+  defp warn_publish_failure(:ok), do: :ok
+
+  defp warn_publish_failure({:error, reason}) do
+    Logger.warning("Redis event publish failed before local broadcast: #{inspect(reason)}")
   end
 end

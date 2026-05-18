@@ -85,6 +85,13 @@ defmodule OpenChat.Store.RedisPersistence do
 
   def enabled?, do: Process.whereis(OpenChat.Redis) != nil
 
+  def configured? do
+    case Config.redis_url() do
+      url when is_binary(url) -> url != ""
+      _other -> false
+    end
+  end
+
   def refresh(default_state, fallback_state) do
     if enabled?() do
       case command(["GET", revision_key()]) do
@@ -115,93 +122,153 @@ defmodule OpenChat.Store.RedisPersistence do
   end
 
   def with_locks(scopes, fun) when is_function(fun, 0) do
-    if enabled?() do
-      scopes = normalize_lock_scopes(scopes)
-      lock_value = Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false)
+    cond do
+      enabled?() ->
+        scopes = normalize_lock_scopes(scopes)
+        lock_value = Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false)
 
-      case acquire_locks(scopes, lock_value, []) do
-        {:ok, acquired} ->
-          try do
-            fun.()
-          after
-            release_locks(acquired, lock_value)
-          end
+        case acquire_locks(scopes, lock_value, []) do
+          {:ok, acquired} ->
+            try do
+              fun.()
+            after
+              release_locks(acquired, lock_value)
+            end
 
-        {:error, reason} ->
-          raise "Redis lock failed for #{inspect(scopes)}: #{inspect(reason)}"
-      end
-    else
-      fun.()
+          {:error, reason} ->
+            raise "Redis lock failed for #{inspect(scopes)}: #{inspect(reason)}"
+        end
+
+      configured?() ->
+        raise "Redis lock failed for #{inspect(scopes)}: Redis is configured but unavailable"
+
+      true ->
+        fun.()
     end
   end
 
   def take_counter(name, fallback_next) do
-    if enabled?() do
-      script = """
-      local current = redis.call("GET", KEYS[1])
-      if not current then
-        current = ARGV[1]
-      end
-      current = tonumber(current) or tonumber(ARGV[1]) or 1
-      redis.call("SET", KEYS[1], current + 1)
-      redis.call("SET", KEYS[2], ARGV[2])
-      redis.call("INCR", KEYS[3])
-      return current
-      """
+    cond do
+      enabled?() ->
+        script = """
+        local current = redis.call("GET", KEYS[1])
+        if not current then
+          current = ARGV[1]
+        end
+        current = tonumber(current) or tonumber(ARGV[1]) or 1
+        redis.call("SET", KEYS[1], current + 1)
+        redis.call("SET", KEYS[2], ARGV[2])
+        redis.call("INCR", KEYS[3])
+        return current
+        """
 
-      case command([
-             "EVAL",
-             script,
-             "3",
-             counter_key(name),
-             meta_key(),
-             revision_key(),
-             to_s(fallback_next),
-             @version
-           ]) do
-        {:ok, value} ->
-          to_int(value)
+        case command([
+               "EVAL",
+               script,
+               "3",
+               counter_key(name),
+               meta_key(),
+               revision_key(),
+               to_s(fallback_next),
+               @version
+             ]) do
+          {:ok, value} ->
+            to_int(value)
 
-        {:error, reason} ->
-          raise "Redis counter allocation failed for #{inspect(name)}: #{inspect(reason)}"
-      end
-    else
-      to_int(fallback_next)
+          {:error, reason} ->
+            raise "Redis counter allocation failed for #{inspect(name)}: #{inspect(reason)}"
+        end
+
+      configured?() ->
+        raise "Redis counter allocation failed for #{inspect(name)}: Redis is configured but unavailable"
+
+      true ->
+        to_int(fallback_next)
     end
   end
 
   def write([]), do: :ok
 
   def write(ops) do
-    if Process.whereis(OpenChat.Redis) do
-      ops
-      |> List.wrap()
-      |> Enum.flat_map(&atomic_op/1)
-      |> atomic_write()
-    else
-      :ok
+    cond do
+      enabled?() ->
+        ops
+        |> List.wrap()
+        |> Enum.flat_map(&atomic_op/1)
+        |> atomic_write()
+
+      configured?() ->
+        {:error, :redis_unavailable}
+
+      true ->
+        :ok
     end
   rescue
     e ->
-      Logger.warning("Redis persist failed: #{Exception.message(e)}")
-      :ok
+      {:error, Exception.message(e)}
+  catch
+    :exit, reason ->
+      {:error, reason}
   end
 
   def replace_all(state) do
-    if Process.whereis(OpenChat.Redis) do
-      delete_prefix_commands()
-      |> Kernel.++(state_commands(state))
-      |> Kernel.++([["SET", meta_key(), @version]])
-      |> Kernel.++([["INCR", revision_key()]])
-      |> run_pipeline()
-      |> remember_pipeline_full_revision()
-    else
-      :ok
+    cond do
+      enabled?() ->
+        delete_prefix_commands()
+        |> Kernel.++(state_commands(state))
+        |> Kernel.++([["SET", meta_key(), @version]])
+        |> Kernel.++([["INCR", revision_key()]])
+        |> run_pipeline()
+        |> remember_pipeline_full_revision()
+
+      configured?() ->
+        {:error, :redis_unavailable}
+
+      true ->
+        :ok
     end
   rescue
     e ->
-      Logger.warning("Redis replace failed: #{Exception.message(e)}")
-      :ok
+      {:error, Exception.message(e)}
+  catch
+    :exit, reason ->
+      {:error, reason}
+  end
+
+  def message_conversation_locks(id) do
+    id = to_s(id)
+
+    cond do
+      id == "" ->
+        []
+
+      not enabled?() and not configured?() ->
+        []
+
+      not enabled?() ->
+        raise "Redis message #{inspect(id)} lock lookup failed: Redis is configured but unavailable"
+
+      true ->
+        case command(["GET", record_key("messages", id)]) do
+          {:ok, nil} ->
+            []
+
+          {:ok, json} ->
+            case Jason.decode(json) do
+              {:ok, %{"conversationId" => conv_id}} when is_binary(conv_id) and conv_id != "" ->
+                [{:conversation, conv_id}]
+
+              {:ok, _message} ->
+                raise "Redis message #{inspect(id)} is missing conversationId"
+
+              {:error, reason} ->
+                raise "Redis message #{inspect(id)} could not be decoded: #{inspect(reason)}"
+            end
+
+          {:error, reason} ->
+            raise "Redis message #{inspect(id)} lock lookup failed: #{inspect(reason)}"
+        end
+    end
   end
 
   def put(bucket, id, value), do: {:put, to_s(bucket), to_s(id), value}
@@ -242,14 +309,14 @@ defmodule OpenChat.Store.RedisPersistence do
     case command(["GET", Config.redis_snapshot_key()]) do
       {:ok, nil} ->
         state = seed_fun.()
-        replace_all(state)
+        :ok = replace_all(state)
         state
 
       {:ok, json} ->
         case Jason.decode(json) do
           {:ok, state} ->
             state = Map.merge(default_state, state)
-            replace_all(state)
+            :ok = replace_all(state)
             state
 
           {:error, reason} ->
@@ -307,7 +374,7 @@ defmodule OpenChat.Store.RedisPersistence do
     :ok
   end
 
-  defp remember_pipeline_full_revision(_result), do: :ok
+  defp remember_pipeline_full_revision({:error, reason}), do: {:error, reason}
 
   defp remember_full_revision(revision) do
     Process.put(:open_chat_redis_full_revision, to_int(revision))
@@ -679,7 +746,7 @@ defmodule OpenChat.Store.RedisPersistence do
 
       {:error, reason} ->
         Logger.warning("Redis atomic persist failed: #{inspect(reason)}")
-        :ok
+        {:error, reason}
     end
   end
 

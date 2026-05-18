@@ -100,8 +100,17 @@ defmodule OpenChat.Store do
   def banned_group_members(guid, params \\ %{}),
     do: call({:banned_group_members, to_s(guid), params})
 
-  def send_message(sender_uid, params, uploads \\ [], opts \\ []),
-    do: call({:send_message, to_s(sender_uid), params, uploads, opts})
+  def send_message(sender_uid, params, uploads \\ [], opts \\ []) do
+    params = stringify_keys(params)
+
+    case prepare_message_payload(params, uploads) do
+      {:ok, data, type} ->
+        call({:send_message, to_s(sender_uid), params, data, type, opts})
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
 
   def edit_message(uid, id, params, opts \\ []),
     do: call({:edit_message, to_s(uid), to_s(id), params, opts})
@@ -781,6 +790,21 @@ defmodule OpenChat.Store do
     end
   end
 
+  def handle_call({:send_message, sender_uid, params, data, type, opts}, _from, state) do
+    params = stringify_keys(params)
+
+    case build_message(state, sender_uid, params, data, type, opts) do
+      {:error, error} ->
+        {:reply, {:error, error}, state}
+
+      {:ok, message, state} ->
+        {state, retention_ops} = MessageState.store_with_retention(state, message)
+        persist_ops(PersistenceOps.message_create(state, message) ++ retention_ops)
+        PubSubFanout.message(state, message)
+        {:reply, {:ok, message}, state}
+    end
+  end
+
   def handle_call({:edit_message, uid, id, params, opts}, _from, state) do
     params = stringify_keys(params)
 
@@ -1224,10 +1248,18 @@ defmodule OpenChat.Store do
   end
 
   defp persist(state) do
-    RedisPersistence.replace_all(state)
+    case RedisPersistence.replace_all(state) do
+      :ok -> :ok
+      {:error, reason} -> raise "Redis replace failed: #{inspect(reason)}"
+    end
   end
 
-  defp persist_ops(ops), do: RedisPersistence.write(ops)
+  defp persist_ops(ops) do
+    case RedisPersistence.write(ops) do
+      :ok -> :ok
+      {:error, reason} -> raise "Redis persist failed: #{inspect(reason)}"
+    end
+  end
 
   defp refresh_request_state(request, state, refresh) do
     state = RedisPersistence.refresh_keys(State.default(), state, refresh)
@@ -1393,6 +1425,13 @@ defmodule OpenChat.Store do
   # Message and conversation helpers
 
   defp build_message(state, sender_uid, params, uploads, opts) do
+    case prepare_message_payload(params, uploads) do
+      {:ok, data, type} -> build_message(state, sender_uid, params, data, type, opts)
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp build_message(state, sender_uid, params, data, type, opts) do
     receiver = params["receiver"] || params["receiverId"]
     receiver_type = params["receiverType"] || "user"
     receiver_type = receiver_type |> to_s() |> String.downcase()
@@ -1431,56 +1470,59 @@ defmodule OpenChat.Store do
           true ->
             {id, state} = take_counter(state, "next_id")
             now = Time.now()
-            type = params["type"] || MessageData.infer_type(params, uploads)
             category = params["category"] || "message"
 
-            case MessageData.normalise(params, uploads) do
-              {:ok, data} ->
-                message =
-                  Entities.message(%{
-                    "id" => id,
-                    "muid" => params["muid"],
-                    "sender" => sender["uid"],
-                    "receiver" => to_s(receiver),
-                    "receiverType" => receiver_type,
-                    "type" => type,
-                    "category" => category,
-                    "data" => %{},
-                    "sentAt" => now,
-                    "updatedAt" => now,
-                    "conversationId" => conversation_id_for(sender_uid, receiver_type, receiver),
-                    "resource" => params["resource"],
-                    "parentId" => params["parentId"] || params["parentMessageId"],
-                    "tags" => params["tags"]
-                  })
+            message =
+              Entities.message(%{
+                "id" => id,
+                "muid" => params["muid"],
+                "sender" => sender["uid"],
+                "receiver" => to_s(receiver),
+                "receiverType" => receiver_type,
+                "type" => type,
+                "category" => category,
+                "data" => %{},
+                "sentAt" => now,
+                "updatedAt" => now,
+                "conversationId" => conversation_id_for(sender_uid, receiver_type, receiver),
+                "resource" => params["resource"],
+                "parentId" => params["parentId"] || params["parentMessageId"],
+                "tags" => params["tags"]
+              })
 
-                parent_id = params["parentId"] || params["parentMessageId"]
+            parent_id = params["parentId"] || params["parentMessageId"]
 
-                case Access.parent_message(
-                       state,
-                       sender_uid,
-                       parent_id,
-                       message["conversationId"],
-                       admin?: admin?
-                     ) do
-                  :ok ->
-                    data =
-                      data
-                      |> Map.put_new("reactions", [])
-                      |> MessageData.put_entity("sender", "user", UserState.public(sender))
-                      |> MessageData.put_entity("receiver", receiver_type, receiver_entity)
+            case Access.parent_message(
+                   state,
+                   sender_uid,
+                   parent_id,
+                   message["conversationId"],
+                   admin?: admin?
+                 ) do
+              :ok ->
+                data =
+                  data
+                  |> Map.put_new("reactions", [])
+                  |> MessageData.put_entity("sender", "user", UserState.public(sender))
+                  |> MessageData.put_entity("receiver", receiver_type, receiver_entity)
 
-                    {:ok, message |> Map.put("data", data) |> MessageState.expose_metadata(),
-                     state}
-
-                  {:error, error} ->
-                    {:error, error}
-                end
+                {:ok, message |> Map.put("data", data) |> MessageState.expose_metadata(), state}
 
               {:error, error} ->
                 {:error, error}
             end
         end
+    end
+  end
+
+  defp prepare_message_payload(params, uploads) do
+    params = stringify_keys(params)
+    uploads = uploads |> List.wrap() |> List.flatten() |> Enum.reject(&is_nil/1)
+    type = params["type"] || MessageData.infer_type(params, uploads)
+
+    case MessageData.normalise(params, uploads) do
+      {:ok, data} -> {:ok, data, type}
+      {:error, error} -> {:error, error}
     end
   end
 

@@ -39,6 +39,8 @@ defmodule OpenChat.StoreRequestPlanTest do
     leave_plan = RequestPlan.build({:leave_group, "plan-room", "plan-user"})
 
     assert join_plan.mutating?
+    assert join_plan.locks == [{:conversation, "group_plan-room"}]
+    assert leave_plan.locks == [{:conversation, "group_plan-room"}]
 
     assert join_plan.refresh == [
              {"groups", "plan-room"},
@@ -227,6 +229,16 @@ defmodule OpenChat.StoreRequestPlanTest do
              {"conversation_latest", "group_user_alice_bob"},
              {"conversation_users", "group_user_alice_bob"}
            ]
+
+    group_send =
+      RequestPlan.build(
+        {:send_message, "alice",
+         %{"receiver" => "room", "receiverType" => "group", "data" => %{"text" => "hi"}}, %{},
+         "text", []}
+      )
+
+    assert group_send.locks == [{:conversation, "group_room"}]
+    assert RequestPlan.build({:delete_group, "room"}).locks == [{:conversation, "group_room"}]
 
     assert RequestPlan.build({:delete_group, "room"}).refresh == [
              {"groups", "room"},

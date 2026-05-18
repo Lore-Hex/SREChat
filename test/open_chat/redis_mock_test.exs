@@ -2,7 +2,7 @@ defmodule OpenChat.RedisMockTest do
   use ExUnit.Case, async: false
 
   alias OpenChat.{MockRedis, RedisBus}
-  alias OpenChat.Store.{RedisPersistence, State}
+  alias OpenChat.Store.{RedisPersistence, RequestPlan, State}
 
   setup do
     previous =
@@ -267,22 +267,50 @@ defmodule OpenChat.RedisMockTest do
     MockRedis.force_command({:error, :atomic_down})
 
     assert RedisPersistence.write([RedisPersistence.put("users", "safe", %{"uid" => "safe"})]) ==
-             :ok
+             {:error, :atomic_down}
 
     MockRedis.force_command({:raise, "atomic exploded"})
 
     assert RedisPersistence.write([RedisPersistence.put("users", "safe", %{"uid" => "safe"})]) ==
-             :ok
+             {:error, "atomic exploded"}
 
     MockRedis.force_command({:error, :scan_down})
     MockRedis.force_pipeline({:error, :pipeline_down})
-    assert RedisPersistence.replace_all(seed.()) == :ok
+    assert RedisPersistence.replace_all(seed.()) == {:error, :pipeline_down}
 
     MockRedis.force_command({:raise, "scan exploded"})
-    assert RedisPersistence.replace_all(seed.()) == :ok
+    assert RedisPersistence.replace_all(seed.()) == {:error, "scan exploded"}
 
     MockRedis.force_pipeline({:raise, "pipeline exploded"})
-    assert RedisPersistence.replace_all(seed.()) == :ok
+    assert RedisPersistence.replace_all(seed.()) == {:error, "pipeline exploded"}
+  end
+
+  test "message action plans lock the message and its Redis conversation" do
+    start_mock_redis()
+
+    assert :ok =
+             RedisPersistence.write([
+               RedisPersistence.put("messages", "message-action-1", %{
+                 "id" => "message-action-1",
+                 "conversationId" => "group_plan-room",
+                 "receiverType" => "group",
+                 "receiver" => "plan-room",
+                 "sender" => "alice"
+               })
+             ])
+
+    delete_plan = RequestPlan.build({:delete_message, "alice", "message-action-1", []})
+    edit_plan = RequestPlan.build({:edit_message, "alice", "message-action-1", %{}, []})
+
+    assert delete_plan.locks == [
+             {:message, "message-action-1"},
+             {:conversation, "group_plan-room"}
+           ]
+
+    assert edit_plan.locks == [
+             {:message, "message-action-1"},
+             {:conversation, "group_plan-room"}
+           ]
   end
 
   test "mock Redis covers bucket decode and refresh edge cases" do
@@ -448,6 +476,26 @@ defmodule OpenChat.RedisMockTest do
     })
 
     refute_receive {:comet_event, %{"text" => "self-origin"}}, 20
+  end
+
+  test "PubSub publishes to Redis before local delivery and surfaces publish failures" do
+    start_mock_redis()
+    terminate_redis_bus()
+    restart_redis_bus()
+
+    {:ok, _} = OpenChat.PubSub.subscribe({:user, "ordered"})
+
+    assert :ok = OpenChat.PubSub.broadcast({:user, "ordered"}, %{"text" => "first"})
+    assert [{_channel, payload}] = MockRedis.published()
+    assert Jason.decode!(payload)["event"] == %{"text" => "first"}
+    assert_receive {:comet_event, %{"text" => "first"}}
+
+    MockRedis.force_command({:error, :publish_down})
+
+    assert OpenChat.PubSub.broadcast({:user, "ordered"}, %{"text" => "local-only"}) ==
+             {:error, :publish_down}
+
+    assert_receive {:comet_event, %{"text" => "local-only"}}
   end
 
   test "RedisBus init handles already-started and failed pubsub clients" do

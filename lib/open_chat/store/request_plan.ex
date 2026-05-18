@@ -2,7 +2,7 @@ defmodule OpenChat.Store.RequestPlan do
   @moduledoc false
 
   alias OpenChat.Config
-  alias OpenChat.Store.{AuthTokens, Conversations}
+  alias OpenChat.Store.{AuthTokens, Conversations, RedisPersistence}
 
   defstruct mutating?: false, locks: [], refresh: []
 
@@ -109,25 +109,18 @@ defmodule OpenChat.Store.RequestPlan do
   def build({:banned_group_members, guid, _params}), do: read([{"banned", guid}])
 
   def build({:send_message, sender_uid, params, _uploads, _opts}) do
-    params = stringify_keys(params)
-    receiver = params["receiver"] || params["receiverId"]
-    receiver_type = receiver_type(params)
+    send_message_plan(sender_uid, params)
+  end
 
-    refresh =
-      [{"users", sender_uid}, {:counter, "next_id"}] ++
-        conversation_record_keys(sender_uid, receiver_type, receiver) ++
-        unread_count_keys(sender_uid, receiver_type, receiver) ++
-        parent_message_keys(params) ++
-        if(receiver_type == "group", do: group_keys(receiver), else: user_record_keys(receiver))
-
-    mutate(conversation_scope(sender_uid, receiver_type, receiver), refresh)
+  def build({:send_message, sender_uid, params, _data, _type, _opts}) do
+    send_message_plan(sender_uid, params)
   end
 
   def build({:edit_message, _uid, id, _params, _opts}),
-    do: mutate(message_scope(id), [{"messages", id}, {:counter, "next_id"}])
+    do: mutate(message_action_scope(id), [{"messages", id}, {:counter, "next_id"}])
 
   def build({:delete_message, _uid, id, _opts}),
-    do: mutate(message_scope(id), [{"messages", id}, {:counter, "next_id"}])
+    do: mutate(message_action_scope(id), [{"messages", id}, {:counter, "next_id"}])
 
   def build({:delete_conversation, conversation_id}),
     do: mutate([{:conversation, conversation_id}], conversation_delete_keys(conversation_id))
@@ -228,11 +221,11 @@ defmodule OpenChat.Store.RequestPlan do
   end
 
   def followup_refresh({:send_message, sender_uid, params, _uploads, _opts}, state) do
-    params = stringify_keys(params)
-    receiver = params["receiver"] || params["receiverId"]
-    receiver_type = receiver_type(params)
+    send_message_followup_refresh(sender_uid, params, state)
+  end
 
-    unread_count_keys(sender_uid, receiver_type, receiver, state)
+  def followup_refresh({:send_message, sender_uid, params, _data, _type, _opts}, state) do
+    send_message_followup_refresh(sender_uid, params, state)
   end
 
   def followup_refresh({:delete_conversation, conversation_id}, state) do
@@ -255,6 +248,29 @@ defmodule OpenChat.Store.RequestPlan do
 
   defp read(refresh), do: %__MODULE__{refresh: refresh}
   defp mutate(locks, refresh), do: %__MODULE__{mutating?: true, locks: locks, refresh: refresh}
+
+  defp send_message_followup_refresh(sender_uid, params, state) do
+    params = stringify_keys(params)
+    receiver = params["receiver"] || params["receiverId"]
+    receiver_type = receiver_type(params)
+
+    unread_count_keys(sender_uid, receiver_type, receiver, state)
+  end
+
+  defp send_message_plan(sender_uid, params) do
+    params = stringify_keys(params)
+    receiver = params["receiver"] || params["receiverId"]
+    receiver_type = receiver_type(params)
+
+    refresh =
+      [{"users", sender_uid}, {:counter, "next_id"}] ++
+        conversation_record_keys(sender_uid, receiver_type, receiver) ++
+        unread_count_keys(sender_uid, receiver_type, receiver) ++
+        parent_message_keys(params) ++
+        if(receiver_type == "group", do: group_keys(receiver), else: user_record_keys(receiver))
+
+    mutate(conversation_scope(sender_uid, receiver_type, receiver), refresh)
+  end
 
   defp receiver_type(params),
     do: (params["receiverType"] || "user") |> to_s() |> String.downcase()
@@ -347,9 +363,18 @@ defmodule OpenChat.Store.RequestPlan do
   end
 
   defp user_scope(value), do: if(blank?(value), do: [:global], else: [{:user, value}])
-  defp group_scope(value), do: if(blank?(value), do: [:global], else: [{:group, value}])
   defp token_scope(value), do: if(blank?(value), do: [:global], else: [{:token, value}])
   defp message_scope(value), do: if(blank?(value), do: [:global], else: [{:message, value}])
+
+  defp group_scope(value) do
+    if blank?(value),
+      do: [:global],
+      else: [{:conversation, Conversations.group_conversation_id(value)}]
+  end
+
+  defp message_action_scope(value) do
+    message_scope(value) ++ RedisPersistence.message_conversation_locks(value)
+  end
 
   defp token_refresh_keys(token) do
     token

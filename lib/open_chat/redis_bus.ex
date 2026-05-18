@@ -9,19 +9,23 @@ defmodule OpenChat.RedisBus do
   def start_link(_opts \\ []), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
   def publish(keys, event) do
-    if pid = Process.whereis(__MODULE__) do
-      GenServer.cast(pid, {:publish, List.wrap(keys), event})
-    end
-
-    :ok
+    call_publish({:publish, List.wrap(keys), event})
   end
 
   def publish_system(keys, event) do
-    if pid = Process.whereis(__MODULE__) do
-      GenServer.cast(pid, {:publish_system, List.wrap(keys), event})
-    end
+    call_publish({:publish_system, List.wrap(keys), event})
+  end
 
-    :ok
+  defp call_publish(message) do
+    case Process.whereis(__MODULE__) do
+      nil ->
+        :ok
+
+      pid ->
+        GenServer.call(pid, message, 5_000)
+    end
+  catch
+    :exit, reason -> {:error, reason}
   end
 
   @impl true
@@ -54,17 +58,12 @@ defmodule OpenChat.RedisBus do
   end
 
   @impl true
-  def handle_cast({:publish, _keys, _event}, %{pubsub: nil} = state), do: {:noreply, state}
-  def handle_cast({:publish_system, _keys, _event}, %{pubsub: nil} = state), do: {:noreply, state}
-
-  def handle_cast({:publish, keys, event}, state) do
-    publish_event(state, keys, event, false)
-    {:noreply, state}
+  def handle_call({:publish, keys, event}, _from, state) do
+    {:reply, publish_event(state, keys, event, false), state}
   end
 
-  def handle_cast({:publish_system, keys, event}, state) do
-    publish_event(state, keys, event, true)
-    {:noreply, state}
+  def handle_call({:publish_system, keys, event}, _from, state) do
+    {:reply, publish_event(state, keys, event, true), state}
   end
 
   defp publish_event(state, keys, event, system?) do
@@ -114,11 +113,11 @@ defmodule OpenChat.RedisBus do
     if Process.whereis(OpenChat.Redis) do
       case safe_command(["PUBLISH", channel, payload]) do
         {:ok, _subscribers} -> :ok
-        {:error, reason} -> Logger.debug("Redis event publish skipped: #{inspect(reason)}")
+        {:error, reason} -> {:error, reason}
       end
+    else
+      :ok
     end
-
-    :ok
   end
 
   defp safe_command(command) do
