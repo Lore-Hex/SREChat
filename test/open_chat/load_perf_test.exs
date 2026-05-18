@@ -6,6 +6,7 @@ defmodule OpenChat.LoadPerfTest do
   alias OpenChatWeb.Endpoint
 
   @moduletag :load
+  @reaction_emojis ["👍", "🔥", "🎧", "🎉"]
 
   setup do
     old_redis_url = Application.get_env(:open_chat, :redis_url)
@@ -335,6 +336,69 @@ defmodule OpenChat.LoadPerfTest do
     assert_http_user_history_recorded("uid:http-concurrent-b", "http-concurrent-a", sent)
   end
 
+  test "concurrent reaction load preserves rows, summaries, extension metadata, and history" do
+    users = env_int("OPENCHAT_LOAD_REACTION_USERS", 36)
+    messages = env_int("OPENCHAT_LOAD_REACTION_MESSAGES", 30)
+    concurrency = env_int("OPENCHAT_LOAD_REACTION_CONCURRENCY", 24)
+    minimum = env_int("OPENCHAT_MIN_REACTION_OP_PER_SEC", 100)
+    guid = "reaction-load-room"
+    uids = Enum.map(1..users, &"reaction-user-#{&1}")
+    viewer = List.first(uids)
+
+    sent = create_reaction_room_messages(guid, uids, messages, "reaction load")
+    ops = reaction_ops(sent, uids, @reaction_emojis)
+
+    {_added, add_seconds} =
+      timed(fn ->
+        concurrent_map(ops, concurrency, fn op ->
+          assert {:ok, _message} = Store.add_reaction(op.uid, op.message_id, op.reaction)
+          op
+        end)
+      end)
+
+    assert_rate("reaction adds", length(ops), add_seconds, minimum)
+    assert_group_reaction_state(OpenChat.Store, viewer, guid, sent, ops)
+
+    remove_ops = Enum.filter(ops, &(rem(&1.index, 5) == 0))
+
+    {_removed, remove_seconds} =
+      timed(fn ->
+        concurrent_map(remove_ops, concurrency, fn op ->
+          assert {:ok, _message} = Store.remove_reaction(op.uid, op.message_id, op.reaction)
+          op
+        end)
+      end)
+
+    after_remove = reaction_ops_minus(ops, remove_ops)
+    assert_rate("reaction removes", length(remove_ops), remove_seconds, minimum)
+    assert_group_reaction_state(OpenChat.Store, viewer, guid, sent, after_remove)
+
+    toggle_remove_ops = Enum.filter(after_remove, &(rem(&1.index, 7) == 0))
+    toggle_add_ops = alternate_reaction_ops(sent, uids, "🚀", 4)
+
+    {_toggled, toggle_seconds} =
+      timed(fn ->
+        concurrent_map(toggle_remove_ops ++ toggle_add_ops, concurrency, fn op ->
+          assert {:ok, _message} = Store.toggle_reaction(op.uid, op.message_id, op.reaction)
+          op
+        end)
+      end)
+
+    final_ops =
+      after_remove
+      |> reaction_ops_minus(toggle_remove_ops)
+      |> Kernel.++(toggle_add_ops)
+
+    assert_rate(
+      "reaction toggles",
+      length(toggle_remove_ops) + length(toggle_add_ops),
+      toggle_seconds,
+      minimum
+    )
+
+    assert_group_reaction_state(OpenChat.Store, viewer, guid, sent, final_ops)
+  end
+
   test "Redis write-through load uses scoped refresh and monotonic counters" do
     with_redis(fn context ->
       messages = env_int("OPENCHAT_LOAD_REDIS_MESSAGES", 300)
@@ -580,6 +644,105 @@ defmodule OpenChat.LoadPerfTest do
     end)
   end
 
+  test "Redis peer reaction load preserves final state across stores and Redis" do
+    with_redis(fn context ->
+      users = env_int("OPENCHAT_LOAD_REDIS_REACTION_USERS", 24)
+      messages = env_int("OPENCHAT_LOAD_REDIS_REACTION_MESSAGES", 16)
+      concurrency = env_int("OPENCHAT_LOAD_REDIS_REACTION_CONCURRENCY", 16)
+      minimum = env_int("OPENCHAT_MIN_REDIS_REACTION_OP_PER_SEC", 20)
+      guid = "redis-reaction-room"
+      uids = Enum.map(1..users, &"redis-reaction-user-#{&1}")
+      viewer = List.first(uids)
+
+      sent = create_reaction_room_messages(guid, uids, messages, "redis reaction")
+      peer = start_peer_store!()
+
+      try do
+        ops = reaction_ops(sent, uids, @reaction_emojis)
+
+        {_added, add_seconds} =
+          timed(fn ->
+            concurrent_map(ops, concurrency, fn op ->
+              if rem(op.index, 2) == 0 do
+                assert {:ok, _message} = Store.add_reaction(op.uid, op.message_id, op.reaction)
+              else
+                assert {:ok, _message} =
+                         Store.call_on(peer, {:add_reaction, op.uid, op.message_id, op.reaction})
+              end
+
+              op
+            end)
+          end)
+
+        assert_rate("Redis peer reaction adds", length(ops), add_seconds, minimum)
+        assert_group_reaction_state(OpenChat.Store, viewer, guid, sent, ops)
+        assert_group_reaction_state(peer, viewer, guid, sent, ops)
+        assert_redis_reactions_recorded(context, viewer, sent, ops)
+
+        remove_ops = Enum.filter(ops, &(rem(&1.index, 6) == 0))
+
+        toggle_remove_ops =
+          ops |> reaction_ops_minus(remove_ops) |> Enum.filter(&(rem(&1.index, 11) == 0))
+
+        toggle_add_ops = alternate_reaction_ops(sent, uids, "💿", 3)
+
+        {_changed, change_seconds} =
+          timed(fn ->
+            concurrent_map(
+              remove_ops ++ toggle_remove_ops ++ toggle_add_ops,
+              concurrency,
+              fn op ->
+                cond do
+                  op in remove_ops and rem(op.index, 2) == 0 ->
+                    assert {:ok, _message} =
+                             Store.call_on(
+                               peer,
+                               {:remove_reaction, op.uid, op.message_id, op.reaction}
+                             )
+
+                  op in remove_ops ->
+                    assert {:ok, _message} =
+                             Store.remove_reaction(op.uid, op.message_id, op.reaction)
+
+                  rem(op.index, 2) == 0 ->
+                    assert {:ok, _message} =
+                             Store.call_on(
+                               peer,
+                               {:toggle_reaction, op.uid, op.message_id, op.reaction}
+                             )
+
+                  true ->
+                    assert {:ok, _message} =
+                             Store.toggle_reaction(op.uid, op.message_id, op.reaction)
+                end
+
+                op
+              end
+            )
+          end)
+
+        final_ops =
+          ops
+          |> reaction_ops_minus(remove_ops)
+          |> reaction_ops_minus(toggle_remove_ops)
+          |> Kernel.++(toggle_add_ops)
+
+        assert_rate(
+          "Redis peer reaction removes/toggles",
+          length(remove_ops) + length(toggle_remove_ops) + length(toggle_add_ops),
+          change_seconds,
+          minimum
+        )
+
+        assert_group_reaction_state(OpenChat.Store, viewer, guid, sent, final_ops)
+        assert_group_reaction_state(peer, viewer, guid, sent, final_ops)
+        assert_redis_reactions_recorded(context, viewer, sent, final_ops)
+      after
+        stop_peer_store(peer)
+      end
+    end)
+  end
+
   defp assert_direct_histories_recorded(messages),
     do: assert_direct_histories_recorded(OpenChat.Store, messages)
 
@@ -625,6 +788,183 @@ defmodule OpenChat.LoadPerfTest do
       assert redis_json(context, "messages", message["id"]) |> message_signature() ==
                message_signature(message)
     end)
+  end
+
+  defp create_reaction_room_messages(guid, uids, count, prefix) do
+    assert {:ok, _group} = Store.upsert_group(%{"guid" => guid, "type" => "public"})
+    assert {:ok, _members} = Store.add_group_members(guid, uids)
+
+    Enum.map(1..count, fn i ->
+      sender = Enum.at(uids, rem(i, length(uids)))
+
+      assert {:ok, message} =
+               Store.send_message(sender, %{
+                 "receiver" => guid,
+                 "receiverType" => "group",
+                 "type" => "text",
+                 "data" => %{"text" => "#{prefix} #{i}"}
+               })
+
+      message
+    end)
+  end
+
+  defp reaction_ops(messages, uids, emojis) do
+    for {message, message_index} <- Enum.with_index(messages),
+        {uid, uid_index} <- Enum.with_index(uids) do
+      %{
+        index: message_index * length(uids) + uid_index,
+        message_id: to_s(message["id"]),
+        uid: uid,
+        reaction: Enum.at(emojis, rem(message_index + uid_index, length(emojis)))
+      }
+    end
+  end
+
+  defp alternate_reaction_ops(messages, uids, reaction, users_per_message) do
+    users = Enum.take(uids, min(users_per_message, length(uids)))
+
+    for {message, message_index} <- Enum.with_index(messages),
+        {uid, uid_index} <- Enum.with_index(users) do
+      %{
+        index: 1_000_000 + message_index * length(users) + uid_index,
+        message_id: to_s(message["id"]),
+        uid: uid,
+        reaction: reaction
+      }
+    end
+  end
+
+  defp reaction_ops_minus(ops, remove_ops) do
+    remove_keys = remove_ops |> Enum.map(&reaction_key/1) |> MapSet.new()
+    Enum.reject(ops, &(reaction_key(&1) in remove_keys))
+  end
+
+  defp reaction_key(op), do: {to_s(op.message_id), to_s(op.uid), to_s(op.reaction)}
+
+  defp assert_group_reaction_state(server, viewer_uid, guid, messages, expected_ops) do
+    history_by_id =
+      server
+      |> fetch_all_group_messages(viewer_uid, guid)
+      |> Map.new(fn message -> {to_s(message["id"]), message} end)
+
+    expected_by_message = Enum.group_by(expected_ops, &to_s(&1.message_id))
+
+    Enum.each(messages, fn message ->
+      message_id = to_s(message["id"])
+      expected = Map.get(expected_by_message, message_id, [])
+
+      assert {:ok, rows} = store_call(server, {:reactions, viewer_uid, message_id, nil})
+      assert_reaction_rows(rows, expected, viewer_uid)
+
+      assert {:ok, fetched} = store_call(server, {:get_message_for, viewer_uid, message_id, []})
+      assert_reaction_message_wire(fetched, expected, viewer_uid)
+      assert_reaction_message_wire(Map.fetch!(history_by_id, message_id), expected, viewer_uid)
+    end)
+  end
+
+  defp assert_reaction_rows(rows, expected, viewer_uid) do
+    actual =
+      rows
+      |> Enum.map(fn row -> {to_s(row["uid"]), to_s(row["reaction"])} end)
+      |> MapSet.new()
+
+    expected_set =
+      expected
+      |> Enum.map(fn op -> {to_s(op.uid), to_s(op.reaction)} end)
+      |> MapSet.new()
+
+    assert actual == expected_set
+
+    Enum.each(rows, fn row ->
+      assert row["reactedByMe"] == (to_s(row["uid"]) == to_s(viewer_uid))
+      assert to_s(row["messageId"]) != ""
+      assert to_int(row["reactedAt"]) > 0
+      assert get_in(row, ["reactedBy", "uid"]) == to_s(row["uid"])
+    end)
+  end
+
+  defp assert_reaction_message_wire(message, expected, viewer_uid, opts \\ []) do
+    check_viewer? = Keyword.get(opts, :check_viewer?, true)
+
+    expected_counts =
+      expected
+      |> Enum.frequencies_by(&to_s(&1.reaction))
+
+    actual_summaries = get_in(message, ["data", "reactions"]) || []
+    actual_counts = Map.new(actual_summaries, &{to_s(&1["reaction"]), &1["count"]})
+    assert actual_counts == expected_counts
+
+    if check_viewer? do
+      Enum.each(actual_summaries, fn summary ->
+        reaction = to_s(summary["reaction"])
+
+        reacted_by_me? =
+          Enum.any?(
+            expected,
+            &(to_s(&1.uid) == to_s(viewer_uid) and to_s(&1.reaction) == reaction)
+          )
+
+        assert summary["reactedByMe"] == reacted_by_me?
+      end)
+    end
+
+    metadata = message["metadata"] || get_in(message, ["data", "metadata"]) || %{}
+    extension = get_in(metadata, ["@injected", "extensions", "reactions"])
+
+    if expected == [] do
+      refute extension
+    else
+      assert extension
+
+      assert extension |> Map.keys() |> Enum.sort() ==
+               expected_counts |> Map.keys() |> Enum.sort()
+
+      expected
+      |> Enum.group_by(&to_s(&1.reaction))
+      |> Enum.each(fn {reaction, ops} ->
+        users = extension[reaction] || %{}
+        assert users |> Map.keys() |> Enum.sort() == ops |> Enum.map(&to_s(&1.uid)) |> Enum.sort()
+
+        Enum.each(ops, fn op ->
+          assert get_in(users, [to_s(op.uid), "name"])
+        end)
+      end)
+    end
+  end
+
+  defp assert_redis_reactions_recorded(context, viewer_uid, messages, expected_ops) do
+    expected_by_message = Enum.group_by(expected_ops, &to_s(&1.message_id))
+    expected_reacted_ids = expected_by_message |> Map.keys() |> MapSet.new()
+    redis_reacted_ids = context |> redis_members("index", "reactions") |> MapSet.new()
+    assert redis_reacted_ids == expected_reacted_ids
+
+    Enum.each(messages, fn message ->
+      message_id = to_s(message["id"])
+      expected = Map.get(expected_by_message, message_id, [])
+      redis_reactions = redis_json(context, "reactions", message_id)
+      redis_message = redis_json(context, "messages", message_id)
+
+      if expected == [] do
+        assert redis_reactions in [nil, %{}]
+      else
+        assert redis_reaction_set(redis_reactions) ==
+                 expected
+                 |> Enum.map(fn op -> {to_s(op.uid), to_s(op.reaction)} end)
+                 |> MapSet.new()
+      end
+
+      assert_reaction_message_wire(redis_message, expected, viewer_uid, check_viewer?: false)
+    end)
+  end
+
+  defp redis_reaction_set(redis_reactions) do
+    redis_reactions
+    |> Kernel.||(%{})
+    |> Enum.flat_map(fn {reaction, by_uid} ->
+      Enum.map(by_uid || %{}, fn {uid, _row} -> {to_s(uid), to_s(reaction)} end)
+    end)
+    |> MapSet.new()
   end
 
   defp fetch_all_user_messages(server, uid, peer_uid) do

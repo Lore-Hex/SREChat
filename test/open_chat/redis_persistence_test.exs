@@ -763,6 +763,57 @@ defmodule OpenChat.RedisPersistenceTest do
     end)
   end
 
+  test "message history refreshes Redis reactions for loaded conversation messages",
+       context do
+    with_redis(context, fn ->
+      now = OpenChat.Time.now()
+      conv_id = Conversations.user_conversation_id("react-history-a", "react-history-b")
+
+      message = %{
+        "id" => 7101,
+        "sender" => "react-history-b",
+        "receiver" => "react-history-a",
+        "receiverType" => "user",
+        "type" => "text",
+        "category" => "message",
+        "data" => %{"text" => "reaction history", "reactions" => []},
+        "sentAt" => now,
+        "updatedAt" => now,
+        "conversationId" => conv_id
+      }
+
+      reaction = %{
+        "id" => 8101,
+        "messageId" => 7101,
+        "reaction" => "🎧",
+        "uid" => "react-history-b",
+        "reactedAt" => now,
+        "reactedBy" => %{"uid" => "react-history-b", "name" => "React History B"}
+      }
+
+      redis_put_json(context, ["messages", "7101"], message)
+      redis_put_json(context, ["reactions", "7101"], %{"🎧" => %{"react-history-b" => reaction}})
+      redis_put_json(context, ["conversation_messages", conv_id], ["7101"])
+
+      assert {:ok, [fetched]} =
+               Store.messages_for_user("react-history-a", "react-history-b", %{"limit" => 10})
+
+      assert get_in(fetched, ["data", "reactions"]) == [
+               %{"reaction" => "🎧", "count" => 1, "reactedByMe" => false}
+             ]
+
+      assert get_in(fetched, [
+               "metadata",
+               "@injected",
+               "extensions",
+               "reactions",
+               "🎧",
+               "react-history-b",
+               "name"
+             ]) == "React History B"
+    end)
+  end
+
   test "Redis write-through trims retained group histories and evicted message keys",
        context do
     with_redis(context, fn ->

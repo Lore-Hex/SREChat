@@ -478,7 +478,18 @@ defmodule OpenChat.Store.RedisPersistence do
 
     state
     |> read_records(message_keys)
+    |> read_related_reactions(message_keys)
     |> read_related_message_participants(message_keys)
+  end
+
+  defp read_related_reactions(state, message_keys) do
+    reaction_keys =
+      message_keys
+      |> Enum.map(fn {_bucket, id} -> {"reactions", to_s(id)} end)
+      |> Enum.reject(fn {_bucket, id} -> id == "" end)
+      |> Enum.uniq()
+
+    read_records(state, reaction_keys)
   end
 
   defp read_related_token_users(state, record_keys) do
