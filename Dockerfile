@@ -11,7 +11,6 @@ RUN mix local.hex --force && mix local.rebar --force && mix deps.get --only prod
 
 COPY config ./config
 COPY lib ./lib
-COPY priv ./priv
 RUN mix compile
 
 EXPOSE 4000
