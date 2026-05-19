@@ -12,9 +12,11 @@ defmodule OpenChat.MediaTest do
     old_s3_bucket = Application.get_env(:open_chat, :s3_bucket)
     old_s3_client = Application.get_env(:open_chat, :s3_client)
     old_s3_ttl = Application.get_env(:open_chat, :s3_presigned_url_ttl_seconds)
+    old_allow_local = Application.get_env(:open_chat, :allow_local_media_storage)
     old_public_media_base_url = Application.get_env(:open_chat, :public_media_base_url)
     Application.put_env(:open_chat, :upload_dir, upload_dir)
     Application.put_env(:open_chat, :media_storage, "local")
+    Application.put_env(:open_chat, :allow_local_media_storage, true)
     OpenChat.MockS3.reset()
 
     on_exit(fn ->
@@ -24,6 +26,7 @@ defmodule OpenChat.MediaTest do
       Application.put_env(:open_chat, :s3_bucket, old_s3_bucket)
       Application.put_env(:open_chat, :s3_client, old_s3_client)
       Application.put_env(:open_chat, :s3_presigned_url_ttl_seconds, old_s3_ttl)
+      restore_app_env(:allow_local_media_storage, old_allow_local)
       Application.put_env(:open_chat, :public_media_base_url, old_public_media_base_url)
       OpenChat.MockS3.reset()
     end)
@@ -182,6 +185,52 @@ defmodule OpenChat.MediaTest do
     Application.put_env(:open_chat, :upload_allowed_mime_types, old_allowed)
   end
 
+  test "local media storage is disabled when the environment forbids it" do
+    Application.put_env(:open_chat, :allow_local_media_storage, false)
+
+    upload = %Plug.Upload{
+      path: "missing-local-source.txt",
+      filename: "mock.txt",
+      content_type: "text/plain"
+    }
+
+    assert {:error, error} = Media.persist_upload(upload)
+    assert error["code"] == "ERR_UPLOAD_FAILED"
+    assert error["message"] =~ "Local media storage is disabled"
+
+    assert {:error, :not_found} = Media.fetch("abc123456-mock.txt")
+  end
+
+  test "unknown media storage modes do not fall back to local disk" do
+    Application.put_env(:open_chat, :media_storage, "shared-nfs")
+
+    upload = %Plug.Upload{
+      path: "missing-shared-nfs-source.txt",
+      filename: "mock.txt",
+      content_type: "text/plain"
+    }
+
+    assert {:error, error} = Media.persist_upload(upload)
+    assert error["code"] == "ERR_UPLOAD_FAILED"
+    assert error["message"] == "Unsupported media storage mode."
+    assert error["details"]["mediaStorage"] == "shared-nfs"
+  end
+
+  test "s3 media storage requires a bucket before reading upload temp files" do
+    Application.put_env(:open_chat, :media_storage, "s3")
+    Application.delete_env(:open_chat, :s3_bucket)
+
+    upload = %Plug.Upload{
+      path: "missing-s3-source.txt",
+      filename: "mock.txt",
+      content_type: "text/plain"
+    }
+
+    assert {:error, error} = Media.persist_upload(upload)
+    assert error["code"] == "ERR_UPLOAD_FAILED"
+    assert error["message"] == "S3 bucket is not configured."
+  end
+
   test "media_url formats correctly" do
     assert Media.media_url("test.jpg") == "/media/test.jpg"
     assert Media.media_url("space test.jpg") == "/media/space%20test.jpg"
@@ -202,4 +251,7 @@ defmodule OpenChat.MediaTest do
     refute Media.stored_name?("short-f.txt")
     refute Media.stored_name?("no_dash.txt")
   end
+
+  defp restore_app_env(key, nil), do: Application.delete_env(:open_chat, key)
+  defp restore_app_env(key, value), do: Application.put_env(:open_chat, key, value)
 end

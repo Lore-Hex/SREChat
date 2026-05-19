@@ -7,7 +7,8 @@ defmodule OpenChat.Media do
     filename = safe_filename(upload.filename)
     mime = media_type(upload.content_type, filename)
 
-    with {:ok, stat} <- File.stat(upload.path),
+    with :ok <- validate_storage_config(),
+         {:ok, stat} <- File.stat(upload.path),
          :ok <- validate_size(stat.size),
          :ok <- validate_mime(mime),
          {:ok, stored_name} <- store(upload.path, filename, mime) do
@@ -71,7 +72,8 @@ defmodule OpenChat.Media do
     with :ok <- validate_stored_name(stored_name) do
       case media_storage() do
         "s3" -> fetch_s3(stored_name)
-        _local -> fetch_local(stored_name)
+        "local" -> fetch_local(stored_name)
+        _other -> {:error, :not_found}
       end
     end
   end
@@ -209,22 +211,48 @@ defmodule OpenChat.Media do
     end
   end
 
+  defp validate_storage_config do
+    case media_storage() do
+      "s3" ->
+        if blank?(Config.s3_bucket()) do
+          {:error, Errors.error("ERR_UPLOAD_FAILED", "S3 bucket is not configured.")}
+        else
+          :ok
+        end
+
+      "local" ->
+        if Config.local_media_storage_allowed?() do
+          :ok
+        else
+          local_storage_disabled_error()
+        end
+
+      other ->
+        unsupported_storage_error(other)
+    end
+  end
+
   defp store(path, filename, mime) do
     id = Base.url_encode64(:crypto.strong_rand_bytes(10), padding: false)
     stored_name = id <> "-" <> filename
 
     case media_storage() do
       "s3" -> store_s3(path, stored_name, mime)
-      _local -> store_local(path, stored_name)
+      "local" -> store_local(path, stored_name)
+      other -> unsupported_storage_error(other)
     end
   end
 
   defp store_local(path, stored_name) do
-    dest = Path.join(Config.upload_dir(), stored_name)
+    if Config.local_media_storage_allowed?() do
+      dest = Path.join(Config.upload_dir(), stored_name)
 
-    with :ok <- File.mkdir_p(Config.upload_dir()),
-         :ok <- File.cp(path, dest) do
-      {:ok, stored_name}
+      with :ok <- File.mkdir_p(Config.upload_dir()),
+           :ok <- File.cp(path, dest) do
+        {:ok, stored_name}
+      end
+    else
+      local_storage_disabled_error()
     end
   end
 
@@ -243,10 +271,14 @@ defmodule OpenChat.Media do
   end
 
   defp fetch_local(stored_name) do
-    path = Path.join(Config.upload_dir(), stored_name)
+    if Config.local_media_storage_allowed?() do
+      path = Path.join(Config.upload_dir(), stored_name)
 
-    if File.exists?(path) do
-      {:ok, %{path: path, content_type: MIME.from_path(path) || "application/octet-stream"}}
+      if File.exists?(path) do
+        {:ok, %{path: path, content_type: MIME.from_path(path) || "application/octet-stream"}}
+      else
+        {:error, :not_found}
+      end
     else
       {:error, :not_found}
     end
@@ -279,8 +311,6 @@ defmodule OpenChat.Media do
 
   defp media_storage do
     Config.media_storage()
-    |> String.trim()
-    |> String.downcase()
   end
 
   defp media_type(content_type, filename) do
@@ -306,6 +336,21 @@ defmodule OpenChat.Media do
       "" -> "upload"
       name -> name
     end
+  end
+
+  defp local_storage_disabled_error do
+    {:error,
+     Errors.error(
+       "ERR_UPLOAD_FAILED",
+       "Local media storage is disabled in this environment. Configure S3 media storage."
+     )}
+  end
+
+  defp unsupported_storage_error(storage) do
+    {:error,
+     Errors.error("ERR_UPLOAD_FAILED", "Unsupported media storage mode.", %{
+       "mediaStorage" => storage
+     })}
   end
 
   defp blank?(value), do: value in [nil, "", false]

@@ -22,7 +22,7 @@ OpenChat is a BEAM/Elixir replacement for the covered subset of CometChat. It is
 | Unread and receipt state | Unread count fetches, mark read, mark unread, delivered cursors, read cursor rewind | `GET /messages?unread=1&count=1`, `POST /users/:uid/conversation/read`, `POST /groups/:guid/conversation/read`, `DELETE /users/:uid/conversation/read`, `DELETE /groups/:guid/conversation/read`, `POST /users/:uid/conversation/delivered`, `POST /groups/:guid/conversation/delivered` | Covered by store/API/Redis tests and WebSocket receipt tests. SDK v4 can also send read/delivered receipts over WebSocket, which update receipt state. |
 | Conversations | List conversations, fetch user/group conversation, hide a conversation for the current user, delete a conversation by canonical conversation id | `GET /conversations`, `GET /users/:uid/conversation`, `GET /groups/:guid/conversation`, `DELETE /users/:uid/conversation`, `DELETE /groups/:guid/conversation`, `DELETE /conversations/:conversationId` | Covered by store/API/Redis tests and SDK conversation contract tests. |
 | Reactions | Native reaction add/remove/list/filter and `callExtension("reactions", ...)` fallback | `POST /messages/:messageId/reactions/:reaction`, `DELETE /messages/:messageId/reactions/:reaction`, `GET /messages/:messageId/reactions`, `GET /messages/:messageId/reactions/:reaction`, `MATCH /extensions/:name/*path`, `MATCH /v1/*path` | Covered by store/API tests. The real SDK extension contract is optional and requires wildcard HTTPS DNS. |
-| Media serving | Serve allowlisted uploaded media files with size limits and sanitized storage names | `GET /media/:file` | Covered by API and store regression tests. |
+| Media serving | Serve allowlisted uploaded media through private S3 signed URLs and a `/media/:file` S3 proxy fallback | `GET /media/:file` | Covered by API and store regression tests. Production does not use durable local media storage. |
 | WebSocket | SDK auth event, message/action/reaction broadcasts, read receipts, ping/malformed frame handling | `/`, `/ws`, `/socket` | Covered by WebSocket handler tests. |
 | Health checks | Plain HTTP process health | `GET /health` | Covered by API regression tests. |
 
@@ -110,11 +110,11 @@ Runtime environment variables are read from `config/runtime.exs`, so container a
 | `SEED_USERS_JSON` | built-in Alice/Bob/Carol without auth tokens | Initial users. List or map. Users may include `authToken`. |
 | `SEED_GROUPS_JSON` | built-in public `lobby` | Initial groups. List or map. |
 | `ACCEPT_UID_TOKENS` | `false` outside tests | Accept `uid:<uid>` developer tokens. Enable only for local contract tests. |
-| `MEDIA_STORAGE` | `local` | Upload backend. Use `s3` for AWS/private S3 storage. |
+| `MEDIA_STORAGE` | `s3` in prod, `local` otherwise | Upload backend. Production requires S3 and rejects local durable media storage. |
 | `S3_BUCKET` | unset | Private S3 bucket used when `MEDIA_STORAGE=s3`. |
 | `S3_REGION` | `AWS_REGION` | S3 bucket region. |
 | `S3_PRESIGNED_URL_TTL_SECONDS` | `3600` | Expiration for presigned S3 media URLs returned to clients. S3 caps this at seven days, and ECS role credentials may expire sooner. |
-| `UPLOAD_DIR` | `priv/static/uploads` | Uploaded media storage directory |
+| `UPLOAD_DIR` | `priv/static/uploads` outside prod, unset in prod | Local development upload directory. Ignored in production because local media storage is disabled. |
 | `REQUEST_BODY_LIMIT` | `10000000` | Max parsed request body size in bytes |
 | `UPLOAD_MAX_BYTES` | `10000000` | Max single uploaded media file size in bytes |
 | `UPLOAD_ALLOWED_MIME_TYPES` | image/audio/video/pdf/text allowlist | Comma-separated allowlist for stored uploads |

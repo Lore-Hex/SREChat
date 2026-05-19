@@ -11,6 +11,8 @@ default_group_message_retention_days = 30
 default_group_unread_fanout_limit = 1_000
 default_group_presence_ttl_seconds = 1_800
 default_group_max_presence = 5_000
+default_media_storage = if config_env() == :prod, do: "s3", else: "local"
+default_upload_dir = if config_env() == :prod, do: nil, else: "priv/static/uploads"
 
 default_upload_allowed_mime_types =
   "image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm,audio/mpeg,audio/mp4,audio/ogg,audio/webm,application/pdf,text/plain"
@@ -27,7 +29,7 @@ config :open_chat,
   region: "us",
   cors_allowed_origins: default_cors_allowed_origins,
   extension_domain: "localhost",
-  upload_dir: "priv/static/uploads",
+  upload_dir: default_upload_dir,
   request_body_limit: default_request_body_limit,
   upload_max_bytes: default_upload_max_bytes,
   upload_allowed_mime_types: default_upload_allowed_mime_types,
@@ -40,6 +42,8 @@ config :open_chat,
   dm_history_connect_grace_ms: 0,
   public_group_reads_enabled: true,
   public_group_joins_as_visits: false,
+  allow_local_media_storage: config_env() != :prod,
+  media_storage: default_media_storage,
   public_media_base_url: nil,
   s3_presigned_url_ttl_seconds: 3600,
   redis_url: nil,

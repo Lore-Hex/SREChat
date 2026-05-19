@@ -41,7 +41,16 @@ defmodule OpenChat.Config do
   def ws_port, do: Application.fetch_env!(:open_chat, :ws_port)
   def extension_domain, do: Application.fetch_env!(:open_chat, :extension_domain)
   def upload_dir, do: Application.fetch_env!(:open_chat, :upload_dir)
-  def media_storage, do: Application.get_env(:open_chat, :media_storage, "local") |> to_string()
+
+  def media_storage do
+    Application.get_env(:open_chat, :media_storage, "local")
+    |> to_string()
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  def local_media_storage_allowed?, do: boolean_env(:allow_local_media_storage, false)
+
   def s3_bucket, do: Application.get_env(:open_chat, :s3_bucket)
   def s3_presigned_url_ttl_seconds, do: integer_env(:s3_presigned_url_ttl_seconds, 3600)
 

@@ -12,6 +12,7 @@ default_group_unread_fanout_limit = 1_000
 default_group_presence_ttl_seconds = 1_800
 default_group_max_presence = 5_000
 default_dm_history_connect_grace_ms = if config_env() == :test, do: 0, else: 600
+default_media_storage = if config_env() == :prod, do: "s3", else: "local"
 
 default_upload_allowed_mime_types =
   "image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm,audio/mpeg,audio/mp4,audio/ogg,audio/webm,application/pdf,text/plain"
@@ -72,7 +73,11 @@ config :open_chat,
   region: System.get_env("COMETCHAT_REGION") || "us",
   cors_allowed_origins: System.get_env("CORS_ALLOWED_ORIGINS") || default_cors_allowed_origins,
   extension_domain: System.get_env("EXTENSION_DOMAIN") || public_host,
-  upload_dir: System.get_env("UPLOAD_DIR") || "priv/static/uploads",
+  upload_dir:
+    if(config_env() == :prod,
+      do: nil,
+      else: System.get_env("UPLOAD_DIR") || "priv/static/uploads"
+    ),
   request_body_limit: integer_env.("REQUEST_BODY_LIMIT", default_request_body_limit),
   upload_max_bytes: integer_env.("UPLOAD_MAX_BYTES", default_upload_max_bytes),
   upload_allowed_mime_types:
@@ -90,7 +95,8 @@ config :open_chat,
     non_negative_integer_env.("DM_HISTORY_CONNECT_GRACE_MS", default_dm_history_connect_grace_ms),
   public_group_reads_enabled: boolean_env.("PUBLIC_GROUP_READS_ENABLED", true),
   public_group_joins_as_visits: boolean_env.("PUBLIC_GROUP_JOINS_AS_VISITS", false),
-  media_storage: System.get_env("MEDIA_STORAGE") || "local",
+  allow_local_media_storage: config_env() != :prod,
+  media_storage: System.get_env("MEDIA_STORAGE") || default_media_storage,
   public_media_base_url: System.get_env("PUBLIC_MEDIA_BASE_URL"),
   s3_bucket: System.get_env("S3_BUCKET"),
   s3_region: System.get_env("S3_REGION") || System.get_env("AWS_REGION"),
