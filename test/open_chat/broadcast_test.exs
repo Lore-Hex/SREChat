@@ -59,4 +59,43 @@ defmodule OpenChat.BroadcastTest do
                     }},
                    500
   end
+
+  test "Store reactions broadcast visible message updates before reaction detail events" do
+    {:ok, msg} =
+      Store.send_message("alice", %{
+        "receiver" => "bob",
+        "receiverType" => "user",
+        "data" => %{"text" => "react fast"}
+      })
+
+    PubSub.subscribe({:user, "alice"})
+
+    on_exit(fn ->
+      PubSub.unsubscribe({:user, "alice"})
+    end)
+
+    {:ok, _} = Store.add_reaction("bob", msg["id"], "👍")
+
+    assert_receive {:comet_event,
+                    %{
+                      "type" => "message",
+                      "body" => %{
+                        "id" => id,
+                        "data" => %{"reactions" => [%{"reaction" => "👍", "count" => 1}]}
+                      }
+                    }},
+                   500
+
+    assert to_string(id) == to_string(msg["id"])
+
+    assert_receive {:comet_event,
+                    %{
+                      "type" => "reaction",
+                      "sender" => "bob",
+                      "body" => %{"messageId" => message_id, "reaction" => "👍"}
+                    }},
+                   500
+
+    assert to_string(message_id) == to_string(msg["id"])
+  end
 end
