@@ -89,42 +89,17 @@ All existing CometChat method calls remain the same.
 
 For a literal zero-code swizzle, deploy TLS and DNS so the SDK's existing CometChat hostnames resolve to this service. That is usually harder operationally than using `overrideClientHost`/`overrideAdminHost`.
 
-### Hangout deployed hosts
-
-Current AWS endpoints:
-
-| Environment | Client host | Admin host | Extension host |
-|---|---|---|---|
-| Staging | `openchat.staging.tt.fm/v3.0` | `openchat.staging.tt.fm/v3` | `reactions-us.staging.tt.fm` |
-| Production | `openchat.prod.tt.fm/v3.0` | `openchat.prod.tt.fm/v3` | `reactions-us.prod.tt.fm` |
-
-The `TTFM-Labs/tt2rn` React Native app uses the same builder API as the JavaScript SDK. Its OpenChat switchover should keep all CometChat call sites unchanged and only override the SDK hosts during initialization:
+The React Native SDK exposes the same host override methods:
 
 ```ts
 const appSettings = new CometChat.AppSettingsBuilder()
   .subscribePresenceForAllUsers()
   .setRegion("us")
-  .overrideClientHost(COMET_CHAT_CLIENT_HOST)
-  .overrideAdminHost(COMET_CHAT_ADMIN_HOST)
+  .overrideClientHost("chat.example.com/v3.0")
+  .overrideAdminHost("chat.example.com/v3")
   .autoEstablishSocketConnection(true)
   .build();
 ```
-
-For the mobile release switchover, `COMET_CHAT_CLIENT_HOST` should be `openchat.staging.tt.fm/v3.0` or `openchat.prod.tt.fm/v3.0`; `COMET_CHAT_ADMIN_HOST` should be the matching `/v3` host.
-
-### TT2RN mobile API coverage
-
-The active iOS/Android React Native app is `TTFM-Labs/tt2rn`; the older `ios-tt` and `android-tt` repos do not contain CometChat SDK usage. The mobile app uses:
-
-- SDK initialization with `AppSettingsBuilder`, auth-token login, and message/connection listeners.
-- `MessagesRequestBuilder().setGUID()` for room history and unread filtering.
-- `MessagesRequestBuilder().setUID()` for direct-message history.
-- `ConversationsRequestBuilder().setConversationType("user")` for DM inbox state.
-- Text, custom, and media sends through the existing SDK message constructors.
-- `CometChat.callExtension("reactions", "POST", "v1/react", ...)` for reaction toggles.
-- `getUnreadMessageCountForAllUsers(true)`, `markAsRead(message)`, `deleteMessage(messageId)`, `joinGroup(guid)`, `getUser(uid)`, `blockUsers`, `unblockUsers`, and `BlockedUsersRequestBuilder`.
-
-Those calls are covered by the OpenChat API surface listed above. Mobile releases should still be smoke-tested end to end against staging before submitting to Apple and Google, especially room fanout, DMs, media uploads, reactions, blocking, delete/moderation, unread counts, and reconnect/refetch behavior.
 
 ## Runtime configuration
 
