@@ -1357,6 +1357,45 @@ defmodule OpenChatWeb.ApiRegressionTest do
     assert stale.status == 401
   end
 
+  test "user-service deactivate/reactivate flow keeps cached auth token behavior compatible" do
+    # Mirrors user-service deactivateCometChatUser/reactivateCometChatUser. The
+    # service stores auth tokens in its own DB, so deactivation must reject that
+    # cached token, and reactivation must make the same token valid again.
+    uid = "ttfm-reactivate-user"
+
+    create =
+      admin_conn(:post, "/v3/users", %{
+        "uid" => uid,
+        "name" => "TTFM Reactivate",
+        "metadata" => Jason.encode!(%{"avatarId" => "av-react", "color" => "#13579b"})
+      })
+
+    assert create.status == 201
+    assert get_in(json(create), ["data", "metadata", "avatarId"]) == "av-react"
+
+    mint = admin_conn(:post, "/v3/users/#{uid}/auth_tokens")
+    assert mint.status == 200
+    token = get_in(json(mint), ["data", "authToken"])
+
+    assert auth_conn(:get, "/v3.0/me", %{}, token).status == 200
+
+    deactivate = admin_conn(:delete, "/v3/users/#{uid}", %{"permanent" => false})
+    assert deactivate.status == 200
+
+    deactivated_me = auth_conn(:get, "/v3.0/me", %{}, token)
+    assert deactivated_me.status == 401
+    assert json(deactivated_me)["error"]["code"] == "ERR_NO_AUTH"
+
+    reactivate = admin_conn(:put, "/v3/users", %{"uidsToActivate" => [uid]})
+    assert reactivate.status == 200
+    assert get_in(json(reactivate), ["data", "success", uid, "success"]) == true
+
+    me = auth_conn(:get, "/v3.0/me", %{}, token)
+    assert me.status == 200
+    assert get_in(json(me), ["data", "uid"]) == uid
+    assert get_in(json(me), ["data", "metadata", "color"]) == "#13579b"
+  end
+
   test "rooms-service admin flow: create group, set scopes (admins+moderators+participants), list by scope, ban/unban" do
     # Mirrors hangout/rooms-service/src/comet-chat/comet-chat.service.ts createGroupForRoom,
     # setUsersScope, getUsersWithScope, banUser, unBanUser, deleteRoomConversation.
@@ -1409,6 +1448,92 @@ defmodule OpenChatWeb.ApiRegressionTest do
 
     deleted = admin_conn(:delete, "/v3/groups/#{room}")
     assert deleted.status == 200
+  end
+
+  test "rooms-service deleteRoomConversation clears group history without deleting room or members" do
+    # Mirrors rooms-service deleteRoomConversation(roomUuid), which calls
+    # DELETE /v3/conversations/:roomUuid instead of the canonical group_<guid>
+    # conversation id. OpenChat must accept that alias and keep the room usable.
+    room = "ttfm-rooms-clean-1"
+
+    assert admin_conn(:post, "/v3/groups", %{
+             "guid" => room,
+             "name" => "da:#{room}",
+             "type" => "public"
+           }).status == 201
+
+    assert admin_conn(:post, "/v3/groups/#{room}/members", %{
+             "participants" => ["alice", "bob"]
+           }).status == 200
+
+    first =
+      auth_conn(
+        :post,
+        "/v3.0/messages",
+        %{
+          "receiver" => room,
+          "receiverType" => "group",
+          "type" => "text",
+          "category" => "message",
+          "data" => %{"text" => "before room cleanup"}
+        },
+        "uid:alice"
+      )
+
+    assert first.status == 201
+
+    history_before = auth_conn(:get, "/v3.0/groups/#{room}/messages?limit=10", %{}, "uid:bob")
+
+    assert Enum.any?(
+             json(history_before)["data"],
+             &(get_in(&1, ["data", "text"]) == "before room cleanup")
+           )
+
+    conversations_before =
+      auth_conn(:get, "/v3.0/conversations?conversationType=group", %{}, "uid:bob")
+
+    assert Enum.any?(
+             json(conversations_before)["data"],
+             &(get_in(&1, ["conversationWith", "guid"]) == room)
+           )
+
+    cleanup = admin_conn(:delete, "/v3/conversations/#{room}")
+    assert cleanup.status == 200
+    assert get_in(json(cleanup), ["data", "conversationId"]) == room
+
+    history_after = auth_conn(:get, "/v3.0/groups/#{room}/messages?limit=10", %{}, "uid:bob")
+    assert history_after.status == 200
+    assert json(history_after)["data"] == []
+
+    group = auth_conn(:get, "/v3.0/groups/#{room}", %{}, "uid:bob")
+    assert group.status == 200
+    assert get_in(json(group), ["data", "guid"]) == room
+
+    members = admin_conn(:get, "/v3/groups/#{room}/members")
+    assert members.status == 200
+    assert Enum.map(json(members)["data"], & &1["uid"]) |> Enum.sort() == ["alice", "bob"]
+
+    second =
+      auth_conn(
+        :post,
+        "/v3.0/messages",
+        %{
+          "receiver" => room,
+          "receiverType" => "group",
+          "type" => "text",
+          "category" => "message",
+          "data" => %{"text" => "after room cleanup"}
+        },
+        "uid:bob"
+      )
+
+    assert second.status == 201
+
+    history_reused = auth_conn(:get, "/v3.0/groups/#{room}/messages?limit=10", %{}, "uid:alice")
+
+    assert Enum.map(json(history_reused)["data"], &get_in(&1, ["data", "text"])) == [
+             "after room cleanup"
+           ]
   end
 
   test "socket remove-group-member: admin DELETE /v3/groups/:guid/members/:uid succeeds and is idempotent on 404" do
