@@ -82,6 +82,21 @@ test('long-lived SDK websocket clients keep receiving room events after idle per
         events: [],
         startedAt: Date.now(),
       };
+      const recordMessageEvent = (type: string, m: any) => {
+        const data = m.getData?.() || m.data || {};
+        const entity = data.entities?.on?.entity || m;
+        const entityData = entity.getData?.() || entity.data || {};
+        const metadata = entity.getMetadata?.() || entity.metadata || entityData.metadata || {};
+        (window as any).__soak.events.push({
+          type,
+          id: String(entity.getId?.() || entity.id || m.getId?.() || m.id || ''),
+          onId: String(data.entities?.on?.entity?.id || ''),
+          text: entityData.text,
+          reactions: metadata?.['@injected']?.extensions?.reactions || {},
+          updatedAt: entity.getUpdatedAt?.() ?? entity.updatedAt,
+          at: Date.now(),
+        });
+      };
 
       CometChat.addConnectionListener(
         'WS_SOAK_CONNECTION',
@@ -95,20 +110,8 @@ test('long-lived SDK websocket clients keep receiving room events after idle per
       CometChat.addMessageListener(
         'WS_SOAK_MESSAGES',
         new CometChat.MessageListener({
-          onTextMessageReceived: (m: any) =>
-            (window as any).__soak.events.push({
-              type: 'text',
-              id: String(m.getId()),
-              text: m.getData?.()?.text,
-              at: Date.now(),
-            }),
-          onMessageEdited: (m: any) =>
-            (window as any).__soak.events.push({
-              type: 'edited',
-              id: String(m.getId()),
-              onId: String(m.getData?.()?.entities?.on?.entity?.id || ''),
-              at: Date.now(),
-            }),
+          onTextMessageReceived: (m: any) => recordMessageEvent('text', m),
+          onMessageEdited: (m: any) => recordMessageEvent('edited', m),
           onMessageDeleted: (m: any) =>
             (window as any).__soak.events.push({
               type: 'deleted',
@@ -144,6 +147,20 @@ test('long-lived SDK websocket clients keep receiving room events after idle per
         events: [],
         startedAt: Date.now(),
       };
+      const recordMessageEvent = (type: string, m: any) => {
+        const data = m.getData?.() || m.data || {};
+        const entity = data.entities?.on?.entity || m;
+        const entityData = entity.getData?.() || entity.data || {};
+        const metadata = entity.getMetadata?.() || entity.metadata || entityData.metadata || {};
+        (window as any).__soak.events.push({
+          type,
+          id: String(entity.getId?.() || entity.id || m.getId?.() || m.id || ''),
+          text: entityData.text,
+          reactions: metadata?.['@injected']?.extensions?.reactions || {},
+          updatedAt: entity.getUpdatedAt?.() ?? entity.updatedAt,
+          at: Date.now(),
+        });
+      };
 
       CometChat.addConnectionListener(
         'WS_SOAK_ALICE_CONNECTION',
@@ -157,14 +174,8 @@ test('long-lived SDK websocket clients keep receiving room events after idle per
       CometChat.addMessageListener(
         'WS_SOAK_ALICE_MESSAGES',
         new CometChat.MessageListener({
-          onTextMessageReceived: (m: any) =>
-            (window as any).__soak.events.push({
-              type: 'text',
-              id: String(m.getId()),
-              text: m.getData?.()?.text,
-              reactions: m.getMetadata?.()?.['@injected']?.extensions?.reactions || {},
-              at: Date.now(),
-            }),
+          onTextMessageReceived: (m: any) => recordMessageEvent('text', m),
+          onMessageEdited: (m: any) => recordMessageEvent('edited', m),
         }),
       );
     },
@@ -215,7 +226,8 @@ test('long-lived SDK websocket clients keep receiving room events after idle per
       await alice.waitForFunction(
         ({ messageId, bobUid }) =>
           ((window as any).__soak.events || []).some(
-            (e: any) => e.id === String(messageId) && e.reactions?.['🎧']?.[bobUid]?.name,
+            (e: any) =>
+              e.type === 'edited' && e.id === String(messageId) && e.reactions?.['🎧']?.[bobUid]?.name,
           ),
         { messageId: message.id, bobUid },
         { timeout: 30_000 },
@@ -278,7 +290,8 @@ test('long-lived SDK websocket clients keep receiving room events after idle per
   expect(aliceResult.connection.filter((e: any) => e.type === 'disconnected')).toEqual([]);
   expect(
     aliceResult.reactedUpdates.some(
-      (e: any) => e.id === reactedMessage!.id && e.reactions?.['🎧']?.[bobUid]?.name,
+      (e: any) =>
+        e.type === 'edited' && e.id === reactedMessage!.id && e.reactions?.['🎧']?.[bobUid]?.name,
     ),
   ).toBe(true);
 

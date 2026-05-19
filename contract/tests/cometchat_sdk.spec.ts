@@ -553,30 +553,37 @@ test('snowy callExtension reactions with msgId/emoji keys (Hangout wire shape)',
   expect(result.first).toBe('🔥');
 });
 
-test('snowy callExtension reactions toggle and propagate through regular message listeners', async ({ browser }) => {
+test('snowy callExtension reactions toggle and propagate through message edit listeners', async ({ browser }) => {
   const bob = await browser.newPage();
   await loadSdk(bob, true);
   await bob.evaluate(async (token) => {
     const { CometChat } = window as any;
     await CometChat.login(token);
     (window as any).__reactionEvents = [];
+    const record = (kind: string, m: any) => {
+      const data = m.getData?.() || m.data || {};
+      const entity = data.entities?.on?.entity || m;
+      const entityData = entity.getData?.() || entity.data || {};
+      const metadata = entity.getMetadata?.() || entity.metadata || entityData.metadata || {};
+      (window as any).__reactionEvents.push({
+        kind,
+        id: String(entity.getId?.() || entity.id || m.getId?.() || m.id || ''),
+        reactions: metadata?.['@injected']?.extensions?.reactions || {},
+        updatedAt: entity.getUpdatedAt?.() ?? entity.updatedAt,
+      });
+    };
     CometChat.addMessageListener(
       'HANGOUT_REACTION_LISTENER',
       new CometChat.MessageListener({
-        onTextMessageReceived: (m: any) => {
-          const metadata = m.getMetadata?.() || {};
-          (window as any).__reactionEvents.push({
-            id: m.getId(),
-            reactions: metadata?.['@injected']?.extensions?.reactions || {},
-          });
-        },
+        onTextMessageReceived: (m: any) => record('text', m),
+        onMessageEdited: (m: any) => record('edited', m),
       })
     );
   }, BOB_TOKEN);
 
   const alice = await browser.newPage();
   await loadSdk(alice, false);
-  const msgId = await alice.evaluate(async (token) => {
+  const sent = await alice.evaluate(async (token) => {
     const { CometChat } = window as any;
     await CometChat.login(token);
     const msg = await CometChat.sendMessage(new CometChat.TextMessage('bob', 'snowy propagated reaction', 'user'));
@@ -584,16 +591,35 @@ test('snowy callExtension reactions toggle and propagate through regular message
       msgId: msg.getId(),
       emoji: '🎧',
     });
-    return msg.getId();
+    return {
+      msgId: String(msg.getId()),
+      updatedAt: msg.getUpdatedAt?.() ?? msg.updatedAt,
+    };
   }, ALICE_TOKEN);
 
   await bob.waitForFunction(
     ({ msgId }) => ((window as any).__reactionEvents || []).some((e: any) =>
-      String(e.id) === String(msgId) && e.reactions?.['🎧']?.alice?.name
+      e.kind === 'edited' && String(e.id) === String(msgId) && e.reactions?.['🎧']?.alice?.name
     ),
-    { msgId },
+    { msgId: sent.msgId },
     { timeout: 15_000 }
   );
+
+  const reactionEvent = await bob.evaluate((msgId) =>
+    ((window as any).__reactionEvents || []).find((e: any) =>
+      e.kind === 'edited' && String(e.id) === String(msgId) && e.reactions?.['🎧']?.alice?.name
+    ),
+    sent.msgId
+  );
+  const textReactionEvents = await bob.evaluate(
+    (msgId) =>
+      ((window as any).__reactionEvents || []).filter(
+        (e: any) => e.kind === 'text' && String(e.id) === String(msgId) && e.reactions?.['🎧'],
+      ).length,
+    sent.msgId
+  );
+  expect(reactionEvent.updatedAt).toBe(sent.updatedAt);
+  expect(textReactionEvents).toBe(0);
 
   await alice.evaluate(async (msgId) => {
     const { CometChat } = window as any;
@@ -601,7 +627,7 @@ test('snowy callExtension reactions toggle and propagate through regular message
       msgId,
       emoji: '🎧',
     });
-  }, msgId);
+  }, sent.msgId);
 
   const removed = await alice.evaluate(async (msgId) => {
     const { CometChat } = window as any;
@@ -611,7 +637,7 @@ test('snowy callExtension reactions toggle and propagate through regular message
     const request = builder.build();
     const page = await request.fetchPrevious();
     return page.map((r: any) => r.getReaction?.());
-  }, msgId);
+  }, sent.msgId);
 
   expect(removed).not.toContain('🎧');
 
@@ -643,10 +669,15 @@ test('snowy media and GIF-style custom message reactions survive live updates an
     }
     (window as any).__mixedReactionEvents = [];
     const record = (kind: string, m: any) => {
+      const data = m.getData?.() || m.data || {};
+      const entity = data.entities?.on?.entity || m;
+      const entityData = entity.getData?.() || entity.data || {};
+      const metadata = entity.getMetadata?.() || entity.metadata || entityData.metadata || {};
       (window as any).__mixedReactionEvents.push({
         kind,
-        id: String(m.getId()),
-        reactions: m.getMetadata?.()?.['@injected']?.extensions?.reactions || {},
+        id: String(entity.getId?.() || entity.id || m.getId?.() || m.id || ''),
+        reactions: metadata?.['@injected']?.extensions?.reactions || {},
+        updatedAt: entity.getUpdatedAt?.() ?? entity.updatedAt,
       });
     };
     CometChat.addMessageListener(
@@ -654,6 +685,7 @@ test('snowy media and GIF-style custom message reactions survive live updates an
       new CometChat.MessageListener({
         onCustomMessageReceived: (m: any) => record('custom', m),
         onMediaMessageReceived: (m: any) => record('media', m),
+        onMessageEdited: (m: any) => record('edited', m),
       })
     );
   }, { token: BOB_TOKEN, room });
@@ -708,17 +740,24 @@ test('snowy media and GIF-style custom message reactions survive live updates an
   await alice.evaluate(() => {
     const { CometChat } = window as any;
     (window as any).__mixedReactionEvents = [];
-    const record = (m: any) => {
+    const record = (kind: string, m: any) => {
+      const data = m.getData?.() || m.data || {};
+      const entity = data.entities?.on?.entity || m;
+      const entityData = entity.getData?.() || entity.data || {};
+      const metadata = entity.getMetadata?.() || entity.metadata || entityData.metadata || {};
       (window as any).__mixedReactionEvents.push({
-        id: String(m.getId()),
-        reactions: m.getMetadata?.()?.['@injected']?.extensions?.reactions || {},
+        kind,
+        id: String(entity.getId?.() || entity.id || m.getId?.() || m.id || ''),
+        reactions: metadata?.['@injected']?.extensions?.reactions || {},
+        updatedAt: entity.getUpdatedAt?.() ?? entity.updatedAt,
       });
     };
     CometChat.addMessageListener(
       'MIXED_REACTION_ALICE',
       new CometChat.MessageListener({
-        onCustomMessageReceived: record,
-        onMediaMessageReceived: record,
+        onCustomMessageReceived: (m: any) => record('custom', m),
+        onMediaMessageReceived: (m: any) => record('media', m),
+        onMessageEdited: (m: any) => record('edited', m),
       })
     );
   });
@@ -748,8 +787,8 @@ test('snowy media and GIF-style custom message reactions survive live updates an
   await alice.waitForFunction(
     ({ customId, mediaId }) => {
       const events = (window as any).__mixedReactionEvents || [];
-      return events.some((e: any) => e.id === customId && e.reactions?.['🔥']?.bob?.name)
-        && events.some((e: any) => e.id === mediaId && e.reactions?.['🎧']?.bob?.name);
+      return events.some((e: any) => e.kind === 'edited' && e.id === customId && e.reactions?.['🔥']?.bob?.name)
+        && events.some((e: any) => e.kind === 'edited' && e.id === mediaId && e.reactions?.['🎧']?.bob?.name);
     },
     sent,
     { timeout: 15_000 }

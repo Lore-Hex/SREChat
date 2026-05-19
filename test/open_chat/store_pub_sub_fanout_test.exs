@@ -55,7 +55,7 @@ defmodule OpenChat.StorePubSubFanoutTest do
                     }}
   end
 
-  test "message update broadcasts include the original sender for group reaction reconciliation" do
+  test "message update broadcasts edited actions without moving the original message" do
     state =
       State.default()
       |> put_in(["members", "room"], %{"alice" => %{}, "bob" => %{}})
@@ -68,15 +68,57 @@ defmodule OpenChat.StorePubSubFanoutTest do
       PubSub.unsubscribe({:user, "bob"})
     end)
 
-    PubSubFanout.message_update(state, %{
-      "id" => 2,
-      "sender" => "alice",
-      "receiver" => "room",
-      "receiverType" => "group"
-    })
+    PubSubFanout.message_update(
+      state,
+      %{
+        "id" => 2,
+        "sender" => "alice",
+        "receiver" => "room",
+        "receiverType" => "group",
+        "sentAt" => 100,
+        "updatedAt" => 100
+      },
+      "bob",
+      99
+    )
 
-    assert_receive {:comet_event, %{"type" => "message", "body" => %{"id" => 2}}}
-    assert_receive {:comet_event, %{"type" => "message", "body" => %{"id" => 2}}}
+    assert_receive {:comet_event,
+                    %{
+                      "type" => "message",
+                      "sender" => "bob",
+                      "body" => %{
+                        "id" => 99,
+                        "category" => "action",
+                        "data" => %{
+                          "action" => "edited",
+                          "entities" => %{
+                            "on" => %{
+                              "entity" => %{
+                                "id" => 2,
+                                "sender" => "alice",
+                                "updatedAt" => 100
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }}
+
+    assert_receive {:comet_event,
+                    %{
+                      "type" => "message",
+                      "sender" => "bob",
+                      "body" => %{
+                        "id" => 99,
+                        "category" => "action",
+                        "data" => %{
+                          "action" => "edited",
+                          "entities" => %{
+                            "on" => %{"entity" => %{"id" => 2, "updatedAt" => 100}}
+                          }
+                        }
+                      }
+                    }}
   end
 
   test "message broadcasts sign S3 media URLs at the socket edge" do

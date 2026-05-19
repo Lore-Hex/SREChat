@@ -2,7 +2,7 @@ defmodule OpenChat.Store.PubSubFanout do
   @moduledoc false
 
   alias OpenChat.{Config, Media}
-  alias OpenChat.Store.MessageData
+  alias OpenChat.Store.{MessageData, MessageState}
 
   def message(state, message) do
     message = message |> MessageData.ensure_media_wire_shape() |> Media.sign_urls()
@@ -20,17 +20,33 @@ defmodule OpenChat.Store.PubSubFanout do
     OpenChat.PubSub.broadcast(recipient_keys(state, message), event)
   end
 
-  def message_update(state, message) do
-    message = message |> MessageData.ensure_media_wire_shape() |> Media.sign_urls()
+  def message_update(state, message, actor_uid \\ nil, action_id \\ nil) do
+    receiver_entity =
+      MessageState.receiver_entity(state, message["receiverType"], message["receiver"])
+
+    message =
+      message
+      |> MessageData.ensure_media_wire_shape()
+      |> Media.sign_urls()
+
+    action =
+      MessageState.message_action(
+        action_id || message["id"],
+        state,
+        actor_uid || message["sender"],
+        message,
+        receiver_entity,
+        "edited"
+      )
 
     event = %{
       "appId" => Config.app_id(),
-      "receiver" => message["receiver"],
-      "receiverType" => message["receiverType"],
+      "receiver" => action["receiver"],
+      "receiverType" => action["receiverType"],
       "deviceId" => "server",
       "type" => "message",
-      "sender" => to_s(message["sender"]),
-      "body" => message
+      "sender" => to_s(action["sender"]),
+      "body" => action
     }
 
     OpenChat.PubSub.broadcast(update_recipient_keys(state, message), event)

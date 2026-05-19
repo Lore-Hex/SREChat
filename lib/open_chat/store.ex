@@ -1570,7 +1570,7 @@ defmodule OpenChat.Store do
         PersistenceOps.next_reaction_id(state)
     )
 
-    PubSubFanout.message_update(state, message)
+    PubSubFanout.message_update(state, message, uid, reaction_obj["id"])
     PubSubFanout.reaction(state, message, reaction_obj, "message_reaction_added", uid)
     {:reply, {:ok, reply_message}, state}
   end
@@ -1596,7 +1596,7 @@ defmodule OpenChat.Store do
       PersistenceOps.reactions(state, id) ++ [RedisPersistence.put("messages", id, message)]
     )
 
-    PubSubFanout.message_update(state, message)
+    PubSubFanout.message_update(state, message, uid, reaction_obj["id"])
     PubSubFanout.reaction(state, message, reaction_obj, "message_reaction_removed", uid)
     {:reply, {:ok, reply_message}, state}
   end

@@ -99,9 +99,11 @@ defmodule OpenChat.StoreTest do
 
     {:ok, reacted} = OpenChat.Store.add_reaction("bob", msg["id"], "👍")
     assert [%{"reaction" => "👍", "count" => 1}] = get_in(reacted, ["data", "reactions"])
+    assert reacted["updatedAt"] == msg["updatedAt"]
 
     {:ok, unreacted} = OpenChat.Store.remove_reaction("bob", msg["id"], "👍")
     assert get_in(unreacted, ["data", "reactions"]) == []
+    assert unreacted["updatedAt"] == msg["updatedAt"]
 
     {:ok, edited_action} =
       OpenChat.Store.edit_message("alice", msg["id"], %{

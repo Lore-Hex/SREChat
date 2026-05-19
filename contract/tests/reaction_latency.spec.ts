@@ -87,6 +87,20 @@ test('staging SDK room messages and reactions arrive quickly across two browser 
 
         (window as any).__latencyEvents = [];
         (window as any).__connectionEvents = [];
+        const recordMessageEvent = (type: string, m: any) => {
+          const data = m.getData?.() || m.data || {};
+          const entity = data.entities?.on?.entity || m;
+          const entityData = entity.getData?.() || entity.data || {};
+          const metadata = entity.getMetadata?.() || entity.metadata || entityData.metadata || {};
+          (window as any).__latencyEvents.push({
+            type,
+            id: String(entity.getId?.() || entity.id || m.getId?.() || m.id || ''),
+            text: entityData.text,
+            reactions: metadata?.['@injected']?.extensions?.reactions || {},
+            updatedAt: entity.getUpdatedAt?.() ?? entity.updatedAt,
+            at: Date.now(),
+          });
+        };
 
         CometChat.addConnectionListener(
           `${listenerId}_CONNECTION`,
@@ -100,14 +114,8 @@ test('staging SDK room messages and reactions arrive quickly across two browser 
         CometChat.addMessageListener(
           `${listenerId}_MESSAGES`,
           new CometChat.MessageListener({
-            onTextMessageReceived: (m: any) =>
-              (window as any).__latencyEvents.push({
-                type: 'text',
-                id: String(m.getId()),
-                text: m.getData?.()?.text,
-                reactions: m.getMetadata?.()?.['@injected']?.extensions?.reactions || {},
-                at: Date.now(),
-              }),
+            onTextMessageReceived: (m: any) => recordMessageEvent('text', m),
+            onMessageEdited: (m: any) => recordMessageEvent('edited', m),
             onMessageDeleted: (m: any) =>
               (window as any).__latencyEvents.push({
                 type: 'deleted',
@@ -167,7 +175,8 @@ test('staging SDK room messages and reactions arrive quickly across two browser 
       await alice.waitForFunction(
         ({ messageId, bobUid }) =>
           ((window as any).__latencyEvents || []).some(
-            (e: any) => e.id === String(messageId) && e.reactions?.['🎧']?.[bobUid]?.name,
+            (e: any) =>
+              e.type === 'edited' && e.id === String(messageId) && e.reactions?.['🎧']?.[bobUid]?.name,
           ),
         { messageId: message.id, bobUid },
         { timeout: 15_000 },
@@ -175,7 +184,8 @@ test('staging SDK room messages and reactions arrive quickly across two browser 
 
       const reactionAt = await alice.evaluate(({ messageId, bobUid }) => {
         const event = ((window as any).__latencyEvents || []).find(
-          (e: any) => e.id === String(messageId) && e.reactions?.['🎧']?.[bobUid]?.name,
+          (e: any) =>
+            e.type === 'edited' && e.id === String(messageId) && e.reactions?.['🎧']?.[bobUid]?.name,
         );
         return event?.at;
       }, { messageId: message.id, bobUid });
