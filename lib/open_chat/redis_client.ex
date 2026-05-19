@@ -3,6 +3,7 @@ defmodule OpenChat.RedisClient do
 
   def start_link(url, opts), do: redis_adapter().start_link(url, opts)
   def command(conn, command), do: redis_adapter().command(conn, command)
+  def command(conn, command, opts), do: redis_adapter().command(conn, command, opts)
   def pipeline(conn, commands), do: redis_adapter().pipeline(conn, commands)
 
   def pubsub_start_link(url, opts), do: pubsub_adapter().start_link(url, opts)

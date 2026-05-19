@@ -6,6 +6,9 @@ defmodule OpenChat.RedisBus do
 
   alias OpenChat.{Config, RedisClient}
 
+  @publisher_name OpenChat.RedisBusPublisher
+  @publish_timeout_ms 1_000
+
   def start_link(_opts \\ []), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
   def publish(keys, event) do
@@ -33,11 +36,14 @@ defmodule OpenChat.RedisBus do
     state = %{
       channel: channel(),
       origin: Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false),
+      publisher: nil,
       pubsub: nil
     }
 
     case Config.redis_url() do
       url when is_binary(url) and url != "" ->
+        state = %{state | publisher: start_publisher(url)}
+
         case RedisClient.pubsub_start_link(url, name: OpenChat.RedisPubSub) do
           {:ok, pubsub} ->
             {:ok, _ref} = RedisClient.pubsub_subscribe(pubsub, state.channel, self())
@@ -75,7 +81,7 @@ defmodule OpenChat.RedisBus do
         "system" => system?
       })
 
-    publish_to_redis(state.channel, payload)
+    publish_to_redis(state, payload)
   end
 
   @impl true
@@ -109,19 +115,33 @@ defmodule OpenChat.RedisBus do
 
   defp channel, do: Config.redis_key_prefix() <> ":events"
 
-  defp publish_to_redis(channel, payload) do
-    if Process.whereis(OpenChat.Redis) do
-      case safe_command(["PUBLISH", channel, payload]) do
-        {:ok, _subscribers} -> :ok
-        {:error, reason} -> {:error, reason}
-      end
-    else
-      :ok
+  defp start_publisher(url) do
+    case RedisClient.start_link(url, name: @publisher_name) do
+      {:ok, publisher} ->
+        publisher
+
+      {:error, {:already_started, publisher}} ->
+        publisher
+
+      {:error, reason} ->
+        Logger.warning("Redis event publisher disabled: #{inspect(reason)}")
+        nil
     end
   end
 
-  defp safe_command(command) do
-    RedisClient.command(OpenChat.Redis, command)
+  defp publish_to_redis(%{publisher: publisher}, payload) when is_pid(publisher) do
+    case safe_command(publisher, ["PUBLISH", channel(), payload]) do
+      {:ok, _subscribers} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp publish_to_redis(_state, _payload) do
+    :ok
+  end
+
+  defp safe_command(conn, command) do
+    RedisClient.command(conn, command, timeout: @publish_timeout_ms)
   catch
     :exit, reason -> {:error, reason}
   end

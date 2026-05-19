@@ -19,6 +19,7 @@ defmodule OpenChat.RedisMockTest do
 
     stop_name(OpenChat.Redis)
     stop_name(OpenChat.RedisPubSub)
+    stop_name(OpenChat.RedisBusPublisher)
 
     Application.put_env(:open_chat, :redis_url, "mock://redis")
     Application.put_env(:open_chat, :redis_key_prefix, "mock:test")
@@ -36,6 +37,7 @@ defmodule OpenChat.RedisMockTest do
 
       stop_name(OpenChat.Redis)
       stop_name(OpenChat.RedisPubSub)
+      stop_name(OpenChat.RedisBusPublisher)
       restart_redis_bus()
     end)
 
@@ -388,7 +390,7 @@ defmodule OpenChat.RedisMockTest do
     RedisBus.publish([{:user, "alice"}, {:raw, "ignored"}], %{"text" => "hi"})
     RedisBus.publish_system({:group, "room"}, %{"type" => "membership_changed"})
 
-    [first_publish, second_publish] = wait_for_published(2)
+    [first_publish, second_publish] = wait_for_published(2, OpenChat.RedisBusPublisher)
     assert {channel, payload} = first_publish
     assert channel == "mock:test:events"
 
@@ -478,7 +480,7 @@ defmodule OpenChat.RedisMockTest do
     refute_receive {:comet_event, %{"text" => "self-origin"}}, 20
   end
 
-  test "PubSub publishes to Redis before local delivery and surfaces publish failures" do
+  test "PubSub locally delivers even when Redis publish fails" do
     start_mock_redis()
     terminate_redis_bus()
     restart_redis_bus()
@@ -486,11 +488,11 @@ defmodule OpenChat.RedisMockTest do
     {:ok, _} = OpenChat.PubSub.subscribe({:user, "ordered"})
 
     assert :ok = OpenChat.PubSub.broadcast({:user, "ordered"}, %{"text" => "first"})
-    assert [{_channel, payload}] = MockRedis.published()
-    assert Jason.decode!(payload)["event"] == %{"text" => "first"}
     assert_receive {:comet_event, %{"text" => "first"}}
+    assert [{_channel, payload}] = MockRedis.published(OpenChat.RedisBusPublisher)
+    assert Jason.decode!(payload)["event"] == %{"text" => "first"}
 
-    MockRedis.force_command({:error, :publish_down})
+    MockRedis.force_command({:error, :publish_down}, OpenChat.RedisBusPublisher)
 
     assert OpenChat.PubSub.broadcast({:user, "ordered"}, %{"text" => "local-only"}) ==
              {:error, :publish_down}
@@ -521,17 +523,17 @@ defmodule OpenChat.RedisMockTest do
     end
   end
 
-  defp wait_for_published(count, attempts \\ 50)
-  defp wait_for_published(_count, 0), do: flunk("timed out waiting for mock Redis publish")
+  defp wait_for_published(count, conn), do: wait_for_published(count, conn, 50)
+  defp wait_for_published(_count, _conn, 0), do: flunk("timed out waiting for mock Redis publish")
 
-  defp wait_for_published(count, attempts) do
-    published = MockRedis.published()
+  defp wait_for_published(count, conn, attempts) do
+    published = MockRedis.published(conn)
 
     if length(published) >= count do
       Enum.take(published, count)
     else
       Process.sleep(10)
-      wait_for_published(count, attempts - 1)
+      wait_for_published(count, conn, attempts - 1)
     end
   end
 

@@ -27,6 +27,8 @@ defmodule OpenChat.MockRedis do
     |> maybe_raise()
   end
 
+  def command(conn, command, _opts), do: command(conn, command)
+
   def pipeline(conn, commands) do
     conn
     |> Agent.get_and_update(fn state ->
@@ -47,11 +49,13 @@ defmodule OpenChat.MockRedis do
     |> maybe_raise()
   end
 
-  def force_command(response), do: push_response(:command_responses, response)
+  def force_command(response, conn \\ OpenChat.Redis),
+    do: push_response(:command_responses, response, conn)
+
   def force_pipeline(response), do: push_response(:pipeline_responses, response)
 
-  def published do
-    Agent.get(OpenChat.Redis, &Enum.reverse(&1.published))
+  def published(conn \\ OpenChat.Redis) do
+    Agent.get(conn, &Enum.reverse(&1.published))
   end
 
   def put_string(key, value) do
@@ -66,8 +70,8 @@ defmodule OpenChat.MockRedis do
     Agent.get(OpenChat.Redis, & &1.sets)
   end
 
-  defp push_response(queue_key, response) do
-    Agent.update(OpenChat.Redis, fn state ->
+  defp push_response(queue_key, response, conn \\ OpenChat.Redis) do
+    Agent.update(conn, fn state ->
       update_in(state, [queue_key], &:queue.in(response, &1))
     end)
   end
