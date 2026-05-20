@@ -219,7 +219,7 @@ defmodule OpenChat.StorePubSubFanoutTest do
     assert_receive {:comet_event, %{"type" => "receipts", "body" => %{"action" => "read"}}}
   end
 
-  test "fanout works with real group membership state" do
+  test "message recipient keys include the sender for multi-device group sync" do
     state =
       State.default()
       |> put_in(["groups", "room"], %{"guid" => "room"})
@@ -230,7 +230,31 @@ defmodule OpenChat.StorePubSubFanoutTest do
     assert PubSubFanout.recipient_keys(
              state,
              %{"receiverType" => "group", "sender" => "alice", "receiver" => "room"}
-           ) == [{:user, "bob"}]
+           ) == [{:user, "alice"}, {:user, "bob"}]
+  end
+
+  test "group message broadcasts reach another socket for the sending user" do
+    state =
+      State.default()
+      |> put_in(["members", "room"], %{"alice" => %{}, "bob" => %{}})
+
+    PubSub.subscribe({:user, "alice"})
+    PubSub.subscribe({:user, "bob"})
+
+    on_exit(fn ->
+      PubSub.unsubscribe({:user, "alice"})
+      PubSub.unsubscribe({:user, "bob"})
+    end)
+
+    PubSubFanout.message(state, %{
+      "id" => 10,
+      "sender" => "alice",
+      "receiver" => "room",
+      "receiverType" => "group"
+    })
+
+    assert_receive {:comet_event, %{"body" => %{"id" => 10}}}
+    assert_receive {:comet_event, %{"body" => %{"id" => 10}}}
   end
 
   defp with_open_chat_env(overrides, fun) do

@@ -136,8 +136,7 @@ defmodule OpenChat.Store.PubSubFanout do
   end
 
   def recipient_keys(state, %{"receiverType" => "group"} = message) do
-    sender = to_s(message["sender"])
-    group_recipient_keys(state, to_s(message["receiver"]), except: sender)
+    group_recipient_keys(state, to_s(message["receiver"]))
   end
 
   def update_recipient_keys(_state, %{"receiverType" => "user"} = message) do
