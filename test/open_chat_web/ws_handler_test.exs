@@ -90,6 +90,17 @@ defmodule OpenChatWeb.WSHandlerTest do
     assert {:ok, ^state} = WSHandler.websocket_handle({:text, "not-json"}, state)
   end
 
+  test "websocket heartbeat sends protocol pings and keeps the timer replaceable" do
+    assert {:ok, state} = WSHandler.websocket_init(%{uid: "alice"})
+    assert is_reference(state.heartbeat_ref)
+
+    assert {:reply, :ping, next_state} = WSHandler.websocket_info(:heartbeat, state)
+    assert is_reference(next_state.heartbeat_ref)
+    refute next_state.heartbeat_ref == state.heartbeat_ref
+
+    assert :ok = WSHandler.terminate(:normal, nil, next_state)
+  end
+
   test "authenticated read receipts update unread counts and broadcast a timestamped receipt" do
     {:ok, message} =
       Store.send_message("bob", %{
