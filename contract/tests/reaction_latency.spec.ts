@@ -209,7 +209,14 @@ test('staging SDK room messages and reactions arrive quickly across two browser 
   const bobState = await bob.evaluate(async ({ room, expectedTexts }) => {
     const { CometChat } = window as any;
     const req = new CometChat.MessagesRequestBuilder().setGUID(room).setLimit(100).build();
-    const history = await req.fetchPrevious();
+    const history: any[] = [];
+    while (history.length < expectedTexts.length) {
+      const page = await req.fetchPrevious();
+      if (!page?.length) break;
+      history.push(...page);
+      if (page.length < 100) break;
+    }
+
     return {
       disconnects: ((window as any).__connectionEvents || []).filter((e: any) => e.type === 'disconnected'),
       texts: ((window as any).__latencyEvents || [])

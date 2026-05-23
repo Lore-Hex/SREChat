@@ -395,6 +395,7 @@ defmodule OpenChatWeb.ApiRegressionTest do
            ]
 
     assert get_in(json(conn), ["meta", "cursor", "id"]) == second["id"]
+    assert get_in(json(conn), ["meta", "pagination", "total_pages"]) == 2
 
     conn =
       auth_conn(
@@ -408,6 +409,7 @@ defmodule OpenChatWeb.ApiRegressionTest do
              "wire order a"
            ]
 
+    assert get_in(json(conn), ["meta", "pagination", "total_pages"]) == 1
     assert third["id"] > second["id"]
   end
 

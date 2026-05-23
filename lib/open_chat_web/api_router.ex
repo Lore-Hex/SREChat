@@ -875,15 +875,29 @@ defmodule OpenChatWeb.ApiRouter do
   end
 
   defp pagination_meta(rows, params) do
-    limit = params["per_page"] || params["limit"] || 30
+    limit = to_int(params["per_page"] || params["limit"] || 30, 30)
+    count = length(rows)
+    current_page = to_int(params["page"], 1)
+
+    {total, total_pages} =
+      cond do
+        count == 0 ->
+          {0, max(current_page, 1)}
+
+        count >= limit ->
+          {current_page * limit + 1, current_page + 1}
+
+        true ->
+          {max(current_page - 1, 0) * limit + count, current_page}
+      end
 
     %{
       "pagination" => %{
-        "total" => length(rows),
-        "count" => length(rows),
-        "per_page" => to_int(limit, 30),
-        "current_page" => to_int(params["page"], 1),
-        "total_pages" => 1
+        "total" => total,
+        "count" => count,
+        "per_page" => limit,
+        "current_page" => current_page,
+        "total_pages" => total_pages
       }
     }
   end

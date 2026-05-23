@@ -6,7 +6,8 @@
     "test": "playwright test"
   },
   "devDependencies": {
-    "@playwright/test": "^1.52.0",
-    "@cometchat/chat-sdk-javascript": "4.1.8"
+    "@cometchat/chat-sdk-javascript": "4.1.8",
+    "@cometchat/chat-sdk-react-native": "4.0.10",
+    "@playwright/test": "^1.52.0"
   }
 }
