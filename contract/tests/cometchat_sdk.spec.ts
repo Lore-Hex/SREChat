@@ -7,9 +7,30 @@ const sdkPath = require.resolve('@cometchat/chat-sdk-javascript/CometChat.js');
 
 const APP_ID = process.env.COMETCHAT_APP_ID || 'local-app';
 const TARGET_HOST = process.env.OPENCHAT_TARGET_HOST || 'localhost:8443/v3.0';
-const ALICE_TOKEN = process.env.ALICE_TOKEN || 'uid:alice';
-const BOB_TOKEN = process.env.BOB_TOKEN || 'uid:bob';
 const ADMIN_API_KEY = process.env.OPENCHAT_ADMIN_API_KEY || (TARGET_HOST.startsWith('localhost') ? 'local-api-key' : '');
+let ALICE_TOKEN = process.env.ALICE_TOKEN || (TARGET_HOST.startsWith('localhost') ? 'uid:alice' : '');
+let BOB_TOKEN = process.env.BOB_TOKEN || (TARGET_HOST.startsWith('localhost') ? 'uid:bob' : '');
+
+async function adminPost(request: any, path: string, data: any = {}) {
+  const response = await request.post(`https://${TARGET_HOST}${path}`, {
+    headers: { apiKey: ADMIN_API_KEY },
+    data,
+  });
+  expect(response.ok(), `${path} failed: ${response.status()} ${await response.text()}`).toBeTruthy();
+  return (await response.json()).data;
+}
+
+test.beforeAll(async ({ request }) => {
+  if ((ALICE_TOKEN && BOB_TOKEN) || !ADMIN_API_KEY) {
+    return;
+  }
+
+  await adminPost(request, '/users', { uid: 'alice', name: 'Alice' });
+  await adminPost(request, '/users', { uid: 'bob', name: 'Bob' });
+
+  ALICE_TOKEN = (await adminPost(request, '/users/alice/auth_tokens')).authToken;
+  BOB_TOKEN = (await adminPost(request, '/users/bob/auth_tokens')).authToken;
+});
 
 async function loadSdk(page: any, autoSocket = false) {
   await page.goto(`https://${TARGET_HOST}/settings`);
@@ -1158,29 +1179,47 @@ test('snowy mentions: <@uid:xxx> and <consumableId:xxx> in text round-trip unmod
   expect(sent.text).toBe('hey <@uid:bob> check <consumableId:c-123>');
 });
 
-test('snowy markAsRead(message) accepts a message object and clears unread', async ({ browser }) => {
+test('snowy markAsRead(message) accepts a message object and clears unread', async ({ browser, request }) => {
   // Mirrors snowy/src/data/chat/dm-chat-utils.tsx markMessageAsRead(message).
+  test.skip(!ADMIN_API_KEY, 'Requires an OpenChat admin API key.');
+
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const aliceUid = `mark-read-alice-${suffix}`;
+  const bobUid = `mark-read-bob-${suffix}`;
+
+  await adminPost(request, '/users', { uid: aliceUid, name: 'Mark Read Alice' });
+  await adminPost(request, '/users', { uid: bobUid, name: 'Mark Read Bob' });
+  const aliceAuth = await adminPost(request, `/users/${aliceUid}/auth_tokens`);
+  const bobAuth = await adminPost(request, `/users/${bobUid}/auth_tokens`);
+
   const alice = await browser.newPage();
   await loadSdk(alice, false);
-  const sent = await alice.evaluate(async (token) => {
+  const sent = await alice.evaluate(async ({ token, bobUid }) => {
     const { CometChat } = window as any;
     await CometChat.login(token);
-    const m = await CometChat.sendMessage(new CometChat.TextMessage('bob', 'mark-as-read-target ' + Date.now(), 'user'));
+    const m = await CometChat.sendMessage(
+      new CometChat.TextMessage(bobUid, 'mark-as-read-target ' + Date.now(), 'user'),
+    );
     return m.getId();
-  }, ALICE_TOKEN);
+  }, { token: aliceAuth.authToken, bobUid });
 
   const bob = await browser.newPage();
   await loadSdk(bob, true);
-  const result = await bob.evaluate(async ({ token, sentId }) => {
+  const result = await bob.evaluate(async ({ token, aliceUid, sentId }) => {
     const { CometChat } = window as any;
     await CometChat.login(token);
     await new Promise((resolve) => setTimeout(resolve, 500));
-    const req = new CometChat.MessagesRequestBuilder().setUID('alice').setLimit(5).build();
+    const req = new CometChat.MessagesRequestBuilder().setUID(aliceUid).setLimit(20).build();
     const messages = await req.fetchPrevious();
     const target = messages.find((m: any) => String(m.getId()) === String(sentId));
+    if (!target) return { targetFound: false, unreadAfter: null };
     await CometChat.markAsRead(target);
     const unread = await CometChat.getUnreadMessageCountForAllUsers(true);
-    return (unread as any).alice ?? (unread as any).users?.alice ?? 0;
-  }, { token: BOB_TOKEN, sentId: sent });
-  expect(Number(result)).toBe(0);
+    return {
+      targetFound: true,
+      unreadAfter: (unread as any)[aliceUid] ?? (unread as any).users?.[aliceUid] ?? 0,
+    };
+  }, { token: bobAuth.authToken, aliceUid, sentId: sent });
+  expect(result.targetFound).toBe(true);
+  expect(Number(result.unreadAfter)).toBe(0);
 });
