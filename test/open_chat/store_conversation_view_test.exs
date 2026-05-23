@@ -194,6 +194,52 @@ defmodule OpenChat.Store.ConversationViewTest do
       assert length(ConversationView.messages(state, "group_room", %{"limit" => 1000})) == 2
     end
 
+    test "millisecond prepend timestamps include the current server second despite clock skew" do
+      base = 1_700_000_000
+
+      state =
+        State.default()
+        |> put_in(["messages"], %{
+          "1" => %{
+            "id" => "1",
+            "sender" => "alice",
+            "receiver" => "room",
+            "receiverType" => "group",
+            "conversationId" => "group_room",
+            "sentAt" => base,
+            "data" => %{}
+          },
+          "2" => %{
+            "id" => "2",
+            "sender" => "alice",
+            "receiver" => "room",
+            "receiverType" => "group",
+            "conversationId" => "group_room",
+            "sentAt" => base + 1,
+            "data" => %{}
+          },
+          "3" => %{
+            "id" => "3",
+            "sender" => "alice",
+            "receiver" => "room",
+            "receiverType" => "group",
+            "conversationId" => "group_room",
+            "sentAt" => base + 2,
+            "data" => %{}
+          }
+        })
+        |> put_in(["conversation_messages", "group_room"], ["1", "2", "3"])
+
+      result =
+        ConversationView.messages(state, "group_room", %{
+          "limit" => 10,
+          "timestamp" => to_string(base * 1000 + 1),
+          "cursorAffix" => "prepend"
+        })
+
+      assert Enum.map(result, & &1["id"]) == ["2", "1"]
+    end
+
     test "id cursor with prepend affix returns messages strictly before the cursor" do
       state = seeded_state()
 

@@ -242,8 +242,7 @@ defmodule OpenChat.Store.ConversationView do
 
       cond do
         affix == "append" -> seconds
-        rem(value, 1000) == 0 -> seconds
-        true -> seconds + 1
+        true -> seconds + 2
       end
     else
       value
