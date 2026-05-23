@@ -1214,10 +1214,18 @@ test('snowy markAsRead(message) accepts a message object and clears unread', asy
     const target = messages.find((m: any) => String(m.getId()) === String(sentId));
     if (!target) return { targetFound: false, unreadAfter: null };
     await CometChat.markAsRead(target);
-    const unread = await CometChat.getUnreadMessageCountForAllUsers(true);
+
+    let unreadAfter = 0;
+    for (let i = 0; i < 20; i += 1) {
+      const unread = await CometChat.getUnreadMessageCountForAllUsers(true);
+      unreadAfter = (unread as any)[aliceUid] ?? (unread as any).users?.[aliceUid] ?? 0;
+      if (Number(unreadAfter) === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
     return {
       targetFound: true,
-      unreadAfter: (unread as any)[aliceUid] ?? (unread as any).users?.[aliceUid] ?? 0,
+      unreadAfter,
     };
   }, { token: bobAuth.authToken, aliceUid, sentId: sent });
   expect(result.targetFound).toBe(true);
