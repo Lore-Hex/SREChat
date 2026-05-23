@@ -9,9 +9,9 @@ defmodule OpenChat.PubSub do
   def broadcast(keys, event) when is_list(keys) do
     keys = Enum.uniq(keys)
     local_broadcast(keys, event)
-    publish_result = OpenChat.RedisBus.publish(keys, event)
-    warn_publish_failure(publish_result)
-    publish_result
+    publish_result = OpenChat.RedisBus.publish_async(keys, event)
+    warn_publish_enqueue_failure(publish_result)
+    :ok
   end
 
   def broadcast(key, event), do: broadcast([key], event)
@@ -19,9 +19,9 @@ defmodule OpenChat.PubSub do
   def broadcast_system(keys, event) when is_list(keys) do
     keys = Enum.uniq(keys)
     local_system_broadcast(keys, event)
-    publish_result = OpenChat.RedisBus.publish_system(keys, event)
-    warn_publish_failure(publish_result)
-    publish_result
+    publish_result = OpenChat.RedisBus.publish_system_async(keys, event)
+    warn_publish_enqueue_failure(publish_result)
+    :ok
   end
 
   def broadcast_system(key, event), do: broadcast_system([key], event)
@@ -50,9 +50,9 @@ defmodule OpenChat.PubSub do
     :ok
   end
 
-  defp warn_publish_failure(:ok), do: :ok
+  defp warn_publish_enqueue_failure(:ok), do: :ok
 
-  defp warn_publish_failure({:error, reason}) do
-    Logger.warning("Redis event publish failed after local broadcast: #{inspect(reason)}")
+  defp warn_publish_enqueue_failure({:error, reason}) do
+    Logger.warning("Redis event publish enqueue failed after local broadcast: #{inspect(reason)}")
   end
 end

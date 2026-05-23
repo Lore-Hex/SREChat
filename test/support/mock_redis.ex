@@ -91,6 +91,12 @@ defmodule OpenChat.MockRedis do
   end
 
   defp maybe_raise({:raise, message}) when is_binary(message), do: raise(message)
+
+  defp maybe_raise({:sleep, ms, response}) when is_integer(ms) and ms >= 0 do
+    Process.sleep(ms)
+    maybe_raise(response)
+  end
+
   defp maybe_raise(response), do: response
 
   defp apply_command(["GET", key], state) do

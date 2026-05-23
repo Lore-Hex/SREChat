@@ -19,6 +19,14 @@ defmodule OpenChat.RedisBus do
     call_publish({:publish_system, List.wrap(keys), event})
   end
 
+  def publish_async(keys, event) do
+    cast_publish({:publish_async, List.wrap(keys), event})
+  end
+
+  def publish_system_async(keys, event) do
+    cast_publish({:publish_system_async, List.wrap(keys), event})
+  end
+
   defp call_publish(message) do
     case Process.whereis(__MODULE__) do
       nil ->
@@ -26,6 +34,19 @@ defmodule OpenChat.RedisBus do
 
       pid ->
         GenServer.call(pid, message, 5_000)
+    end
+  catch
+    :exit, reason -> {:error, reason}
+  end
+
+  defp cast_publish(message) do
+    case Process.whereis(__MODULE__) do
+      nil ->
+        :ok
+
+      pid ->
+        GenServer.cast(pid, message)
+        :ok
     end
   catch
     :exit, reason -> {:error, reason}
@@ -72,6 +93,17 @@ defmodule OpenChat.RedisBus do
     {:reply, publish_event(state, keys, event, true), state}
   end
 
+  @impl true
+  def handle_cast({:publish_async, keys, event}, state) do
+    warn_publish_failure(publish_event(state, keys, event, false))
+    {:noreply, state}
+  end
+
+  def handle_cast({:publish_system_async, keys, event}, state) do
+    warn_publish_failure(publish_event(state, keys, event, true))
+    {:noreply, state}
+  end
+
   defp publish_event(state, keys, event, system?) do
     payload =
       Jason.encode!(%{
@@ -82,6 +114,12 @@ defmodule OpenChat.RedisBus do
       })
 
     publish_to_redis(state, payload)
+  end
+
+  defp warn_publish_failure(:ok), do: :ok
+
+  defp warn_publish_failure({:error, reason}) do
+    Logger.warning("Redis event publish failed after local broadcast: #{inspect(reason)}")
   end
 
   @impl true

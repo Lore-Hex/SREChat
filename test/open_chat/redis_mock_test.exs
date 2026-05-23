@@ -489,15 +489,19 @@ defmodule OpenChat.RedisMockTest do
 
     assert :ok = OpenChat.PubSub.broadcast({:user, "ordered"}, %{"text" => "first"})
     assert_receive {:comet_event, %{"text" => "first"}}
-    assert [{_channel, payload}] = MockRedis.published(OpenChat.RedisBusPublisher)
+    assert [{_channel, payload}] = wait_for_published(1, OpenChat.RedisBusPublisher)
     assert Jason.decode!(payload)["event"] == %{"text" => "first"}
 
-    MockRedis.force_command({:error, :publish_down}, OpenChat.RedisBusPublisher)
+    MockRedis.force_command({:sleep, 150, {:error, :publish_down}}, OpenChat.RedisBusPublisher)
 
-    assert OpenChat.PubSub.broadcast({:user, "ordered"}, %{"text" => "local-only"}) ==
-             {:error, :publish_down}
+    started_at = System.monotonic_time(:millisecond)
+    assert :ok = OpenChat.PubSub.broadcast({:user, "ordered"}, %{"text" => "local-only"})
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+
+    assert elapsed_ms < 50
 
     assert_receive {:comet_event, %{"text" => "local-only"}}
+    :sys.get_state(RedisBus)
   end
 
   test "RedisBus init handles already-started and failed pubsub clients" do
