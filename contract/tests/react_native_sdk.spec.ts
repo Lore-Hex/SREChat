@@ -146,9 +146,7 @@ async function loadWebSdk(page: any, token: string) {
         const rawReaction = reaction.getReaction?.() || reaction.reaction;
         (window as any).__openChatEvents.push({
           kind,
-          messageId: String(
-            reaction.getMessageId?.() || reaction.messageId || rawReaction?.messageId || '',
-          ),
+          messageId: String(reaction.getMessageId?.() || reaction.messageId || rawReaction?.messageId || ''),
           reaction: typeof rawReaction === 'string' ? rawReaction : rawReaction?.reaction,
           at: Date.now(),
         });
@@ -187,20 +185,27 @@ function reactionMessageId(reaction: any) {
   return String(reaction?.getMessageId?.() || reaction?.messageId || rawReaction?.messageId || '');
 }
 
-function recordRnEvent(events: any[], kind: string, message: any) {
+function recordRnEvent(events: any[], kind: string, message: any, cometChat: any) {
   const data = message?.getData?.() || message?.data || {};
   const entity = data.entities?.on?.entity || message;
   const entityData = entity?.getData?.() || entity?.data || {};
   const metadata = entity?.getMetadata?.() || entity?.metadata || entityData.metadata || {};
+  const receiver = entity?.getReceiver?.() || entity?.receiver || message?.getReceiver?.();
+  const sender = entity?.getSender?.() || entity?.sender || message?.getSender?.();
   events.push({
     kind,
     id: String(entity?.getId?.() || entity?.id || message?.getId?.() || message?.id || ''),
     text: entityData.text,
     reactions: metadata?.['@injected']?.extensions?.reactions || {},
     updatedAt: entity?.getUpdatedAt?.() ?? entity?.updatedAt,
-    sender: entity?.getSender?.()?.getUid?.() || entity?.sender?.uid || entity?.sender,
+    sender: sender?.getUid?.() || sender?.uid || sender,
     receiverId: entity?.getReceiverId?.() || entity?.receiver,
     receiverType: entity?.getReceiverType?.() || entity?.receiverType,
+    receiverUid: receiver?.getUid?.() || receiver?.uid,
+    receiverGuid: receiver?.getGuid?.() || receiver?.guid,
+    receiverClass: receiver?.constructor?.name,
+    receiverIsGroup: cometChat?.Group ? receiver instanceof cometChat.Group : false,
+    receiverIsUser: cometChat?.User ? receiver instanceof cometChat.User : false,
     at: Date.now(),
   });
 }
@@ -228,12 +233,21 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
   const bobUid = `rn-contract-bob-${suffix}`;
   const room = `rn-contract-room-${suffix}`;
 
-  await adminPost(request, '/users', { uid: aliceUid, name: 'RN Contract Alice' });
+  await adminPost(request, '/users', {
+    uid: aliceUid,
+    name: 'RN Contract Alice',
+  });
   await adminPost(request, '/users', { uid: bobUid, name: 'RN Contract Bob' });
   const aliceAuth = await adminPost(request, `/users/${aliceUid}/auth_tokens`);
   const bobAuth = await adminPost(request, `/users/${bobUid}/auth_tokens`);
-  await adminPost(request, '/groups', { guid: room, name: 'RN Contract Room', type: 'public' });
-  await adminPost(request, `/groups/${room}/members`, { participants: [aliceUid, bobUid] });
+  await adminPost(request, '/groups', {
+    guid: room,
+    name: 'RN Contract Room',
+    type: 'public',
+  });
+  await adminPost(request, `/groups/${room}/members`, {
+    participants: [aliceUid, bobUid],
+  });
 
   const web = await browser.newPage();
   await loadWebSdk(web, aliceAuth.authToken);
@@ -257,8 +271,8 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
   RNCometChat.addMessageListener(
     `OPENCHAT_RN_CONTRACT_${suffix}`,
     new RNCometChat.MessageListener({
-      onTextMessageReceived: (message: any) => recordRnEvent(rnEvents, 'text', message),
-      onMessageEdited: (message: any) => recordRnEvent(rnEvents, 'edited', message),
+      onTextMessageReceived: (message: any) => recordRnEvent(rnEvents, 'text', message, RNCometChat),
+      onMessageEdited: (message: any) => recordRnEvent(rnEvents, 'edited', message, RNCometChat),
       onMessageReactionAdded: (reaction: any) =>
         rnEvents.push({
           kind: 'reaction-added',
@@ -296,15 +310,25 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
       );
       const seenAt = await waitFor(() => rnEvents.some((event) => event.kind === 'text' && event.text === text));
       expect(seenAt, `RN did not receive web DM ${text}`).toBeTruthy();
+      const dmEvent = rnEvents.find((event) => event.kind === 'text' && event.text === text);
+      expect(dmEvent).toMatchObject({
+        sender: aliceUid,
+        receiverId: bobUid,
+        receiverType: 'user',
+        receiverUid: bobUid,
+        receiverIsUser: true,
+      });
       dmLatencies.push(Number(seenAt) - startedAt);
     } else {
       await RNCometChat.sendMessage(new RNCometChat.TextMessage(aliceUid, text, 'user'));
       const seenAt = await waitFor(() =>
-        web.evaluate((expected) =>
-          ((window as any).__openChatEvents || []).some(
-            (event: any) => event.kind === 'text' && event.text === expected,
-          ),
-        text),
+        web.evaluate(
+          (expected) =>
+            ((window as any).__openChatEvents || []).some(
+              (event: any) => event.kind === 'text' && event.text === expected,
+            ),
+          text,
+        ),
       );
       expect(seenAt, `web did not receive RN DM ${text}`).toBeTruthy();
       dmLatencies.push(Number(seenAt) - startedAt);
@@ -338,7 +362,12 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
   );
   await web.waitForTimeout(1000);
 
-  const groupMessages: Array<{ id: string; text: string; updatedAt: number; reacted: boolean }> = [];
+  const groupMessages: Array<{
+    id: string;
+    text: string;
+    updatedAt: number;
+    reacted: boolean;
+  }> = [];
   const reactionLatencies: number[] = [];
 
   for (let i = 0; i < GROUP_MESSAGE_COUNT; i += 1) {
@@ -357,10 +386,16 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
     );
     groupMessages.push({ ...message, reacted: i % 2 === 0 });
 
-    const rnTextSeen = await waitFor(() =>
-      rnEvents.some((event) => event.kind === 'text' && event.text === text),
-    );
+    const rnTextSeen = await waitFor(() => rnEvents.some((event) => event.kind === 'text' && event.text === text));
     expect(rnTextSeen, `RN did not receive group text ${text}`).toBeTruthy();
+    const groupEvent = rnEvents.find((event) => event.kind === 'text' && event.text === text);
+    expect(groupEvent).toMatchObject({
+      sender: aliceUid,
+      receiverId: room,
+      receiverType: 'group',
+      receiverGuid: room,
+      receiverIsGroup: true,
+    });
 
     if (i % 2 === 0) {
       const startedAt = Date.now();
@@ -374,9 +409,7 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
           ({ messageId, bobUid }) =>
             ((window as any).__openChatEvents || []).some(
               (event: any) =>
-                event.kind === 'edited' &&
-                event.id === messageId &&
-                event.reactions?.['🎧']?.[bobUid]?.name,
+                event.kind === 'edited' && event.id === messageId && event.reactions?.['🎧']?.[bobUid]?.name,
             ),
           { messageId: message.id, bobUid },
         ),
