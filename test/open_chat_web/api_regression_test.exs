@@ -85,6 +85,70 @@ defmodule OpenChatWeb.ApiRegressionTest do
     assert Plug.Conn.get_resp_header(denied, "access-control-allow-origin") == []
   end
 
+  test "REST message mutations propagate SDK resource header to socket deviceId" do
+    assert {:ok, _} = OpenChat.PubSub.subscribe({:user, "alice"})
+    assert {:ok, _} = OpenChat.PubSub.subscribe({:user, "bob"})
+
+    on_exit(fn ->
+      OpenChat.PubSub.unsubscribe({:user, "alice"})
+      OpenChat.PubSub.unsubscribe({:user, "bob"})
+    end)
+
+    conn =
+      conn(
+        :post,
+        "/v3.0/messages",
+        Jason.encode!(%{
+          "receiver" => "bob",
+          "receiverType" => "user",
+          "data" => %{"text" => "resource header"}
+        })
+      )
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Plug.Conn.put_req_header("authtoken", "uid:alice")
+      |> Plug.Conn.put_req_header("resource", "rn-session-123")
+      |> OpenChatWeb.Endpoint.call([])
+
+    assert conn.status == 201
+    message = json(conn)["data"]
+
+    assert_receive {:comet_event,
+                    %{
+                      "type" => "message",
+                      "deviceId" => "rn-session-123",
+                      "body" => %{"id" => id}
+                    }}
+
+    assert id == message["id"]
+
+    conn =
+      conn(
+        :post,
+        "/v3.0/messages/#{message["id"]}/reactions/%F0%9F%91%8D",
+        Jason.encode!(%{})
+      )
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Plug.Conn.put_req_header("authtoken", "uid:bob")
+      |> Plug.Conn.put_req_header("resource", "web-session-456")
+      |> OpenChatWeb.Endpoint.call([])
+
+    assert conn.status == 200
+
+    assert_receive {:comet_event,
+                    %{
+                      "type" => "message",
+                      "deviceId" => "web-session-456",
+                      "body" => %{"category" => "action"}
+                    }}
+
+    assert_receive {:comet_event,
+                    %{
+                      "type" => "reaction",
+                      "deviceId" => "web-session-456",
+                      "body" => %{"messageId" => ^id}
+                    }}
+  end
+
   test "user admin and client routes support search, pagination, update, delete, and reactivation" do
     for uid <- ["test-a", "test-b", "test-c"] do
       assert admin_conn(:post, "/v3/users", %{"uid" => uid, "name" => "Search #{uid}"}).status ==

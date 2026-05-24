@@ -670,7 +670,15 @@ test('snowy callExtension reactions toggle and propagate through message edit li
 
 test('snowy media and GIF-style custom message reactions survive live updates and history', async ({ browser, request }) => {
   test.skip(!ADMIN_API_KEY, 'Requires an OpenChat admin API key.');
-  const room = `mixed-reaction-room-${Date.now()}`;
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const aliceUid = `mixed-alice-${suffix}`;
+  const bobUid = `mixed-bob-${suffix}`;
+  const room = `mixed-reaction-room-${suffix}`;
+
+  await adminPost(request, '/users', { uid: aliceUid, name: 'Mixed Alice' });
+  await adminPost(request, '/users', { uid: bobUid, name: 'Mixed Bob' });
+  const aliceAuth = await adminPost(request, `/users/${aliceUid}/auth_tokens`);
+  const bobAuth = await adminPost(request, `/users/${bobUid}/auth_tokens`);
 
   const create = await request.post(`https://${TARGET_HOST}/groups`, {
     headers: { apiKey: ADMIN_API_KEY },
@@ -709,11 +717,11 @@ test('snowy media and GIF-style custom message reactions survive live updates an
         onMessageEdited: (m: any) => record('edited', m),
       })
     );
-  }, { token: BOB_TOKEN, room });
+  }, { token: bobAuth.authToken, room });
 
   const alice = await browser.newPage();
   await loadSdk(alice, true);
-  const sent = await alice.evaluate(async ({ token, room }) => {
+  const sent = await alice.evaluate(async ({ token, room, aliceUid }) => {
     const { CometChat } = window as any;
     await CometChat.login(token);
     try {
@@ -730,7 +738,7 @@ test('snowy media and GIF-style custom message reactions survive live updates an
       uuid: `gif-${Date.now()}`,
       id: -1,
       userName: 'Alice',
-      userUuid: 'alice',
+      userUuid: aliceUid,
       avatarId: 'avatar',
       type: 'user',
     });
@@ -746,7 +754,7 @@ test('snowy media and GIF-style custom message reactions survive live updates an
         message: 'mixed media',
         type: 'user',
         userName: 'Alice',
-        userUuid: 'alice',
+        userUuid: aliceUid,
         avatarId: 'avatar',
       },
     });
@@ -756,7 +764,7 @@ test('snowy media and GIF-style custom message reactions survive live updates an
       customId: String(customSent.getId()),
       mediaId: String(mediaSent.getId()),
     };
-  }, { token: ALICE_TOKEN, room });
+  }, { token: aliceAuth.authToken, room, aliceUid });
 
   await alice.evaluate(() => {
     const { CometChat } = window as any;
@@ -793,6 +801,8 @@ test('snowy media and GIF-style custom message reactions survive live updates an
     { timeout: 15_000 }
   );
 
+  await alice.waitForTimeout(500);
+
   await bob.evaluate(async ({ customId, mediaId }) => {
     const { CometChat } = window as any;
     await CometChat.callExtension('reactions', 'POST', 'v1/react', {
@@ -806,12 +816,12 @@ test('snowy media and GIF-style custom message reactions survive live updates an
   }, sent);
 
   await alice.waitForFunction(
-    ({ customId, mediaId }) => {
+    ({ customId, mediaId, bobUid }) => {
       const events = (window as any).__mixedReactionEvents || [];
-      return events.some((e: any) => e.kind === 'edited' && e.id === customId && e.reactions?.['🔥']?.bob?.name)
-        && events.some((e: any) => e.kind === 'edited' && e.id === mediaId && e.reactions?.['🎧']?.bob?.name);
+      return events.some((e: any) => e.kind === 'edited' && e.id === customId && e.reactions?.['🔥']?.[bobUid]?.name)
+        && events.some((e: any) => e.kind === 'edited' && e.id === mediaId && e.reactions?.['🎧']?.[bobUid]?.name);
     },
-    sent,
+    { ...sent, bobUid },
     { timeout: 15_000 }
   );
 
@@ -827,8 +837,8 @@ test('snowy media and GIF-style custom message reactions survive live updates an
     };
   }, { room, ...sent });
 
-  expect(history.customReactions?.['🔥']?.bob?.name).toBeTruthy();
-  expect(history.mediaReactions?.['🎧']?.bob?.name).toBeTruthy();
+  expect(history.customReactions?.['🔥']?.[bobUid]?.name).toBeTruthy();
+  expect(history.mediaReactions?.['🎧']?.[bobUid]?.name).toBeTruthy();
 
   await bob.evaluate(() => {
     const { CometChat } = (window as any);

@@ -163,14 +163,14 @@ defmodule OpenChat.Store do
   def conversation(uid, receiver_type, receiver_id),
     do: call({:conversation, to_s(uid), to_s(receiver_type), to_s(receiver_id)})
 
-  def add_reaction(uid, id, reaction),
-    do: call({:add_reaction, to_s(uid), to_s(id), reaction})
+  def add_reaction(uid, id, reaction, opts \\ []),
+    do: call({:add_reaction, to_s(uid), to_s(id), reaction, opts})
 
-  def remove_reaction(uid, id, reaction),
-    do: call({:remove_reaction, to_s(uid), to_s(id), reaction})
+  def remove_reaction(uid, id, reaction, opts \\ []),
+    do: call({:remove_reaction, to_s(uid), to_s(id), reaction, opts})
 
-  def toggle_reaction(uid, id, reaction),
-    do: call({:toggle_reaction, to_s(uid), to_s(id), reaction})
+  def toggle_reaction(uid, id, reaction, opts \\ []),
+    do: call({:toggle_reaction, to_s(uid), to_s(id), reaction, opts})
 
   def reactions(uid, id, reaction \\ nil),
     do: call({:reactions, to_s(uid), to_s(id), reaction})
@@ -785,7 +785,7 @@ defmodule OpenChat.Store do
       {:ok, message, state} ->
         {state, retention_ops} = MessageState.store_with_retention(state, message)
         persist_ops(PersistenceOps.message_create(state, message) ++ retention_ops)
-        PubSubFanout.message(state, message)
+        PubSubFanout.message(state, message, device_id: origin_device_id(opts, message))
         {:reply, {:ok, message}, state}
     end
   end
@@ -800,7 +800,7 @@ defmodule OpenChat.Store do
       {:ok, message, state} ->
         {state, retention_ops} = MessageState.store_with_retention(state, message)
         persist_ops(PersistenceOps.message_create(state, message) ++ retention_ops)
-        PubSubFanout.message(state, message)
+        PubSubFanout.message(state, message, device_id: origin_device_id(opts, message))
         {:reply, {:ok, message}, state}
     end
   end
@@ -849,7 +849,7 @@ defmodule OpenChat.Store do
                 retention_ops ++ PersistenceOps.next_id(state)
             )
 
-            PubSubFanout.message(state, action)
+            PubSubFanout.message(state, action, device_id: origin_device_id(opts))
             {:reply, {:ok, action}, state}
 
           {:error, error} ->
@@ -902,7 +902,7 @@ defmodule OpenChat.Store do
                 PersistenceOps.next_id(state)
             )
 
-            PubSubFanout.message(state, action)
+            PubSubFanout.message(state, action, device_id: origin_device_id(opts))
             {:reply, {:ok, action}, state}
 
           {:error, error} ->
@@ -1147,14 +1147,14 @@ defmodule OpenChat.Store do
     end
   end
 
-  def handle_call({:add_reaction, uid, id, reaction}, _from, state) do
+  def handle_call({:add_reaction, uid, id, reaction, opts}, _from, state) do
     with {:ok, message} <- Map.fetch(state["messages"], id),
          :ok <- Access.message(state, uid, message) do
       if message["deletedAt"] do
         {:reply, {:error, Errors.forbidden("Cannot react to a deleted message.")}, state}
       else
         {:reply, reply, state} =
-          add_reaction_reply(state, uid, id, URI.decode(to_s(reaction)), message)
+          add_reaction_reply(state, uid, id, URI.decode(to_s(reaction)), message, opts)
 
         {:reply, reply, state}
       end
@@ -1164,14 +1164,14 @@ defmodule OpenChat.Store do
     end
   end
 
-  def handle_call({:remove_reaction, uid, id, reaction}, _from, state) do
+  def handle_call({:remove_reaction, uid, id, reaction, opts}, _from, state) do
     with {:ok, message} <- Map.fetch(state["messages"], id),
          :ok <- Access.message(state, uid, message) do
       if message["deletedAt"] do
         {:reply, {:error, Errors.forbidden("Cannot unreact to a deleted message.")}, state}
       else
         {:reply, reply, state} =
-          remove_reaction_reply(state, uid, id, URI.decode(to_s(reaction)), message)
+          remove_reaction_reply(state, uid, id, URI.decode(to_s(reaction)), message, opts)
 
         {:reply, reply, state}
       end
@@ -1181,7 +1181,7 @@ defmodule OpenChat.Store do
     end
   end
 
-  def handle_call({:toggle_reaction, uid, id, reaction}, _from, state) do
+  def handle_call({:toggle_reaction, uid, id, reaction, opts}, _from, state) do
     with {:ok, message} <- Map.fetch(state["messages"], id),
          :ok <- Access.message(state, uid, message) do
       if message["deletedAt"] do
@@ -1190,10 +1190,10 @@ defmodule OpenChat.Store do
         reaction = URI.decode(to_s(reaction))
 
         if get_in(state, ["reactions", id, reaction, uid]) do
-          {:reply, reply, state} = remove_reaction_reply(state, uid, id, reaction, message)
+          {:reply, reply, state} = remove_reaction_reply(state, uid, id, reaction, message, opts)
           {:reply, reply, state}
         else
-          {:reply, reply, state} = add_reaction_reply(state, uid, id, reaction, message)
+          {:reply, reply, state} = add_reaction_reply(state, uid, id, reaction, message, opts)
           {:reply, reply, state}
         end
       end
@@ -1485,7 +1485,7 @@ defmodule OpenChat.Store do
                 "sentAt" => now,
                 "updatedAt" => now,
                 "conversationId" => conversation_id_for(sender_uid, receiver_type, receiver),
-                "resource" => params["resource"],
+                "resource" => origin_resource(opts, params),
                 "parentId" => params["parentId"] || params["parentMessageId"],
                 "tags" => params["tags"]
               })
@@ -1538,7 +1538,7 @@ defmodule OpenChat.Store do
     |> MessageData.put_entity("receiver", message["receiverType"], receiver_entity)
   end
 
-  defp add_reaction_reply(state, uid, id, reaction, message) do
+  defp add_reaction_reply(state, uid, id, reaction, message, opts) do
     now = Time.now()
     {reaction_id, state} = take_counter(state, "next_reaction_id")
     user = state |> UserState.get_or_default(uid) |> UserState.public()
@@ -1570,12 +1570,17 @@ defmodule OpenChat.Store do
         PersistenceOps.next_reaction_id(state)
     )
 
-    PubSubFanout.message_update(state, message, uid, reaction_obj["id"])
-    PubSubFanout.reaction(state, message, reaction_obj, "message_reaction_added", uid)
+    device_id = origin_device_id(opts)
+    PubSubFanout.message_update(state, message, uid, reaction_obj["id"], device_id: device_id)
+
+    PubSubFanout.reaction(state, message, reaction_obj, "message_reaction_added", uid,
+      device_id: device_id
+    )
+
     {:reply, {:ok, reply_message}, state}
   end
 
-  defp remove_reaction_reply(state, uid, id, reaction, message) do
+  defp remove_reaction_reply(state, uid, id, reaction, message, opts) do
     reaction_obj =
       get_in(state, ["reactions", id, reaction, uid]) ||
         Entities.reaction(%{
@@ -1596,8 +1601,13 @@ defmodule OpenChat.Store do
       PersistenceOps.reactions(state, id) ++ [RedisPersistence.put("messages", id, message)]
     )
 
-    PubSubFanout.message_update(state, message, uid, reaction_obj["id"])
-    PubSubFanout.reaction(state, message, reaction_obj, "message_reaction_removed", uid)
+    device_id = origin_device_id(opts)
+    PubSubFanout.message_update(state, message, uid, reaction_obj["id"], device_id: device_id)
+
+    PubSubFanout.reaction(state, message, reaction_obj, "message_reaction_removed", uid,
+      device_id: device_id
+    )
+
     {:reply, {:ok, reply_message}, state}
   end
 
@@ -1764,6 +1774,33 @@ defmodule OpenChat.Store do
   defp to_s(nil), do: ""
   defp to_s(value) when is_binary(value), do: value
   defp to_s(value), do: to_string(value)
+
+  defp origin_resource(opts, message) do
+    opts
+    |> Keyword.get(:resource)
+    |> case do
+      value when value in [nil, ""] -> Keyword.get(opts, :device_id)
+      value -> value
+    end
+    |> case do
+      value when value in [nil, ""] -> message["resource"]
+      value -> value
+    end
+    |> to_s()
+    |> case do
+      "" -> nil
+      value -> value
+    end
+  end
+
+  defp origin_device_id(opts, message \\ %{}) do
+    opts
+    |> origin_resource(message)
+    |> case do
+      value when value in [nil, ""] -> "server"
+      value -> value
+    end
+  end
 
   defp to_int(nil), do: 0
   defp to_int(value) when is_integer(value), do: value

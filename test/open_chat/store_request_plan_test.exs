@@ -93,6 +93,9 @@ defmodule OpenChat.StoreRequestPlanTest do
   test "legacy extension reaction toggle takes the same lock as native reactions" do
     plan = RequestPlan.build({:toggle_reaction, "alice", "123", "🔥"})
 
+    rest_plan =
+      RequestPlan.build({:toggle_reaction, "alice", "123", "🔥", resource: "sdk-session"})
+
     assert plan.mutating?
     assert plan.locks == [{:message, "123"}]
 
@@ -102,6 +105,8 @@ defmodule OpenChat.StoreRequestPlanTest do
              {"users", "alice"},
              {:counter, "next_reaction_id"}
            ]
+
+    assert rest_plan == plan
   end
 
   test "message action follow-up refresh covers actor and group moderator records" do

@@ -55,6 +55,29 @@ defmodule OpenChat.StorePubSubFanoutTest do
                     }}
   end
 
+  test "message broadcasts preserve the originating SDK resource as deviceId" do
+    PubSub.subscribe({:user, "bob"})
+
+    on_exit(fn ->
+      PubSub.unsubscribe({:user, "bob"})
+    end)
+
+    PubSubFanout.message(State.default(), %{
+      "id" => 1,
+      "sender" => "alice",
+      "receiver" => "bob",
+      "receiverType" => "user",
+      "resource" => "react-native-session-1"
+    })
+
+    assert_receive {:comet_event,
+                    %{
+                      "type" => "message",
+                      "deviceId" => "react-native-session-1",
+                      "body" => %{"id" => 1}
+                    }}
+  end
+
   test "message update broadcasts edited actions without moving the original message" do
     state =
       State.default()
@@ -203,10 +226,16 @@ defmodule OpenChat.StorePubSubFanoutTest do
       %{"id" => 1, "sender" => "alice", "receiver" => "bob", "receiverType" => "user"},
       %{"id" => 2, "messageId" => 1, "reaction" => "👍", "reactedBy" => %{}, "reactedAt" => 3},
       "message_reaction_added",
-      "bob"
+      "bob",
+      device_id: "reaction-session-1"
     )
 
-    assert_receive {:comet_event, %{"type" => "reaction", "sender" => "bob"}}
+    assert_receive {:comet_event,
+                    %{
+                      "type" => "reaction",
+                      "sender" => "bob",
+                      "deviceId" => "reaction-session-1"
+                    }}
 
     PubSubFanout.receipt(
       %{"messageId" => "1", "conversationId" => "user_alice_bob", "readAt" => 4},

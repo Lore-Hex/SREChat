@@ -4,14 +4,14 @@ defmodule OpenChat.Store.PubSubFanout do
   alias OpenChat.{Config, Media}
   alias OpenChat.Store.{MessageData, MessageState}
 
-  def message(state, message) do
+  def message(state, message, opts \\ []) do
     message = message |> MessageData.ensure_media_wire_shape() |> Media.sign_urls()
 
     event = %{
       "appId" => Config.app_id(),
       "receiver" => message["receiver"],
       "receiverType" => message["receiverType"],
-      "deviceId" => "server",
+      "deviceId" => event_device_id(opts, message),
       "type" => "message",
       "sender" => to_s(message["sender"]),
       "body" => message
@@ -20,7 +20,7 @@ defmodule OpenChat.Store.PubSubFanout do
     OpenChat.PubSub.broadcast(recipient_keys(state, message), event)
   end
 
-  def message_update(state, message, actor_uid \\ nil, action_id \\ nil) do
+  def message_update(state, message, actor_uid \\ nil, action_id \\ nil, opts \\ []) do
     receiver_entity =
       MessageState.receiver_entity(state, message["receiverType"], message["receiver"])
 
@@ -43,7 +43,7 @@ defmodule OpenChat.Store.PubSubFanout do
       "appId" => Config.app_id(),
       "receiver" => action["receiver"],
       "receiverType" => action["receiverType"],
-      "deviceId" => "server",
+      "deviceId" => event_device_id(opts),
       "type" => "message",
       "sender" => to_s(action["sender"]),
       "body" => action
@@ -52,12 +52,12 @@ defmodule OpenChat.Store.PubSubFanout do
     OpenChat.PubSub.broadcast(update_recipient_keys(state, message), event)
   end
 
-  def reaction(state, message, reaction_obj, action, actor_uid) do
+  def reaction(state, message, reaction_obj, action, actor_uid, opts \\ []) do
     event = %{
       "appId" => Config.app_id(),
       "receiver" => message["receiver"],
       "receiverType" => message["receiverType"],
-      "deviceId" => "server",
+      "deviceId" => event_device_id(opts),
       "type" => "reaction",
       "sender" => actor_uid,
       "body" => %{
@@ -164,6 +164,20 @@ defmodule OpenChat.Store.PubSubFanout do
   end
 
   defp blank?(value), do: value in [nil, "", false]
+
+  defp event_device_id(opts, message \\ %{}) do
+    opts
+    |> Keyword.get(:device_id)
+    |> case do
+      value when value in [nil, ""] -> message["resource"] || "server"
+      value -> value
+    end
+    |> to_s()
+    |> case do
+      "" -> "server"
+      value -> value
+    end
+  end
 
   defp to_s(nil), do: ""
   defp to_s(value) when is_binary(value), do: value

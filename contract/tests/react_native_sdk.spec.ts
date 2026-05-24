@@ -12,6 +12,10 @@ const DM_MESSAGE_COUNT = Number(process.env.OPENCHAT_RN_DM_MESSAGES || 12);
 const GROUP_MESSAGE_COUNT = Number(process.env.OPENCHAT_RN_GROUP_MESSAGES || 12);
 const MAX_LIVE_LATENCY_MS = Number(process.env.OPENCHAT_RN_MAX_LIVE_LATENCY_MS || 5000);
 
+if (TARGET_HOST.startsWith('localhost') || TARGET_HOST.startsWith('127.0.0.1')) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED ||= '0';
+}
+
 const asyncStore = new Map<string, string>();
 
 function installReactNativeNodeShims() {
@@ -236,8 +240,19 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
   await adminPost(request, '/users', {
     uid: aliceUid,
     name: 'RN Contract Alice',
+    metadata: {
+      avatarId: 'lovable-figgy',
+      color: '#5B7CFA',
+    },
   });
-  await adminPost(request, '/users', { uid: bobUid, name: 'RN Contract Bob' });
+  await adminPost(request, '/users', {
+    uid: bobUid,
+    name: 'RN Contract Bob',
+    metadata: {
+      avatarId: 'lovable-figgy',
+      color: '#EB5757',
+    },
+  });
   const aliceAuth = await adminPost(request, `/users/${aliceUid}/auth_tokens`);
   const bobAuth = await adminPost(request, `/users/${bobUid}/auth_tokens`);
   await adminPost(request, '/groups', {
@@ -348,6 +363,61 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
     { bobUid, expectedCount: dmTexts.length },
   );
   expect(dmHistory).toEqual(expect.arrayContaining(dmTexts));
+
+  const webConversations = await web.evaluate(
+    async ({ bobUid }) => {
+      const { CometChat } = window as any;
+      const req = new CometChat.ConversationsRequestBuilder().setLimit(15).setConversationType('user').build();
+      const conversations = await req.fetchNext();
+
+      return conversations.map((conversation: any) => ({
+        conversationType: conversation.getConversationType?.(),
+        withUid: conversation.getConversationWith?.()?.getUid?.(),
+        unread: conversation.getUnreadMessageCount?.(),
+        lastText: conversation.getLastMessage?.()?.getData?.()?.text,
+        isExpectedPeer: conversation.getConversationWith?.()?.getUid?.() === bobUid,
+      }));
+    },
+    { bobUid },
+  );
+
+  expect(webConversations).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        conversationType: 'user',
+        withUid: bobUid,
+        lastText: dmTexts.at(-1),
+        isExpectedPeer: true,
+      }),
+    ]),
+  );
+
+  const rnConversations = await new RNCometChat.ConversationsRequestBuilder()
+    .setLimit(15)
+    .setConversationType('user')
+    .build()
+    .fetchNext();
+  expect(
+    rnConversations.map((conversation: any) => ({
+      conversationType: conversation.getConversationType?.(),
+      withUid: conversation.getConversationWith?.()?.getUid?.(),
+      metadata: conversation.getConversationWith?.()?.getMetadata?.(),
+      unread: conversation.getUnreadMessageCount?.(),
+      lastText: conversation.getLastMessage?.()?.getData?.()?.text,
+    })),
+  ).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        conversationType: 'user',
+        withUid: aliceUid,
+        metadata: expect.objectContaining({
+          avatarId: expect.any(String),
+          color: expect.any(String),
+        }),
+        lastText: dmTexts.at(-1),
+      }),
+    ]),
+  );
 
   await web.evaluate(
     async ({ room }) => {
@@ -470,7 +540,7 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
 
   await web.close();
   try {
-    await RNCometChat.logout();
+    RNCometChat.removeMessageListener(`OPENCHAT_RN_CONTRACT_${suffix}`);
   } catch {
     // RN SDK cleanup is noisy in the Node shim harness; the assertions above
     // are the compatibility contract.

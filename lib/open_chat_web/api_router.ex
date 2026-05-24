@@ -398,12 +398,20 @@ defmodule OpenChatWeb.ApiRouter do
       fn conn ->
         store_response(
           conn,
-          Store.edit_message("system", message_id, conn.body_params, admin?: true)
+          Store.edit_message(
+            "system",
+            message_id,
+            conn.body_params,
+            origin_opts(conn, admin?: true)
+          )
         )
       end,
       fn conn ->
         with_user(conn, fn conn, user, _token ->
-          store_response(conn, Store.edit_message(user["uid"], message_id, conn.body_params))
+          store_response(
+            conn,
+            Store.edit_message(user["uid"], message_id, conn.body_params, origin_opts(conn))
+          )
         end)
       end
     )
@@ -413,11 +421,14 @@ defmodule OpenChatWeb.ApiRouter do
     with_admin_or_user(
       conn,
       fn conn ->
-        store_response(conn, Store.delete_message("system", message_id, admin?: true))
+        store_response(
+          conn,
+          Store.delete_message("system", message_id, origin_opts(conn, admin?: true))
+        )
       end,
       fn conn ->
         with_user(conn, fn conn, user, _token ->
-          store_response(conn, Store.delete_message(user["uid"], message_id))
+          store_response(conn, Store.delete_message(user["uid"], message_id, origin_opts(conn)))
         end)
       end
     )
@@ -572,7 +583,14 @@ defmodule OpenChatWeb.ApiRouter do
   end
 
   defp send_message_response(conn, sender_uid, params, status \\ 200, opts \\ []) do
-    result = Store.send_message(sender_uid, params, uploads_from_params(conn.params), opts)
+    result =
+      Store.send_message(
+        sender_uid,
+        params,
+        uploads_from_params(conn.params),
+        origin_opts(conn, opts)
+      )
+
     store_response(conn, result, status)
   end
 
@@ -589,16 +607,30 @@ defmodule OpenChatWeb.ApiRouter do
     end
   end
 
+  defp origin_opts(conn, opts \\ []) do
+    case request_resource(conn) do
+      "" -> opts
+      resource -> Keyword.put(opts, :resource, resource)
+    end
+  end
+
+  defp request_resource(conn) do
+    conn
+    |> get_req_header("resource")
+    |> List.first()
+    |> to_s()
+  end
+
   defp reaction_response(conn, :add, uid, message_id, reaction) do
-    store_response(conn, Store.add_reaction(uid, message_id, reaction))
+    store_response(conn, Store.add_reaction(uid, message_id, reaction, origin_opts(conn)))
   end
 
   defp reaction_response(conn, :remove, uid, message_id, reaction) do
-    store_response(conn, Store.remove_reaction(uid, message_id, reaction))
+    store_response(conn, Store.remove_reaction(uid, message_id, reaction, origin_opts(conn)))
   end
 
   defp reaction_response(conn, :toggle, uid, message_id, reaction) do
-    store_response(conn, Store.toggle_reaction(uid, message_id, reaction))
+    store_response(conn, Store.toggle_reaction(uid, message_id, reaction, origin_opts(conn)))
   end
 
   defp store_response(conn, result, success_status \\ 200, error_status \\ 400) do
@@ -904,6 +936,10 @@ defmodule OpenChatWeb.ApiRouter do
 
   defp blank?(v), do: v in [nil, "", false]
   defp truthy?(v), do: v in [true, 1, "1", "true", "TRUE", "yes"]
+
+  defp to_s(nil), do: ""
+  defp to_s(value) when is_binary(value), do: value
+  defp to_s(value), do: to_string(value)
 
   defp to_int(value, _default) when is_integer(value), do: value
 

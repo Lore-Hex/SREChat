@@ -197,9 +197,15 @@ defmodule OpenChat.Store.RequestPlan do
     ])
   end
 
+  def build({:add_reaction, uid, id, _reaction, _opts}),
+    do: build({:add_reaction, uid, id, nil})
+
   def build({:remove_reaction, uid, id, _reaction}) do
     mutate(message_scope(id), [{"messages", id}, {"reactions", id}, {"users", uid}])
   end
+
+  def build({:remove_reaction, uid, id, _reaction, _opts}),
+    do: build({:remove_reaction, uid, id, nil})
 
   def build({:toggle_reaction, uid, id, _reaction}) do
     mutate(message_scope(id), [
@@ -209,6 +215,9 @@ defmodule OpenChat.Store.RequestPlan do
       {:counter, "next_reaction_id"}
     ])
   end
+
+  def build({:toggle_reaction, uid, id, _reaction, _opts}),
+    do: build({:toggle_reaction, uid, id, nil})
 
   def build({:reactions, _uid, id, _reaction}), do: read([{"messages", id}, {"reactions", id}])
   def build(_request), do: read([])
