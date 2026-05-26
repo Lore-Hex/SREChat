@@ -784,8 +784,15 @@ defmodule OpenChat.Store do
 
       {:ok, message, state} ->
         {state, retention_ops} = MessageState.store_with_retention(state, message)
-        persist_ops(PersistenceOps.message_create(state, message) ++ retention_ops)
+        {state, auto_delivery} = auto_deliver_direct_message(state, message)
+
+        persist_ops(
+          PersistenceOps.message_create(state, message) ++
+            retention_ops ++ auto_delivery_persistence_ops(state, auto_delivery)
+        )
+
         PubSubFanout.message(state, message, device_id: origin_device_id(opts, message))
+        broadcast_auto_delivery(state, auto_delivery)
         {:reply, {:ok, message}, state}
     end
   end
@@ -799,8 +806,15 @@ defmodule OpenChat.Store do
 
       {:ok, message, state} ->
         {state, retention_ops} = MessageState.store_with_retention(state, message)
-        persist_ops(PersistenceOps.message_create(state, message) ++ retention_ops)
+        {state, auto_delivery} = auto_deliver_direct_message(state, message)
+
+        persist_ops(
+          PersistenceOps.message_create(state, message) ++
+            retention_ops ++ auto_delivery_persistence_ops(state, auto_delivery)
+        )
+
         PubSubFanout.message(state, message, device_id: origin_device_id(opts, message))
+        broadcast_auto_delivery(state, auto_delivery)
         {:reply, {:ok, message}, state}
     end
   end
@@ -1041,7 +1055,11 @@ defmodule OpenChat.Store do
           Conversations.mark_read(state, uid, receiver_type, receiver_id, message_id, Time.now())
 
         persist_ops(PersistenceOps.reads(state, uid) ++ PersistenceOps.unread_counts(state, uid))
-        PubSubFanout.receipt(payload, uid, receiver_type, receiver_id, "read")
+
+        PubSubFanout.receipt(payload, uid, receiver_type, receiver_id, "read",
+          user: state |> UserState.get_or_default(uid) |> UserState.public()
+        )
+
         {:reply, {:ok, payload}, state}
 
       {:error, error} ->
@@ -1063,7 +1081,11 @@ defmodule OpenChat.Store do
           )
 
         persist_ops(PersistenceOps.delivered(state, uid))
-        PubSubFanout.receipt(payload, uid, receiver_type, receiver_id, "delivered")
+
+        PubSubFanout.receipt(payload, uid, receiver_type, receiver_id, "delivered",
+          user: state |> UserState.get_or_default(uid) |> UserState.public()
+        )
+
         {:reply, {:ok, payload}, state}
 
       {:error, error} ->
@@ -1619,6 +1641,39 @@ defmodule OpenChat.Store do
       state
       |> MessageState.refresh_reactions(message, uid)
       |> MessageData.ensure_media_wire_shape()
+
+  defp auto_deliver_direct_message(
+         state,
+         %{"receiverType" => "user", "sender" => sender, "receiver" => receiver, "id" => id}
+       ) do
+    sender = to_s(sender)
+    receiver = to_s(receiver)
+
+    if blank?(sender) or blank?(receiver) or sender == receiver do
+      {state, nil}
+    else
+      {state, payload} =
+        Conversations.mark_delivered(state, receiver, "user", sender, id, Time.now())
+
+      {state, %{uid: receiver, peer_uid: sender, payload: payload}}
+    end
+  end
+
+  defp auto_deliver_direct_message(state, _message), do: {state, nil}
+
+  defp auto_delivery_persistence_ops(state, %{uid: uid}), do: PersistenceOps.delivered(state, uid)
+  defp auto_delivery_persistence_ops(_state, _auto_delivery), do: []
+
+  defp broadcast_auto_delivery(state, %{uid: uid, peer_uid: peer_uid, payload: payload}) do
+    user = state |> UserState.get_or_default(uid) |> UserState.public()
+
+    PubSubFanout.receipt(payload, uid, "user", peer_uid, "delivered",
+      user: user,
+      include_actor?: true
+    )
+  end
+
+  defp broadcast_auto_delivery(_state, _auto_delivery), do: :ok
 
   defp delete_conversation_indexes(state, conv_ids) do
     {state, %{conversation_ids: conv_ids, touched_user_buckets: touched}} =

@@ -242,10 +242,18 @@ defmodule OpenChat.StorePubSubFanoutTest do
       "alice",
       "user",
       "bob",
-      "read"
+      "read",
+      user: %{"uid" => "alice", "name" => "Alice"}
     )
 
-    assert_receive {:comet_event, %{"type" => "receipts", "body" => %{"action" => "read"}}}
+    assert_receive {:comet_event,
+                    %{
+                      "type" => "receipts",
+                      "body" => %{
+                        "action" => "read",
+                        "user" => %{"uid" => "alice", "name" => "Alice"}
+                      }
+                    }}
   end
 
   test "message recipient keys include the sender for multi-device group sync" do

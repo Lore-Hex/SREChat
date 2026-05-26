@@ -73,7 +73,9 @@ defmodule OpenChat.Store.PubSubFanout do
     OpenChat.PubSub.broadcast(recipient_keys(state, message), event)
   end
 
-  def receipt(payload, uid, receiver_type, receiver_id, action) do
+  def receipt(payload, uid, receiver_type, receiver_id, action, opts \\ []) do
+    actor = Keyword.get(opts, :user) || %{"uid" => to_s(uid), "name" => to_s(uid)}
+
     event = %{
       "appId" => Config.app_id(),
       "receiver" => receiver_id,
@@ -85,12 +87,20 @@ defmodule OpenChat.Store.PubSubFanout do
         "action" => action,
         "messageId" => payload["messageId"],
         "conversationId" => payload["conversationId"],
-        "timestamp" => payload["deliveredAt"] || payload["readAt"]
+        "timestamp" => payload["deliveredAt"] || payload["readAt"],
+        "user" => actor
       }
     }
 
     targets =
       if receiver_type == "group", do: [{:group, receiver_id}], else: [{:user, receiver_id}]
+
+    targets =
+      if Keyword.get(opts, :include_actor?, false) and receiver_type == "user" do
+        [{:user, uid} | targets]
+      else
+        targets
+      end
 
     OpenChat.PubSub.broadcast(targets, event)
   end

@@ -210,8 +210,44 @@ function recordRnEvent(events: any[], kind: string, message: any, cometChat: any
     receiverClass: receiver?.constructor?.name,
     receiverIsGroup: cometChat?.Group ? receiver instanceof cometChat.Group : false,
     receiverIsUser: cometChat?.User ? receiver instanceof cometChat.User : false,
+    metadataChatMessage: metadata?.chatMessage,
     at: Date.now(),
   });
+}
+
+function recordRnReceiptEvent(events: any[], kind: string, receipt: any) {
+  const sender = receipt?.getSender?.() || receipt?.sender || receipt?.user;
+  events.push({
+    kind,
+    messageId: String(receipt?.getMessageId?.() || receipt?.messageId || ''),
+    sender: sender?.getUid?.() || sender?.uid || sender,
+    receiver: receipt?.getReceiver?.() || receipt?.receiver,
+    receiverType: receipt?.getReceiverType?.() || receipt?.receiverType,
+    deliveredAt: receipt?.getDeliveredAt?.() || receipt?.deliveredAt,
+    readAt: receipt?.getReadAt?.() || receipt?.readAt,
+    at: Date.now(),
+  });
+}
+
+function appChatMetadata(uid: string, name: string, text: string, suffix: string) {
+  return {
+    incrementUnreadCount: true,
+    chatMessage: {
+      message: text,
+      uuid: `rn-app-msg-${uid}-${suffix}-${Date.now()}`,
+      id: -1,
+      avatarId: 'lovable-figgy',
+      userName: name,
+      userUuid: uid,
+      replies: undefined,
+      color: '#5B7CFA',
+      badges: undefined,
+      media: undefined,
+      imageBase64: undefined,
+      imageUrls: undefined,
+      type: 'user',
+    },
+  };
 }
 
 async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 10_000) {
@@ -302,6 +338,8 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
           reaction: reactionValue(reaction),
           at: Date.now(),
         }),
+      onMessagesDelivered: (receipt: any) => recordRnReceiptEvent(rnEvents, 'delivered', receipt),
+      onMessagesRead: (receipt: any) => recordRnReceiptEvent(rnEvents, 'read', receipt),
     }),
   );
 
@@ -317,11 +355,25 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
 
     if (i % 2 === 0) {
       await web.evaluate(
-        async ({ bobUid, text }) => {
+        async ({ bobUid, text, aliceUid, suffix }) => {
           const { CometChat } = window as any;
-          await CometChat.sendMessage(new CometChat.TextMessage(bobUid, text, 'user'));
+          const message = new CometChat.TextMessage(bobUid, text, 'user');
+          message.setMetadata({
+            incrementUnreadCount: true,
+            chatMessage: {
+              message: text,
+              uuid: `rn-web-app-msg-${suffix}-${Date.now()}`,
+              id: -1,
+              avatarId: 'lovable-figgy',
+              userName: 'RN Contract Alice',
+              userUuid: aliceUid,
+              color: '#5B7CFA',
+              type: 'user',
+            },
+          });
+          await CometChat.sendMessage(message);
         },
-        { bobUid, text },
+        { bobUid, text, aliceUid, suffix },
       );
       const seenAt = await waitFor(() => rnEvents.some((event) => event.kind === 'text' && event.text === text));
       expect(seenAt, `RN did not receive web DM ${text}`).toBeTruthy();
@@ -332,10 +384,19 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
         receiverType: 'user',
         receiverUid: bobUid,
         receiverIsUser: true,
+        metadataChatMessage: expect.objectContaining({
+          message: text,
+          userUuid: aliceUid,
+          userName: 'RN Contract Alice',
+          avatarId: expect.any(String),
+          type: 'user',
+        }),
       });
       dmLatencies.push(Number(seenAt) - startedAt);
     } else {
-      await RNCometChat.sendMessage(new RNCometChat.TextMessage(aliceUid, text, 'user'));
+      const message = new RNCometChat.TextMessage(aliceUid, text, 'user');
+      message.setMetadata(appChatMetadata(bobUid, 'RN Contract Bob', text, suffix));
+      await RNCometChat.sendMessage(message);
       const seenAt = await waitFor(() =>
         web.evaluate(
           (expected) =>
@@ -541,6 +602,138 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
   await web.close();
   try {
     RNCometChat.removeMessageListener(`OPENCHAT_RN_CONTRACT_${suffix}`);
+  } catch {
+    // RN SDK cleanup is noisy in the Node shim harness; the assertions above
+    // are the compatibility contract.
+  }
+});
+
+test('real React Native SDK receives app-shaped DMs from a web peer', async ({ browser, request }) => {
+  test.skip(!ADMIN_API_KEY, 'Requires OPENCHAT_ADMIN_API_KEY for staging user setup.');
+  test.setTimeout(60_000);
+  installReactNativeNodeShims();
+
+  const { CometChat: RNCometChat } = require('@cometchat/chat-sdk-react-native');
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const aliceUid = `rn-mobile-alice-${suffix}`;
+  const bobUid = `rn-web-bob-${suffix}`;
+
+  await adminPost(request, '/users', {
+    uid: aliceUid,
+    name: 'RN Mobile Alice',
+    metadata: { avatarId: 'lovable-figgy', color: '#5B7CFA' },
+  });
+  await adminPost(request, '/users', {
+    uid: bobUid,
+    name: 'RN Web Bob',
+    metadata: { avatarId: 'lovable-figgy', color: '#EB5757' },
+  });
+  const aliceAuth = await adminPost(request, `/users/${aliceUid}/auth_tokens`);
+  const bobAuth = await adminPost(request, `/users/${bobUid}/auth_tokens`);
+
+  const rnSettings = new RNCometChat.AppSettingsBuilder()
+    .subscribePresenceForAllUsers()
+    .setRegion('us')
+    .overrideClientHost(TARGET_HOST)
+    .overrideAdminHost(TARGET_HOST.replace(/\/v3\.0$/, '/v3'))
+    .autoEstablishSocketConnection(true)
+    .build();
+  await RNCometChat.init(APP_ID, rnSettings);
+  await RNCometChat.login(aliceAuth.authToken);
+
+  const rnEvents: any[] = [];
+  RNCometChat.addMessageListener(
+    `OPENCHAT_RN_MOBILE_RECEIVER_${suffix}`,
+    new RNCometChat.MessageListener({
+      onTextMessageReceived: (message: any) => recordRnEvent(rnEvents, 'text', message, RNCometChat),
+      onCustomMessageReceived: (message: any) => recordRnEvent(rnEvents, 'custom', message, RNCometChat),
+      onMediaMessageReceived: (message: any) => recordRnEvent(rnEvents, 'media', message, RNCometChat),
+      onMessageEdited: (message: any) => recordRnEvent(rnEvents, 'edited', message, RNCometChat),
+      onMessagesDelivered: (receipt: any) => recordRnReceiptEvent(rnEvents, 'delivered', receipt),
+      onMessagesRead: (receipt: any) => recordRnReceiptEvent(rnEvents, 'read', receipt),
+    }),
+  );
+
+  const web = await browser.newPage();
+  await loadWebSdk(web, bobAuth.authToken);
+  await web.waitForTimeout(1500);
+
+  const text = `rn-mobile-receive-dm-${suffix}`;
+  const startedAt = Date.now();
+  const sent = await web.evaluate(
+    async ({ aliceUid, bobUid, text, suffix }) => {
+      const { CometChat } = window as any;
+      const message = new CometChat.TextMessage(aliceUid, text, 'user');
+      message.setMetadata({
+        incrementUnreadCount: true,
+        chatMessage: {
+          message: text,
+          uuid: `rn-mobile-receive-${suffix}`,
+          id: -1,
+          avatarId: 'lovable-figgy',
+          userName: 'RN Web Bob',
+          userUuid: bobUid,
+          color: '#EB5757',
+          type: 'user',
+        },
+      });
+      const sent = await CometChat.sendMessage(message);
+      return {
+        id: String(sent.getId?.() || sent.id),
+        metadata: sent.getMetadata?.() || sent.metadata,
+      };
+    },
+    { aliceUid, bobUid, text, suffix },
+  );
+
+  const seenAt = await waitFor(() => rnEvents.some((event) => event.kind === 'text' && event.text === text));
+  expect(seenAt, `RN mobile receiver did not receive app-shaped DM ${text}`).toBeTruthy();
+  const event = rnEvents.find((item) => item.kind === 'text' && item.text === text);
+  expect(event).toMatchObject({
+    id: sent.id,
+    sender: bobUid,
+    receiverId: aliceUid,
+    receiverType: 'user',
+    receiverUid: aliceUid,
+    receiverIsUser: true,
+    metadataChatMessage: expect.objectContaining({
+      message: text,
+      userUuid: bobUid,
+      userName: 'RN Web Bob',
+      avatarId: 'lovable-figgy',
+      type: 'user',
+    }),
+  });
+  expect(Number(seenAt) - startedAt).toBeLessThan(MAX_LIVE_LATENCY_MS);
+
+  const deliveredAt = await waitFor(() =>
+    rnEvents.some((event) => event.kind === 'delivered' && event.messageId === sent.id),
+  );
+  expect(deliveredAt, `RN mobile receiver did not receive delivered refresh for ${sent.id}`).toBeTruthy();
+  expect(rnEvents.find((event) => event.kind === 'delivered' && event.messageId === sent.id)).toMatchObject({
+    sender: aliceUid,
+    receiver: bobUid,
+    receiverType: 'user',
+  });
+
+  const rnHistory = await new RNCometChat.MessagesRequestBuilder()
+    .setUID(bobUid)
+    .setLimit(10)
+    .setTimestamp(Date.now())
+    .build()
+    .fetchPrevious();
+  const historyMessage = rnHistory.find((message: any) => String(message.getId?.()) === sent.id);
+  expect(historyMessage?.getMetadata?.()?.chatMessage).toMatchObject({
+    message: text,
+    userUuid: bobUid,
+    userName: 'RN Web Bob',
+    avatarId: 'lovable-figgy',
+    type: 'user',
+  });
+
+  await web.close();
+  try {
+    RNCometChat.removeMessageListener(`OPENCHAT_RN_MOBILE_RECEIVER_${suffix}`);
   } catch {
     // RN SDK cleanup is noisy in the Node shim harness; the assertions above
     // are the compatibility contract.

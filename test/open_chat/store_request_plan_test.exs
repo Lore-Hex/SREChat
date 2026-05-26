@@ -22,6 +22,7 @@ defmodule OpenChat.StoreRequestPlanTest do
              {"conversation_latest", conversation_id},
              {"unread_counts", "plan-a"},
              {"unread_counts", "plan-b"},
+             {"delivered", "plan-b"},
              {"users", "plan-b"}
            ]
   end
@@ -180,6 +181,7 @@ defmodule OpenChat.StoreRequestPlanTest do
              {"conversation_latest", direct_conversation},
              {"unread_counts", "alice"},
              {"unread_counts", "bob"},
+             {"delivered", "bob"},
              {"messages", "55"},
              {"users", "bob"}
            ]

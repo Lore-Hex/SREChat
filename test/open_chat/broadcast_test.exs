@@ -55,9 +55,67 @@ defmodule OpenChat.BroadcastTest do
                       "type" => "receipts",
                       "receiver" => "alice",
                       "sender" => "bob",
-                      "body" => %{"action" => "delivered"}
+                      "body" => %{
+                        "action" => "delivered",
+                        "user" => %{"uid" => "bob"}
+                      }
                     }},
                    500
+  end
+
+  test "direct message sends auto-deliver to the receiver and refresh both DM peers" do
+    PubSub.subscribe({:user, "alice"})
+    PubSub.subscribe({:user, "bob"})
+
+    {:ok, msg} =
+      Store.send_message("alice", %{
+        "receiver" => "bob",
+        "receiverType" => "user",
+        "data" => %{"text" => "live dm"}
+      })
+
+    message_id = to_string(msg["id"])
+
+    assert_receive {:comet_event,
+                    %{
+                      "type" => "message",
+                      "sender" => "alice",
+                      "receiver" => "bob",
+                      "body" => %{"id" => id}
+                    }},
+                   500
+
+    assert to_string(id) == message_id
+
+    assert_receive {:comet_event,
+                    %{
+                      "type" => "receipts",
+                      "receiver" => "alice",
+                      "sender" => "bob",
+                      "body" => %{
+                        "action" => "delivered",
+                        "messageId" => ^message_id,
+                        "user" => %{"uid" => "bob"}
+                      }
+                    }},
+                   500
+
+    assert_receive {:comet_event,
+                    %{
+                      "type" => "receipts",
+                      "receiver" => "alice",
+                      "sender" => "bob",
+                      "body" => %{
+                        "action" => "delivered",
+                        "messageId" => ^message_id,
+                        "user" => %{"uid" => "bob"}
+                      }
+                    }},
+                   500
+
+    assert {:ok, conversation} = Store.conversation("bob", "user", "alice")
+    assert conversation["lastDeliveredMessageId"] == message_id
+    assert is_integer(conversation["deliveredAt"])
   end
 
   test "Store reactions broadcast edited actions before reaction detail events" do

@@ -275,6 +275,7 @@ defmodule OpenChat.Store.RequestPlan do
       [{"users", sender_uid}, {:counter, "next_id"}] ++
         conversation_record_keys(sender_uid, receiver_type, receiver) ++
         unread_count_keys(sender_uid, receiver_type, receiver) ++
+        auto_delivery_keys(receiver_type, receiver) ++
         parent_message_keys(params) ++
         if(receiver_type == "group", do: group_keys(receiver), else: user_record_keys(receiver))
 
@@ -344,6 +345,13 @@ defmodule OpenChat.Store.RequestPlan do
   defp unread_count_keys(sender_uid, receiver_type, receiver_id, _state) do
     unread_count_keys(sender_uid, receiver_type, receiver_id)
   end
+
+  defp auto_delivery_keys("user", receiver_id) do
+    receiver_id = to_s(receiver_id)
+    if blank?(receiver_id), do: [], else: [{"delivered", receiver_id}]
+  end
+
+  defp auto_delivery_keys(_receiver_type, _receiver_id), do: []
 
   defp parent_message_keys(params) do
     params
