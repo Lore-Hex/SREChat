@@ -1,7 +1,7 @@
 defmodule OpenChat.Store.PubSubFanout do
   @moduledoc false
 
-  alias OpenChat.{Config, Media}
+  alias OpenChat.{Config, Media, Time}
   alias OpenChat.Store.{MessageData, MessageState}
 
   def message(state, message, opts \\ []) do
@@ -160,20 +160,41 @@ defmodule OpenChat.Store.PubSubFanout do
   end
 
   def group_recipient_keys(state, guid, opts \\ []) do
+    guid = to_s(guid)
     except = opts |> Keyword.get(:except) |> to_s()
-    members = state["members"] |> Map.get(to_s(guid), %{})
+    members = state["members"] |> Map.get(guid, %{})
+    presence_keys = active_presence_recipient_keys(state, guid, except)
 
     if map_size(members) > Config.group_unread_fanout_limit() do
-      [{:group, to_s(guid)}]
+      Enum.uniq([{:group, guid} | presence_keys])
     else
       members
       |> Map.keys()
-      |> Enum.reject(&(to_s(&1) == except))
-      |> Enum.map(&{:user, &1})
+      |> user_recipient_keys(except)
+      |> Kernel.++(presence_keys)
+      |> Enum.uniq()
     end
   end
 
   defp blank?(value), do: value in [nil, "", false]
+
+  defp active_presence_recipient_keys(state, guid, except) do
+    now = Time.now()
+
+    (state["presence"] || %{})
+    |> Map.get(guid, %{})
+    |> Kernel.||(%{})
+    |> Enum.filter(fn {_uid, presence} -> to_int(presence["expiresAt"]) > now end)
+    |> Enum.map(fn {uid, _presence} -> uid end)
+    |> user_recipient_keys(except)
+  end
+
+  defp user_recipient_keys(uids, except) do
+    uids
+    |> Enum.map(&to_s/1)
+    |> Enum.reject(&(blank?(&1) or &1 == except))
+    |> Enum.map(&{:user, &1})
+  end
 
   defp event_device_id(opts, message \\ %{}) do
     opts
@@ -192,4 +213,15 @@ defmodule OpenChat.Store.PubSubFanout do
   defp to_s(nil), do: ""
   defp to_s(value) when is_binary(value), do: value
   defp to_s(value), do: to_string(value)
+
+  defp to_int(value) when is_integer(value), do: value
+
+  defp to_int(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {i, _rest} -> i
+      :error -> 0
+    end
+  end
+
+  defp to_int(_value), do: 0
 end

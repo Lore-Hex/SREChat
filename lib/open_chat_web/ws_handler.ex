@@ -67,7 +67,11 @@ defmodule OpenChatWeb.WSHandler do
 
   defp handle_auth(event, state) do
     body = event["body"] || %{}
-    token = body["auth"] || event["auth"] || body["token"] || event["token"]
+
+    token =
+      body["auth"] || event["auth"] || body["token"] || event["token"] || body["authToken"] ||
+        event["authToken"]
+
     device_id = event["deviceId"] || body["deviceId"] || ""
 
     case Store.authenticate(token) do

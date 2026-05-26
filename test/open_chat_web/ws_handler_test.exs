@@ -32,6 +32,24 @@ defmodule OpenChatWeb.WSHandlerTest do
     assert reply["body"] == %{"status" => "OK", "code" => "200"}
   end
 
+  test "auth event accepts legacy authToken aliases" do
+    {:reply, {:text, json}, state} =
+      WSHandler.websocket_handle(
+        {:text,
+         Jason.encode!(%{
+           "type" => "auth",
+           "body" => %{"authToken" => "uid:alice"}
+         })},
+        %{uid: nil, token: nil, device_id: nil}
+      )
+
+    reply = Jason.decode!(json)
+
+    assert state.uid == "alice"
+    assert state.token == "uid:alice"
+    assert reply["body"] == %{"status" => "OK", "code" => "200"}
+  end
+
   test "authenticated sockets resync group subscriptions after join and leave" do
     assert {:ok, _group} = Store.upsert_group(%{"guid" => "ws-sync-room", "type" => "public"})
 

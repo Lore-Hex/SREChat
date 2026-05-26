@@ -31,6 +31,50 @@ defmodule OpenChat.StorePubSubFanoutTest do
     end)
   end
 
+  test "group fanout includes active public-room presence without making visitors members" do
+    now = OpenChat.Time.now()
+
+    state =
+      State.default()
+      |> put_in(["members", "room"], %{"alice" => %{}})
+      |> put_in(["presence", "room"], %{
+        "visitor" => %{"uid" => "visitor", "expiresAt" => now + 60},
+        "expired" => %{"uid" => "expired", "expiresAt" => now - 1}
+      })
+
+    assert PubSubFanout.group_recipient_keys(state, "room") |> MapSet.new() ==
+             MapSet.new([{:user, "alice"}, {:user, "visitor"}])
+
+    assert PubSubFanout.group_recipient_keys(state, "room", except: "visitor") ==
+             [{:user, "alice"}]
+  end
+
+  test "group message broadcasts reach active presence visitors over their user socket" do
+    now = OpenChat.Time.now()
+
+    state =
+      State.default()
+      |> put_in(["members", "room"], %{"alice" => %{}})
+      |> put_in(["presence", "room"], %{
+        "visitor" => %{"uid" => "visitor", "expiresAt" => now + 60}
+      })
+
+    PubSub.subscribe({:user, "visitor"})
+
+    on_exit(fn ->
+      PubSub.unsubscribe({:user, "visitor"})
+    end)
+
+    PubSubFanout.message(state, %{
+      "id" => 3,
+      "sender" => "alice",
+      "receiver" => "room",
+      "receiverType" => "group"
+    })
+
+    assert_receive {:comet_event, %{"type" => "message", "body" => %{"id" => 3}}}
+  end
+
   test "message broadcasts carry CometChat-compatible event envelopes" do
     PubSub.subscribe({:user, "bob"})
 
