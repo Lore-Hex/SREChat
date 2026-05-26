@@ -105,6 +105,27 @@ defmodule OpenChat.StoreTest do
     assert get_in(unreacted, ["data", "reactions"]) == []
     assert unreacted["updatedAt"] == msg["updatedAt"]
 
+    {:ok, legacy_reacted} =
+      OpenChat.Store.call_on(OpenChat.Store, {:add_reaction, "bob", to_string(msg["id"]), "🔥"})
+
+    assert [%{"reaction" => "🔥", "count" => 1}] = get_in(legacy_reacted, ["data", "reactions"])
+
+    {:ok, legacy_unreacted} =
+      OpenChat.Store.call_on(
+        OpenChat.Store,
+        {:remove_reaction, "bob", to_string(msg["id"]), "🔥"}
+      )
+
+    assert get_in(legacy_unreacted, ["data", "reactions"]) == []
+
+    {:ok, legacy_toggled} =
+      OpenChat.Store.call_on(
+        OpenChat.Store,
+        {:toggle_reaction, "bob", to_string(msg["id"]), "🎧"}
+      )
+
+    assert [%{"reaction" => "🎧", "count" => 1}] = get_in(legacy_toggled, ["data", "reactions"])
+
     {:ok, edited_action} =
       OpenChat.Store.edit_message("alice", msg["id"], %{
         "data" => %{"customData" => %{"kind" => "pong"}}

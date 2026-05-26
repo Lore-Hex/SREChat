@@ -1169,6 +1169,9 @@ defmodule OpenChat.Store do
     end
   end
 
+  def handle_call({:add_reaction, uid, id, reaction}, from, state),
+    do: handle_call({:add_reaction, uid, id, reaction, []}, from, state)
+
   def handle_call({:add_reaction, uid, id, reaction, opts}, _from, state) do
     with {:ok, message} <- Map.fetch(state["messages"], id),
          :ok <- Access.message(state, uid, message) do
@@ -1186,6 +1189,9 @@ defmodule OpenChat.Store do
     end
   end
 
+  def handle_call({:remove_reaction, uid, id, reaction}, from, state),
+    do: handle_call({:remove_reaction, uid, id, reaction, []}, from, state)
+
   def handle_call({:remove_reaction, uid, id, reaction, opts}, _from, state) do
     with {:ok, message} <- Map.fetch(state["messages"], id),
          :ok <- Access.message(state, uid, message) do
@@ -1202,6 +1208,9 @@ defmodule OpenChat.Store do
       {:error, error} -> {:reply, {:error, error}, state}
     end
   end
+
+  def handle_call({:toggle_reaction, uid, id, reaction}, from, state),
+    do: handle_call({:toggle_reaction, uid, id, reaction, []}, from, state)
 
   def handle_call({:toggle_reaction, uid, id, reaction, opts}, _from, state) do
     with {:ok, message} <- Map.fetch(state["messages"], id),
