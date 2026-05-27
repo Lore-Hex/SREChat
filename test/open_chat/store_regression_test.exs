@@ -55,11 +55,12 @@ defmodule OpenChat.StoreRegressionTest do
     assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.me(tampered)
 
     expired = AuthTokens.local_jwt("alice", token, Time.now() - 90_000)
-    assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.me(expired)
+    assert {:ok, %{"uid" => "alice", "authToken" => ^token}} = Store.me(expired)
 
     assert {:ok, %{"success" => true}} = Store.revoke_auth_token(token)
     assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.authenticate(token)
     assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.me(jwt)
+    assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.me(expired)
   end
 
   test "local JWTs reject malformed/tampered tokens and rotate via embedded auth tokens" do

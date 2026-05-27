@@ -52,7 +52,7 @@ defmodule OpenChat.Store.AuthTokensTest do
     assert :error =
              AuthTokens.local_jwt_token(local_token(%{"token" => "old", "exp" => Time.now() - 1}))
 
-    assert :error =
+    assert {:ok, "old"} =
              AuthTokens.local_jwt_embedded_token(
                local_token(%{"token" => "old", "exp" => Time.now() - 1})
              )

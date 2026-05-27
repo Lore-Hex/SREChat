@@ -50,7 +50,7 @@ defmodule OpenChatWeb.WSHandlerTest do
     assert reply["body"] == %{"status" => "OK", "code" => "200"}
   end
 
-  test "auth event accepts cached local JWTs after signing-secret rotation" do
+  test "auth event accepts cached local JWTs after signing-secret rotation and expiry" do
     previous_secret = Application.get_env(:open_chat, :local_jwt_secret)
 
     on_exit(fn ->
@@ -62,7 +62,8 @@ defmodule OpenChatWeb.WSHandlerTest do
 
     Application.put_env(:open_chat, :local_jwt_secret, "ws-secret-a")
     assert {:ok, payload} = Store.create_auth_token("mobile-alice")
-    jwt = payload["jwt"]
+    token = payload["authToken"]
+    jwt = OpenChat.Store.AuthTokens.local_jwt("mobile-alice", token, OpenChat.Time.now() - 90_000)
 
     Application.put_env(:open_chat, :local_jwt_secret, "ws-secret-b")
 

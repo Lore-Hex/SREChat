@@ -35,8 +35,7 @@ defmodule OpenChat.Store.AuthTokens do
   def local_jwt_embedded_token(token) do
     with ["local", payload, _token_signature] <- String.split(to_s(token), ".", parts: 3),
          {:ok, json} <- Base.url_decode64(payload, padding: false),
-         {:ok, %{"token" => auth_token} = payload_map} <- Jason.decode(json),
-         true <- token_not_expired?(payload_map),
+         {:ok, %{"token" => auth_token}} <- Jason.decode(json),
          auth_token <- to_s(auth_token),
          false <- blank?(auth_token) do
       {:ok, auth_token}
