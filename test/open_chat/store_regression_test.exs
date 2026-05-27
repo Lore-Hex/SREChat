@@ -62,7 +62,7 @@ defmodule OpenChat.StoreRegressionTest do
     assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.me(jwt)
   end
 
-  test "local JWTs reject legacy unsigned, malformed, tampered, and rotated-secret tokens" do
+  test "local JWTs reject malformed/tampered tokens and rotate via embedded auth tokens" do
     old_secret = Application.get_env(:open_chat, :local_jwt_secret)
 
     on_exit(fn ->
@@ -105,6 +105,11 @@ defmodule OpenChat.StoreRegressionTest do
 
     Application.put_env(:open_chat, :local_jwt_secret, "jwt-secret-b")
     assert :error = AuthTokens.local_jwt_token(jwt)
+    assert {:ok, rotated_me} = Store.me(jwt)
+    assert rotated_me["uid"] == "jwt-edge"
+    assert rotated_me["authToken"] == token
+
+    assert {:ok, %{"success" => true}} = Store.revoke_auth_token(token)
     assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.me(jwt)
   end
 

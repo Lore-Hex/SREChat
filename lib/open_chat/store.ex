@@ -402,8 +402,9 @@ defmodule OpenChat.Store do
   def handle_call({:me, token}, _from, state) do
     case authenticate_in_state(state, token) do
       {{:ok, user}, state} ->
-        persist_ops(PersistenceOps.auth_token(state, token))
-        {:reply, {:ok, me_payload(user, token)}, state}
+        canonical_token = canonical_auth_token(state, token)
+        persist_ops(PersistenceOps.auth_token(state, canonical_token))
+        {:reply, {:ok, me_payload(user, canonical_token)}, state}
 
       {error, state} ->
         {:reply, error, state}
@@ -1771,9 +1772,11 @@ defmodule OpenChat.Store do
 
   defp authenticate_in_state(state, token) do
     token = to_s(token)
+    token_candidates = AuthTokens.lookup_tokens(token)
+    uid_token = if Config.accept_uid_tokens?(), do: uid_token_candidate(token_candidates)
 
     cond do
-      uid = state["tokens"][token] ->
+      uid = authenticated_token_uid(state, token_candidates) ->
         user = UserState.get_or_default(state, uid)
 
         if user["deactivatedAt"] do
@@ -1782,10 +1785,10 @@ defmodule OpenChat.Store do
           {{:ok, user}, state}
         end
 
-      Config.accept_uid_tokens?() and String.starts_with?(token, "uid:") ->
-        uid = String.replace_prefix(token, "uid:", "")
+      uid_token ->
+        {:ok, uid} = AuthTokens.uid_token(uid_token)
         {user, state} = UserState.ensure(state, uid)
-        state = put_in(state, ["tokens", token], user["uid"])
+        state = put_in(state, ["tokens", uid_token], user["uid"])
         {{:ok, user}, state}
 
       String.starts_with?(token, "local.") ->
@@ -1802,6 +1805,21 @@ defmodule OpenChat.Store do
     else
       _ -> {{:error, Errors.no_auth()}, state}
     end
+  end
+
+  defp authenticated_token_uid(state, tokens) do
+    Enum.find_value(tokens, fn token -> state["tokens"][token] end)
+  end
+
+  defp uid_token_candidate(tokens) do
+    Enum.find(tokens, fn token -> match?({:ok, _uid}, AuthTokens.uid_token(token)) end)
+  end
+
+  defp canonical_auth_token(state, token) do
+    token
+    |> AuthTokens.lookup_tokens()
+    |> Enum.find(fn candidate -> Map.has_key?(state["tokens"] || %{}, candidate) end)
+    |> Kernel.||(to_s(token))
   end
 
   defp me_payload(user, token) do

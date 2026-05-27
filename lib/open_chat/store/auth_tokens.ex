@@ -26,10 +26,23 @@ defmodule OpenChat.Store.AuthTokens do
     |> local_jwt_token()
     |> case do
       {:ok, auth_token} -> [auth_token]
-      :error -> [token]
+      :error -> local_jwt_embedded_token_or_self(token)
     end
     |> Enum.reject(&blank?/1)
     |> Enum.uniq()
+  end
+
+  def local_jwt_embedded_token(token) do
+    with ["local", payload, _token_signature] <- String.split(to_s(token), ".", parts: 3),
+         {:ok, json} <- Base.url_decode64(payload, padding: false),
+         {:ok, %{"token" => auth_token} = payload_map} <- Jason.decode(json),
+         true <- token_not_expired?(payload_map),
+         auth_token <- to_s(auth_token),
+         false <- blank?(auth_token) do
+      {:ok, auth_token}
+    else
+      _ -> :error
+    end
   end
 
   def local_jwt_token(token) do
@@ -48,6 +61,13 @@ defmodule OpenChat.Store.AuthTokens do
 
   def uid_token("uid:" <> uid) when uid != "", do: {:ok, uid}
   def uid_token(_token), do: :error
+
+  defp local_jwt_embedded_token_or_self(token) do
+    case local_jwt_embedded_token(token) do
+      {:ok, auth_token} -> [auth_token]
+      :error -> [token]
+    end
+  end
 
   defp valid_signature?(payload, token_signature) do
     secure_compare(to_s(token_signature), signature(payload))

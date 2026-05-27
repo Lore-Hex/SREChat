@@ -50,6 +50,40 @@ defmodule OpenChatWeb.WSHandlerTest do
     assert reply["body"] == %{"status" => "OK", "code" => "200"}
   end
 
+  test "auth event accepts cached local JWTs after signing-secret rotation" do
+    previous_secret = Application.get_env(:open_chat, :local_jwt_secret)
+
+    on_exit(fn ->
+      case previous_secret do
+        nil -> Application.delete_env(:open_chat, :local_jwt_secret)
+        value -> Application.put_env(:open_chat, :local_jwt_secret, value)
+      end
+    end)
+
+    Application.put_env(:open_chat, :local_jwt_secret, "ws-secret-a")
+    assert {:ok, payload} = Store.create_auth_token("mobile-alice")
+    jwt = payload["jwt"]
+
+    Application.put_env(:open_chat, :local_jwt_secret, "ws-secret-b")
+
+    {:reply, {:text, json}, state} =
+      WSHandler.websocket_handle(
+        {:text,
+         Jason.encode!(%{
+           "type" => "auth",
+           "body" => %{"auth" => jwt}
+         })},
+        %{uid: nil, token: nil, device_id: nil}
+      )
+
+    reply = Jason.decode!(json)
+
+    assert state.uid == "mobile-alice"
+    assert state.token == jwt
+    assert reply["sender"] == "mobile-alice"
+    assert reply["body"] == %{"status" => "OK", "code" => "200"}
+  end
+
   test "authenticated sockets resync group subscriptions after join and leave" do
     assert {:ok, _group} = Store.upsert_group(%{"guid" => "ws-sync-room", "type" => "public"})
 
