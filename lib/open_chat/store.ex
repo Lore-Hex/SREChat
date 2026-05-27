@@ -783,15 +783,17 @@ defmodule OpenChat.Store do
       {:error, error} ->
         {:reply, {:error, error}, state}
 
-      {:ok, message, state} ->
+      {:ok, message, state, auto_joined} ->
         {state, retention_ops} = MessageState.store_with_retention(state, message)
         {state, auto_delivery} = auto_deliver_direct_message(state, message)
 
         persist_ops(
-          PersistenceOps.message_create(state, message) ++
+          auto_join_persistence_ops(state, auto_joined) ++
+            PersistenceOps.message_create(state, message) ++
             retention_ops ++ auto_delivery_persistence_ops(state, auto_delivery)
         )
 
+        broadcast_auto_joins(auto_joined)
         PubSubFanout.message(state, message, device_id: origin_device_id(opts, message))
         broadcast_auto_delivery(state, auto_delivery)
         {:reply, {:ok, message}, state}
@@ -805,15 +807,17 @@ defmodule OpenChat.Store do
       {:error, error} ->
         {:reply, {:error, error}, state}
 
-      {:ok, message, state} ->
+      {:ok, message, state, auto_joined} ->
         {state, retention_ops} = MessageState.store_with_retention(state, message)
         {state, auto_delivery} = auto_deliver_direct_message(state, message)
 
         persist_ops(
-          PersistenceOps.message_create(state, message) ++
+          auto_join_persistence_ops(state, auto_joined) ++
+            PersistenceOps.message_create(state, message) ++
             retention_ops ++ auto_delivery_persistence_ops(state, auto_delivery)
         )
 
+        broadcast_auto_joins(auto_joined)
         PubSubFanout.message(state, message, device_id: origin_device_id(opts, message))
         broadcast_auto_delivery(state, auto_delivery)
         {:reply, {:ok, message}, state}
@@ -1474,6 +1478,9 @@ defmodule OpenChat.Store do
         do: GroupState.ensure_group(state, to_s(receiver)),
         else: state
 
+    {state, auto_joined} =
+      maybe_auto_join_public_group_sender(state, sender_uid, receiver_type, receiver, admin?)
+
     cond do
       blank?(receiver) ->
         {:error, Errors.missing("receiver")}
@@ -1538,7 +1545,8 @@ defmodule OpenChat.Store do
                   |> MessageData.put_entity("sender", "user", UserState.public(sender))
                   |> MessageData.put_entity("receiver", receiver_type, receiver_entity)
 
-                {:ok, message |> Map.put("data", data) |> MessageState.expose_metadata(), state}
+                {:ok, message |> Map.put("data", data) |> MessageState.expose_metadata(), state,
+                 auto_joined}
 
               {:error, error} ->
                 {:error, error}
@@ -1546,6 +1554,40 @@ defmodule OpenChat.Store do
         end
     end
   end
+
+  defp maybe_auto_join_public_group_sender(state, sender_uid, "group", receiver, false) do
+    guid = to_s(receiver)
+    uid = to_s(sender_uid)
+
+    case get_in(state, ["groups", guid]) do
+      %{"type" => "public"} ->
+        cond do
+          GroupState.member?(state, guid, uid) ->
+            {state, []}
+
+          GroupState.banned?(state, guid, uid) ->
+            {state, []}
+
+          GroupState.member_limit_reached?(state, guid, uid) ->
+            {state, []}
+
+          true ->
+            {GroupState.add_member(state, guid, uid, "participant"), [{guid, uid}]}
+        end
+
+      _other ->
+        {state, []}
+    end
+  end
+
+  defp maybe_auto_join_public_group_sender(
+         state,
+         _sender_uid,
+         _receiver_type,
+         _receiver,
+         _admin?
+       ),
+       do: {state, []}
 
   defp prepare_message_payload(params, uploads) do
     params = stringify_keys(params)
@@ -1673,6 +1715,26 @@ defmodule OpenChat.Store do
 
   defp auto_delivery_persistence_ops(state, %{uid: uid}), do: PersistenceOps.delivered(state, uid)
   defp auto_delivery_persistence_ops(_state, _auto_delivery), do: []
+
+  defp auto_join_persistence_ops(_state, []), do: []
+
+  defp auto_join_persistence_ops(state, auto_joined) do
+    auto_joined = Enum.uniq(auto_joined)
+    gids = auto_joined |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+    uids = auto_joined |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+
+    Enum.flat_map(gids, &PersistenceOps.members(state, &1)) ++
+      PersistenceOps.user(state, uids) ++
+      PersistenceOps.user_groups(state, uids) ++
+      PersistenceOps.unread_counts(state, uids)
+  end
+
+  defp broadcast_auto_joins(auto_joined) do
+    auto_joined
+    |> Enum.map(&elem(&1, 1))
+    |> Enum.uniq()
+    |> PubSubFanout.membership_changed()
+  end
 
   defp broadcast_auto_delivery(state, %{uid: uid, peer_uid: peer_uid, payload: payload}) do
     user = state |> UserState.get_or_default(uid) |> UserState.public()

@@ -160,6 +160,31 @@ defmodule OpenChatWeb.ApiTest do
     assert [%{"data" => %{"text" => "group hello"}}] = json(conn)["data"]
   end
 
+  test "SDK group join uses user auth when apiKey is also present" do
+    assert admin_conn(:post, "/v3/groups", %{
+             "guid" => "sdk-join-room",
+             "type" => "public"
+           }).status == 201
+
+    conn =
+      conn(
+        :post,
+        "/v3.0/groups/sdk-join-room/members",
+        Jason.encode!(%{"guid" => "sdk-join-room"})
+      )
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Plug.Conn.put_req_header("apikey", "local-api-key")
+      |> Plug.Conn.put_req_header("authtoken", "uid:alice")
+      |> Endpoint.call([])
+
+    assert conn.status == 200
+    assert json(conn)["data"]["hasJoined"] == true
+    assert json(conn)["data"]["membersCount"] == 1
+
+    conn = admin_conn(:get, "/v3/groups/sdk-join-room/members")
+    assert [%{"uid" => "alice", "scope" => "participant"}] = json(conn)["data"]
+  end
+
   test "block, get block status, list blocked users, and unblock" do
     conn = auth_conn(:post, "/v3.0/blockedusers", %{"blockedUids" => ["bob"]}, "uid:alice")
     assert conn.status == 200

@@ -211,20 +211,15 @@ defmodule OpenChatWeb.ApiRouter do
   end
 
   post "/groups/:guid/members" do
-    with_admin_or_user(
-      conn,
-      fn conn -> set_group_scopes_response(conn, guid) end,
-      fn conn ->
-        with_user(conn, fn conn, user, _token ->
-          params = Map.merge(conn.body_params || %{}, conn.params || %{})
-
-          case Store.join_group(guid, user["uid"], params) do
-            {:ok, group} -> JSON.ok(conn, join_group_payload(group))
-            {:error, e} -> JSON.error(conn, e, 400)
-          end
-        end)
-      end
-    )
+    if sdk_join_request?(conn) do
+      join_group_response(conn, guid)
+    else
+      with_admin_or_user(
+        conn,
+        fn conn -> set_group_scopes_response(conn, guid) end,
+        fn conn -> join_group_response(conn, guid) end
+      )
+    end
   end
 
   put "/groups/:guid/members" do
@@ -580,6 +575,24 @@ defmodule OpenChatWeb.ApiRouter do
 
   defp set_group_scopes_response(conn, guid) do
     store_response(conn, Store.set_group_scopes(guid, conn.body_params || %{}))
+  end
+
+  defp join_group_response(conn, guid) do
+    with_user(conn, fn conn, user, _token ->
+      params = Map.merge(conn.body_params || %{}, conn.params || %{})
+
+      case Store.join_group(guid, user["uid"], params) do
+        {:ok, group} -> JSON.ok(conn, join_group_payload(group))
+        {:error, e} -> JSON.error(conn, e, 400)
+      end
+    end)
+  end
+
+  defp sdk_join_request?(conn) do
+    not blank?(Auth.token(conn)) and
+      not Enum.any?(["participants", "members", "moderators", "admins", "uids"], fn key ->
+        Map.has_key?(conn.body_params || %{}, key)
+      end)
   end
 
   defp send_message_response(conn, sender_uid, params, status \\ 200, opts \\ []) do

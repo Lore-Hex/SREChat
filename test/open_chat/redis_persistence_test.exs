@@ -103,6 +103,36 @@ defmodule OpenChat.RedisPersistenceTest do
     end)
   end
 
+  test "public group send auto-join is persisted for Redis-backed stores", context do
+    with_redis(context, fn ->
+      guid = "redis-auto-join-room"
+      assert {:ok, _group} = Store.upsert_group(%{"guid" => guid, "type" => "public"})
+
+      assert {:ok, message} =
+               Store.send_message("redis-auto-sender", %{
+                 "receiver" => guid,
+                 "receiverType" => "group",
+                 "data" => %{"text" => "persisted auto join"}
+               })
+
+      assert redis_json(context, "members", guid)["redis-auto-sender"]["scope"] ==
+               "participant"
+
+      assert redis_json(context, "user_groups", "redis-auto-sender") == [guid]
+
+      restart_store!()
+
+      assert {:ok, [%{"uid" => "redis-auto-sender"}]} = Store.group_members(guid)
+      assert {:ok, [%{"guid" => ^guid}]} = Store.groups_for_user("redis-auto-sender")
+
+      assert {:ok, [persisted]} =
+               Store.messages_for_group("redis-auto-sender", guid, %{"limit" => 10})
+
+      assert persisted["id"] == message["id"]
+      assert get_in(persisted, ["data", "text"]) == "persisted auto join"
+    end)
+  end
+
   test "uid-token auth persists generated users and token mappings per key", context do
     with_redis(context, fn ->
       assert {:ok, me} = Store.me("uid:redis-uid-token-user")

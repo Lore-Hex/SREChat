@@ -189,6 +189,58 @@ defmodule OpenChat.StoreRegressionTest do
     assert Enum.any?(groups, &(&1["guid"] == "scoped-room"))
   end
 
+  test "public group sends auto-join the sender when SDK join was missed" do
+    guid = "auto-join-send-room"
+    assert {:ok, _group} = Store.upsert_group(%{"guid" => guid, "type" => "public"})
+
+    assert {:ok, message} =
+             Store.send_message("alice", %{
+               "receiver" => guid,
+               "receiverType" => "group",
+               "data" => %{"text" => "hello after missed join"}
+             })
+
+    assert message["data"]["text"] == "hello after missed join"
+    assert {:ok, [%{"uid" => "alice", "scope" => "participant"}]} = Store.group_members(guid)
+    assert {:ok, [%{"guid" => ^guid}]} = Store.groups_for_user("alice")
+  end
+
+  test "group send auto-join does not bypass protected groups or bans" do
+    assert {:ok, _group} =
+             Store.upsert_group(%{"guid" => "private-send-room", "type" => "private"})
+
+    assert {:error, %{"code" => "ERR_NOT_A_MEMBER"}} =
+             Store.send_message("alice", %{
+               "receiver" => "private-send-room",
+               "receiverType" => "group",
+               "data" => %{"text" => "blocked"}
+             })
+
+    assert {:ok, _group} =
+             Store.upsert_group(%{
+               "guid" => "password-send-room",
+               "type" => "password",
+               "password" => "secret"
+             })
+
+    assert {:error, %{"code" => "ERR_NOT_A_MEMBER"}} =
+             Store.send_message("alice", %{
+               "receiver" => "password-send-room",
+               "receiverType" => "group",
+               "data" => %{"text" => "blocked"}
+             })
+
+    assert {:ok, _group} = Store.upsert_group(%{"guid" => "banned-send-room", "type" => "public"})
+    assert {:ok, _banned} = Store.ban_group_member("banned-send-room", "alice")
+
+    assert {:error, %{"code" => "ERR_NOT_A_MEMBER"}} =
+             Store.send_message("alice", %{
+               "receiver" => "banned-send-room",
+               "receiverType" => "group",
+               "data" => %{"text" => "blocked"}
+             })
+  end
+
   test "group unread counters are per-member and resync on membership changes" do
     guid = "unread-membership-room"
 
@@ -484,9 +536,12 @@ defmodule OpenChat.StoreRegressionTest do
     assert {:error, %{"code" => "INVALID_RECEIVERTYPE"}} =
              Store.send_message("alice", %{"receiver" => "bob", "receiverType" => "bot"})
 
+    assert {:ok, _group} =
+             Store.upsert_group(%{"guid" => "private-validation-room", "type" => "private"})
+
     assert {:error, %{"code" => "ERR_NOT_A_MEMBER"}} =
              Store.send_message("alice", %{
-               "receiver" => "lobby",
+               "receiver" => "private-validation-room",
                "receiverType" => "group",
                "data" => %{"text" => "nope"}
              })
