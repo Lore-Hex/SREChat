@@ -267,6 +267,37 @@ defmodule OpenChat.Store.ConversationViewTest do
       assert Enum.map(result, & &1["id"]) == ["3"]
     end
 
+    test "legacy timestamp aliases and sender filters apply before pagination" do
+      state = seeded_state()
+
+      after_updated_at =
+        ConversationView.messages(state, "group_room", %{
+          "limit" => 10,
+          "updatedAt" => "100",
+          "hideDeleted" => "false",
+          "affix" => "append"
+        })
+
+      assert Enum.map(after_updated_at, & &1["id"]) == ["2", "3"]
+
+      after_from_timestamp =
+        ConversationView.messages(state, "group_room", %{
+          "limit" => 10,
+          "fromTimestamp" => "100",
+          "hideDeleted" => "false"
+        })
+
+      assert Enum.map(after_from_timestamp, & &1["id"]) == ["2", "3"]
+
+      latest_from_alice =
+        ConversationView.messages(state, "group_room", %{
+          "limit" => 1,
+          "sender" => "alice"
+        })
+
+      assert Enum.map(latest_from_alice, & &1["id"]) == ["1"]
+    end
+
     test "category and type filters narrow the result" do
       state = seeded_state() |> put_in(["messages", "3", "category"], "message")
 

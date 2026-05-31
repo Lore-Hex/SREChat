@@ -245,10 +245,27 @@ defmodule OpenChatWeb.ApiRouter do
   end
 
   delete "/groups/:guid/members/:uid" do
-    with_admin_or_open(conn, fn conn ->
-      {:ok, data} = Store.leave_group(guid, uid)
-      JSON.ok(conn, data)
-    end)
+    cond do
+      Auth.admin?(conn) ->
+        {:ok, data} = Store.leave_group(guid, uid)
+        JSON.ok(conn, data)
+
+      not blank?(api_key_header(conn)) ->
+        JSON.error(conn, Errors.forbidden("Invalid apiKey."), 403)
+
+      not blank?(Auth.token(conn)) ->
+        with_user(conn, fn conn, user, _token ->
+          if user["uid"] == uid do
+            {:ok, data} = Store.leave_group(guid, uid)
+            JSON.ok(conn, data)
+          else
+            JSON.error(conn, Errors.forbidden("Users can only remove their own membership."), 403)
+          end
+        end)
+
+      true ->
+        JSON.error(conn, Errors.forbidden("Invalid apiKey."), 403)
+    end
   end
 
   put "/groups/:guid/members/:uid" do
@@ -353,11 +370,29 @@ defmodule OpenChatWeb.ApiRouter do
     with_user(conn, fn conn, user, _token ->
       params = Map.merge(conn.query_params, conn.params)
 
-      if truthy?(params["unread"]) and truthy?(params["count"]) do
-        {:ok, rows} = Store.unread_counts(user["uid"], params)
-        JSON.ok(conn, rows)
-      else
-        JSON.ok(conn, [])
+      cond do
+        truthy?(params["unread"]) and truthy?(params["count"]) ->
+          {:ok, rows} = Store.unread_counts(user["uid"], params)
+          JSON.ok(conn, rows)
+
+        legacy_direct_messages_query?(params) ->
+          peer_uid = params["sender"] || params["receiver"] || params["uid"]
+
+          case Store.messages_for_user(user["uid"], peer_uid, params) do
+            {:ok, messages} -> messages_response(conn, messages, params)
+            {:error, e} -> JSON.error(conn, e, 400)
+          end
+
+        legacy_group_messages_query?(params) ->
+          guid = params["receiver"] || params["guid"] || params["group"]
+
+          case Store.messages_for_group(user["uid"], guid, params) do
+            {:ok, messages} -> messages_response(conn, messages, params)
+            {:error, e} -> JSON.error(conn, e, 400)
+          end
+
+        true ->
+          JSON.ok(conn, [])
       end
     end)
   end
@@ -427,6 +462,27 @@ defmodule OpenChatWeb.ApiRouter do
         end)
       end
     )
+  end
+
+  post "/messages/:message_id/interactions" do
+    with_user(conn, fn conn, user, _token ->
+      case Store.get_message_for(user["uid"], message_id) do
+        {:ok, message} ->
+          {receiver_type, receiver_id} = receipt_target(user["uid"], message)
+          read_message_id = conn.body_params["messageId"] || conn.body_params["id"] || message_id
+
+          store_response(
+            conn,
+            Store.mark_read(user["uid"], receiver_type, receiver_id, read_message_id)
+          )
+
+        {:error, e} ->
+          JSON.error(conn, e, error_status(e, 400))
+
+        :error ->
+          JSON.error(conn, Errors.message_not_found(message_id), 404)
+      end
+    end)
   end
 
   get "/user/messages/:muid" do
@@ -571,6 +627,30 @@ defmodule OpenChatWeb.ApiRouter do
 
   defp group_members_response(conn, guid) do
     store_response(conn, Store.group_members(guid, conn.query_params), 200, 404)
+  end
+
+  defp api_key_header(conn), do: conn |> get_req_header("apikey") |> List.first()
+
+  defp legacy_direct_messages_query?(params) do
+    (params["receiverType"] == "user" or params["receiver_type"] == "user") and
+      not blank?(params["sender"] || params["receiver"] || params["uid"])
+  end
+
+  defp legacy_group_messages_query?(params) do
+    (params["receiverType"] == "group" or params["receiver_type"] == "group") and
+      not blank?(params["receiver"] || params["guid"] || params["group"])
+  end
+
+  defp receipt_target(_uid, %{"receiverType" => "group"} = message),
+    do: {"group", message["receiver"]}
+
+  defp receipt_target(uid, message) do
+    peer_uid =
+      if to_s(message["sender"]) == to_s(uid),
+        do: message["receiver"],
+        else: message["sender"]
+
+    {"user", peer_uid}
   end
 
   defp set_group_scopes_response(conn, guid) do

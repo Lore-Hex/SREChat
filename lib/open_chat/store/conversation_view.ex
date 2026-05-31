@@ -102,10 +102,18 @@ defmodule OpenChat.Store.ConversationView do
     hide_deleted = hide_deleted?(params)
     type = params["type"]
     category = params["category"]
-    timestamp = params["sentAt"] || params["timestamp"]
+    sender = params["sender"] || params["senderUid"] || params["sender_uid"]
+
+    append_timestamp =
+      params["fromTimestamp"] || params["fromTimeStamp"] || params["from_timestamp"]
+
+    timestamp = params["sentAt"] || params["timestamp"] || params["updatedAt"] || append_timestamp
     id = params["id"] || params["cursorValue"]
     cursor_id = params["cursorId"] || params["cursor_id"] || if(timestamp, do: id)
-    affix = params["cursorAffix"] || params["affix"] || "prepend"
+
+    affix =
+      params["cursorAffix"] || params["affix"] ||
+        if(append_timestamp, do: "append", else: "prepend")
 
     cursor_field =
       params["cursorField"] || if(timestamp, do: "sentAt", else: if(id, do: "id", else: "sentAt"))
@@ -117,6 +125,7 @@ defmodule OpenChat.Store.ConversationView do
     |> Enum.filter(fn message -> not hide_deleted or blank?(message["deletedAt"]) end)
     |> Enum.filter(fn message -> blank?(type) or message["type"] == type end)
     |> Enum.filter(fn message -> blank?(category) or message["category"] == category end)
+    |> Enum.filter(fn message -> blank?(sender) or to_s(message["sender"]) == to_s(sender) end)
     |> filter_cursor(cursor_field, cursor_value, cursor_id, affix)
   end
 
@@ -142,7 +151,13 @@ defmodule OpenChat.Store.ConversationView do
   defp paginate_messages(messages, params) do
     params = stringify_keys(params)
     limit = clamp(to_int(params["per_page"] || params["limit"] || 30), 1, 100)
-    affix = params["cursorAffix"] || params["affix"] || "prepend"
+
+    append_timestamp =
+      params["fromTimestamp"] || params["fromTimeStamp"] || params["from_timestamp"]
+
+    affix =
+      params["cursorAffix"] || params["affix"] ||
+        if(append_timestamp, do: "append", else: "prepend")
 
     messages =
       Enum.sort_by(messages, fn message ->
