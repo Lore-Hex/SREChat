@@ -8,6 +8,7 @@ TEMPLATE_FILE="${OPENCHAT_TEMPLATE_FILE:-infra/aws/openchat-ecs-fargate.yaml}"
 DESIRED_COUNT="${OPENCHAT_DESIRED_COUNT:-2}"
 MIN_CAPACITY="${OPENCHAT_MIN_CAPACITY:-2}"
 MAX_CAPACITY="${OPENCHAT_MAX_CAPACITY:-6}"
+TASK_MEMORY="${OPENCHAT_TASK_MEMORY:-4096}"
 
 STAGING_PROFILE="${OPENCHAT_STAGING_PROFILE:-tt-staging}"
 PRODUCTION_PROFILE="${OPENCHAT_PRODUCTION_PROFILE:-awsproduction-ttfm}"
@@ -23,6 +24,9 @@ PRODUCTION_EXTENSION_DOMAIN="prod.tt.fm"
 
 STAGING_EXTENSION_CERTIFICATE_ARN="arn:aws:acm:us-east-2:036958288468:certificate/83aecf08-0c25-435a-b1e8-c95faf7fff36"
 PRODUCTION_EXTENSION_CERTIFICATE_ARN="arn:aws:acm:us-east-2:829838608284:certificate/881eeab3-edcf-4ef8-9e93-939f9fce2451"
+
+STAGING_ADMIN_API_KEY_PARAMETER_NAME="${OPENCHAT_STAGING_ADMIN_API_KEY_PARAMETER_NAME:-/openchat/staging/admin-api-key}"
+PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME="${OPENCHAT_PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME:-/openchat/production/admin-api-key}"
 
 STAGING_CORS_ALLOWED_ORIGINS="https://staging.hang.fm,https://staging.tt.live,https://staging.hangout.fm,https://openchat.staging.tt.fm,http://localhost:3000,http://localhost:4173,http://localhost:5173"
 PRODUCTION_CORS_ALLOWED_ORIGINS="https://hang.fm,https://www.hang.fm,https://hangout.fm,https://www.hangout.fm,https://tt.live,https://www.tt.live,https://openchat.prod.tt.fm"
@@ -116,23 +120,91 @@ build_and_push() {
 
 admin_key() {
   local env_name="$1"
-  local env_var="$2"
-  local file_var="$3"
-  local default_file="$4"
+  local profile="$2"
+  local parameter_name="$3"
+  local env_var="$4"
+  local file_var="$5"
+  local default_file="$6"
 
   if [ -n "${!env_var:-}" ]; then
+    validate_admin_key "$env_name" "${!env_var}"
     printf '%s' "${!env_var}"
     return
   fi
 
   local key_file="${!file_var:-$default_file}"
   if [ -s "$key_file" ]; then
-    cat "$key_file"
+    local value
+    value="$(cat "$key_file")"
+    validate_admin_key "$env_name" "$value"
+    printf '%s' "$value"
     return
   fi
 
-  echo "Missing $env_name admin API key. Set $env_var or $file_var." >&2
+  local ssm_value
+  ssm_value="$(
+    aws ssm get-parameter \
+      --profile "$profile" \
+      --region "$REGION" \
+      --name "$parameter_name" \
+      --with-decryption \
+      --query 'Parameter.Value' \
+      --output text 2>/dev/null || true
+  )"
+
+  if [ -n "$ssm_value" ] && [ "$ssm_value" != "None" ]; then
+    validate_admin_key "$env_name" "$ssm_value"
+    printf '%s' "$ssm_value"
+    return
+  fi
+
+  echo "Missing $env_name admin API key. Set $env_var, $file_var, or SSM parameter $parameter_name." >&2
   exit 1
+}
+
+validate_admin_key() {
+  local env_name="$1"
+  local value="$2"
+
+  if [ "$value" = "None" ] || [ "$value" = "null" ] || [ "${#value}" -lt 32 ]; then
+    echo "Refusing weak $env_name admin API key. Generate a random key with at least 32 characters." >&2
+    exit 1
+  fi
+}
+
+store_admin_key_parameter() {
+  local profile="$1"
+  local env_name="$2"
+  local parameter_name="$3"
+  local value="$4"
+  local input_file value_file
+
+  if [ -z "$parameter_name" ]; then
+    echo "Missing $env_name admin API key SSM parameter name." >&2
+    exit 1
+  fi
+
+  input_file="$(mktemp)"
+  value_file="$(mktemp)"
+  chmod 600 "$input_file"
+  chmod 600 "$value_file"
+  printf '%s' "$value" >"$value_file"
+
+  jq -n \
+    --arg name "$parameter_name" \
+    --rawfile value "$value_file" \
+    '{Name: $name, Value: $value, Type: "SecureString", Overwrite: true}' >"$input_file"
+
+  if aws ssm put-parameter \
+    --profile "$profile" \
+    --region "$REGION" \
+    --cli-input-json "file://$input_file" >/dev/null; then
+    rm -f "$input_file" "$value_file"
+  else
+    local status=$?
+    rm -f "$input_file" "$value_file"
+    exit "$status"
+  fi
 }
 
 deploy_env() {
@@ -144,7 +216,7 @@ deploy_env() {
   local vpc_id="$6"
   local subnet_1="$7"
   local subnet_2="$8"
-  local admin_api_key="$9"
+  local admin_api_key_parameter_name="$9"
   local cors_allowed_origins="${10}"
   local extension_domain="${11}"
   local extension_certificate_arn="${12}"
@@ -166,10 +238,11 @@ deploy_env() {
       PublicSubnet1="$subnet_1" \
       PublicSubnet2="$subnet_2" \
       ImageUri="$image_uri" \
-      AdminApiKey="$admin_api_key" \
+      AdminApiKeyParameterName="$admin_api_key_parameter_name" \
       DesiredCount="$DESIRED_COUNT" \
       MinCapacity="$MIN_CAPACITY" \
-      MaxCapacity="$MAX_CAPACITY"
+      MaxCapacity="$MAX_CAPACITY" \
+      TaskMemory="$TASK_MEMORY"
 
   ensure_extension_routing "$profile" "$env_name" "$hosted_zone_id" "$extension_domain" "$extension_certificate_arn"
 }
@@ -288,17 +361,21 @@ main() {
   build_and_push
 
   local staging_key production_key
-  staging_key="$(admin_key staging OPENCHAT_STAGING_ADMIN_API_KEY OPENCHAT_STAGING_ADMIN_API_KEY_FILE /tmp/openchat-staging-admin-key)"
-  production_key="$(admin_key production OPENCHAT_PRODUCTION_ADMIN_API_KEY OPENCHAT_PRODUCTION_ADMIN_API_KEY_FILE /tmp/openchat-prod-admin-key)"
+  staging_key="$(admin_key staging "$STAGING_PROFILE" "$STAGING_ADMIN_API_KEY_PARAMETER_NAME" OPENCHAT_STAGING_ADMIN_API_KEY OPENCHAT_STAGING_ADMIN_API_KEY_FILE /tmp/openchat-staging-admin-key)"
+  production_key="$(admin_key production "$PRODUCTION_PROFILE" "$PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME" OPENCHAT_PRODUCTION_ADMIN_API_KEY OPENCHAT_PRODUCTION_ADMIN_API_KEY_FILE /tmp/openchat-prod-admin-key)"
+
+  store_admin_key_parameter "$STAGING_PROFILE" staging "$STAGING_ADMIN_API_KEY_PARAMETER_NAME" "$staging_key"
+  store_admin_key_parameter "$PRODUCTION_PROFILE" production "$PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME" "$production_key"
+  unset staging_key production_key
 
   echo "Deploying staging"
   deploy_env staging "$STAGING_PROFILE" "$STAGING_ACCOUNT" "$STAGING_DOMAIN" "$STAGING_HOSTED_ZONE_ID" \
-    "$STAGING_VPC_ID" "$STAGING_SUBNET_1" "$STAGING_SUBNET_2" "$staging_key" \
+    "$STAGING_VPC_ID" "$STAGING_SUBNET_1" "$STAGING_SUBNET_2" "$STAGING_ADMIN_API_KEY_PARAMETER_NAME" \
     "$STAGING_CORS_ALLOWED_ORIGINS" "$STAGING_EXTENSION_DOMAIN" "$STAGING_EXTENSION_CERTIFICATE_ARN"
 
   echo "Deploying production"
   deploy_env production "$PRODUCTION_PROFILE" "$PRODUCTION_ACCOUNT" "$PRODUCTION_DOMAIN" "$PRODUCTION_HOSTED_ZONE_ID" \
-    "$PRODUCTION_VPC_ID" "$PRODUCTION_SUBNET_1" "$PRODUCTION_SUBNET_2" "$production_key" \
+    "$PRODUCTION_VPC_ID" "$PRODUCTION_SUBNET_1" "$PRODUCTION_SUBNET_2" "$PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME" \
     "$PRODUCTION_CORS_ALLOWED_ORIGINS" "$PRODUCTION_EXTENSION_DOMAIN" "$PRODUCTION_EXTENSION_CERTIFICATE_ARN"
 
   echo "Verifying staging"

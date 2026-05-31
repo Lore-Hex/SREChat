@@ -187,11 +187,19 @@ defmodule OpenChatWeb.ApiRegressionTest do
     assert conn.status == 400
     assert json(conn)["error"]["code"] == "ERR_FORBIDDEN"
 
-    assert admin_conn(:post, "/v3/groups", %{
-             "guid" => "api-password",
-             "type" => "password",
-             "password" => "secret"
-           }).status == 201
+    create_password =
+      admin_conn(:post, "/v3/groups", %{
+        "guid" => "api-password",
+        "type" => "password",
+        "password" => "secret"
+      })
+
+    assert create_password.status == 201
+    refute Map.has_key?(json(create_password)["data"], "password")
+
+    get_password = auth_conn(:get, "/v3.0/groups/api-password", %{}, "uid:alice")
+    assert get_password.status == 200
+    refute Map.has_key?(json(get_password)["data"], "password")
 
     conn = auth_conn(:post, "/v3.0/groups/api-password/members", %{"password" => "wrong"})
     assert conn.status == 400
@@ -200,6 +208,7 @@ defmodule OpenChatWeb.ApiRegressionTest do
     conn = auth_conn(:post, "/v3.0/groups/api-password/members", %{"password" => "secret"})
     assert conn.status == 200
     assert json(conn)["data"]["hasJoined"] == true
+    refute Map.has_key?(json(conn)["data"], "password")
 
     assert admin_conn(:post, "/v3/groups", %{"guid" => "api-scopes", "type" => "public"}).status ==
              201
@@ -864,7 +873,9 @@ defmodule OpenChatWeb.ApiRegressionTest do
     assert conn.status == 201
     attachment = json(conn)["data"]["data"]["attachments"] |> List.first()
     assert attachment["mimeType"] == "text/plain"
+    assert attachment["name"] == "note.txt"
     assert attachment["url"] =~ ~r(^/media/)
+    refute attachment["url"] =~ "note"
 
     media_path = URI.parse(attachment["url"]).path
     conn = conn(:get, "/v3.0#{media_path}") |> OpenChatWeb.Endpoint.call([])
@@ -916,7 +927,7 @@ defmodule OpenChatWeb.ApiRegressionTest do
     assert json(conn)["error"]["code"] == "ERR_UPLOAD_TOO_LARGE"
   end
 
-  test "media upload route stores and serves S3-backed files" do
+  test "media upload route stores S3-backed files behind signed URLs only" do
     old_media_storage = Application.get_env(:open_chat, :media_storage)
     old_s3_bucket = Application.get_env(:open_chat, :s3_bucket)
     old_s3_client = Application.get_env(:open_chat, :s3_client)
@@ -964,13 +975,14 @@ defmodule OpenChatWeb.ApiRegressionTest do
     attachment = json(conn)["data"]["data"]["attachments"] |> List.first()
     uri = URI.parse(attachment["url"])
     assert uri.host == "openchat-api-test-uploads.s3.test"
+    assert Path.basename(uri.path) =~ ~r/^[A-Za-z0-9_-]+-upload\.png$/
+    refute uri.path =~ "photo"
     assert uri.query =~ "X-Amz-Expires=1200"
     assert uri.query =~ "X-Amz-Signature=mock"
 
     conn = conn(:get, "/v3.0/media/#{Path.basename(uri.path)}") |> OpenChatWeb.Endpoint.call([])
-    assert conn.status == 200
-    assert conn.resp_body == "s3 image bytes"
-    assert Plug.Conn.get_resp_header(conn, "content-type") |> List.first() =~ "image/png"
+    assert conn.status == 404
+    assert json(conn)["error"]["code"] == "ERR_MEDIA_NOT_FOUND"
   end
 
   test "settings, JWT, user sessions, and logout token revocation routes work together" do

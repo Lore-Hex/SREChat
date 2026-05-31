@@ -426,12 +426,18 @@ defmodule OpenChat.Store do
         PersistenceOps.group(state, group["guid"]) ++ PersistenceOps.members(state, group["guid"])
       )
 
-      {:reply, {:ok, group}, state}
+      {:reply, {:ok, Entities.public_group(group)}, state}
     end
   end
 
   def handle_call({:get_group, guid}, _from, state) do
-    {:reply, Map.fetch(state["groups"], guid), state}
+    reply =
+      case Map.fetch(state["groups"], guid) do
+        {:ok, group} -> {:ok, Entities.public_group(group)}
+        :error -> :error
+      end
+
+    {:reply, reply, state}
   end
 
   def handle_call({:list_groups, params}, _from, state) do

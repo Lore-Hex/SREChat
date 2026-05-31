@@ -13,7 +13,7 @@
   - `chat.example.com`
   - Optional `*.chat.example.com`
 - ElastiCache Redis for chat state.
-- Private S3 bucket for uploaded media. Production does not configure or create a durable local upload directory. OpenChat returns presigned S3 URLs in message payloads and keeps `/media/...` as a service-side S3 proxy fallback, so the bucket does not need public access.
+- Private S3 bucket for uploaded media. Production does not configure or create a durable local upload directory. OpenChat returns presigned S3 URLs in message payloads; `/media/...` is intentionally disabled for S3-backed objects so media access stays time-limited.
 - ECS runs multiple tasks behind the ALB. Redis is the durable state backend, scoped locks serialize room/conversation/message mutations, and Redis Pub/Sub refreshes peer task caches before websocket fanout.
 
 ## Environment
@@ -23,7 +23,7 @@ PORT=4000
 PUBLIC_HOST=chat.example.com
 PUBLIC_WS_PORT=443
 COMETCHAT_APP_ID=<your app id>
-COMETCHAT_API_KEY=<admin key for server-side token minting>
+COMETCHAT_API_KEY=<admin key for server-side token minting, preferably injected from SSM/Secrets Manager>
 COMETCHAT_REGION=us
 EXTENSION_DOMAIN=chat.example.com
 REQUEST_BODY_LIMIT=12000000
@@ -45,8 +45,8 @@ Use `GET /v3.0/settings` as a simple health check. It does not require auth.
 
 ## Security hardening checklist
 
-- Set a non-empty `COMETCHAT_API_KEY` and keep it only in AWS secrets/config. Admin routes reject missing/invalid API keys unless this variable is intentionally set blank.
-- Replace `uid:<uid>` development tokens with server-minted auth tokens or signed JWT verification.
+- Set a non-empty `COMETCHAT_API_KEY` with at least 32 random characters and keep it only in AWS secrets/config. Admin routes reject missing/invalid API keys unless this variable is intentionally set blank.
+- Keep `ACCEPT_UID_TOKENS=false` outside local development; use server-minted auth tokens or valid signed local JWTs.
 - Put AWS WAF/rate limiting in front of public endpoints.
 - Keep S3 media buckets private unless a dedicated CDN path is added intentionally.
 - Move from GenServer-mediated writes to operation-specific Redis commands or Postgres if high concurrency or multi-region operation is needed.

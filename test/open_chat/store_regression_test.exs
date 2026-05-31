@@ -55,7 +55,7 @@ defmodule OpenChat.StoreRegressionTest do
     assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.me(tampered)
 
     expired = AuthTokens.local_jwt("alice", token, Time.now() - 90_000)
-    assert {:ok, %{"uid" => "alice", "authToken" => ^token}} = Store.me(expired)
+    assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.me(expired)
 
     assert {:ok, %{"success" => true}} = Store.revoke_auth_token(token)
     assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.authenticate(token)
@@ -63,7 +63,7 @@ defmodule OpenChat.StoreRegressionTest do
     assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.me(expired)
   end
 
-  test "local JWTs reject malformed/tampered tokens and rotate via embedded auth tokens" do
+  test "local JWTs reject malformed, tampered, and re-signed tokens" do
     old_secret = Application.get_env(:open_chat, :local_jwt_secret)
 
     on_exit(fn ->
@@ -106,9 +106,7 @@ defmodule OpenChat.StoreRegressionTest do
 
     Application.put_env(:open_chat, :local_jwt_secret, "jwt-secret-b")
     assert :error = AuthTokens.local_jwt_token(jwt)
-    assert {:ok, rotated_me} = Store.me(jwt)
-    assert rotated_me["uid"] == "jwt-edge"
-    assert rotated_me["authToken"] == token
+    assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.me(jwt)
 
     assert {:ok, %{"success" => true}} = Store.revoke_auth_token(token)
     assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.me(jwt)
@@ -141,18 +139,34 @@ defmodule OpenChat.StoreRegressionTest do
     assert {:error, %{"code" => "ERR_FORBIDDEN"}} =
              Store.join_group("private-room", "alice", %{})
 
-    assert {:ok, _group} =
+    assert {:ok, group} =
              Store.upsert_group(%{
                "guid" => "password-room",
                "type" => "password",
                "password" => "secret"
              })
 
+    refute Map.has_key?(group, "password")
+
+    assert {:ok, fetched_group} = Store.get_group("password-room")
+    refute Map.has_key?(fetched_group, "password")
+
     assert {:error, %{"code" => "INVALID_PASSWORD"}} =
              Store.join_group("password-room", "alice", %{"password" => "wrong"})
 
-    assert {:ok, %{"hasJoined" => true}} =
+    assert {:ok, %{"hasJoined" => true} = joined_group} =
              Store.join_group("password-room", "alice", %{"password" => "secret"})
+
+    refute Map.has_key?(joined_group, "password")
+
+    assert {:ok, sent} =
+             Store.send_message("alice", %{
+               "receiver" => "password-room",
+               "receiverType" => "group",
+               "data" => %{"text" => "secret-safe"}
+             })
+
+    refute Map.has_key?(get_in(sent, ["data", "entities", "receiver", "entity"]), "password")
 
     assert {:ok, _group} = Store.upsert_group(%{"guid" => "scoped-room", "type" => "public"})
 
@@ -961,7 +975,8 @@ defmodule OpenChat.StoreRegressionTest do
     assert [%{"name" => "risky_name.png", "url" => url}] =
              get_in(message, ["data", "attachments"])
 
-    assert url =~ ~r(^/media/[A-Za-z0-9_-]+-risky_name\.png$)
+    assert url =~ ~r(^/media/[A-Za-z0-9_-]+-upload\.png$)
+    refute url =~ "risky"
   end
 
   test "direct conversations work when user IDs contain underscores" do

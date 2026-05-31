@@ -3,6 +3,7 @@ import Config
 default_api_key = if config_env() == :prod, do: "", else: "local-api-key"
 default_local_jwt_secret = if config_env() == :prod, do: "", else: "local-jwt-secret"
 default_cors_allowed_origins = if config_env() == :prod, do: "", else: "*"
+default_reject_weak_admin_api_key = config_env() == :prod
 default_request_body_limit = 10_000_000
 default_upload_max_bytes = 10_000_000
 default_group_max_members = 1_000
@@ -25,6 +26,7 @@ config :open_chat,
   ws_port: "4000",
   app_id: "local-app",
   api_key: default_api_key,
+  reject_weak_admin_api_key: default_reject_weak_admin_api_key,
   local_jwt_secret: default_local_jwt_secret,
   region: "us",
   cors_allowed_origins: default_cors_allowed_origins,

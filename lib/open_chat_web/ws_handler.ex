@@ -4,12 +4,14 @@ defmodule OpenChatWeb.WSHandler do
 
   alias OpenChat.{Config, Store}
 
+  @auth_timeout_ms 30_000
+
   @impl true
   def init(req, _state),
     do: {:cowboy_websocket, req, %{uid: nil, token: nil, device_id: nil, groups: MapSet.new()}}
 
   @impl true
-  def websocket_init(state), do: {:ok, schedule_heartbeat(state)}
+  def websocket_init(state), do: {:ok, state |> schedule_heartbeat() |> schedule_auth_timeout()}
 
   @impl true
   def websocket_handle({:text, json}, state) do
@@ -47,11 +49,17 @@ defmodule OpenChatWeb.WSHandler do
   def websocket_info(:heartbeat, state),
     do: {:reply, :ping, schedule_heartbeat(state)}
 
+  def websocket_info(:auth_timeout, %{uid: uid} = state) when uid in [nil, ""],
+    do: {:stop, state}
+
+  def websocket_info(:auth_timeout, state), do: {:ok, state}
+
   def websocket_info(_msg, state), do: {:ok, state}
 
   @impl true
   def terminate(_reason, _req, state) do
     cancel_heartbeat(state)
+    cancel_auth_timeout(state)
     :ok
   end
 
@@ -65,6 +73,18 @@ defmodule OpenChatWeb.WSHandler do
 
   defp cancel_heartbeat(_state), do: :ok
 
+  defp schedule_auth_timeout(%{uid: uid} = state) when uid in [nil, ""] do
+    cancel_auth_timeout(state)
+    Map.put(state, :auth_timeout_ref, Process.send_after(self(), :auth_timeout, @auth_timeout_ms))
+  end
+
+  defp schedule_auth_timeout(state), do: state
+
+  defp cancel_auth_timeout(%{auth_timeout_ref: ref}) when is_reference(ref),
+    do: Process.cancel_timer(ref)
+
+  defp cancel_auth_timeout(_state), do: :ok
+
   defp handle_auth(event, state) do
     body = event["body"] || %{}
 
@@ -77,6 +97,7 @@ defmodule OpenChatWeb.WSHandler do
     case Store.authenticate(token) do
       {:ok, user} ->
         uid = user["uid"]
+        cancel_auth_timeout(state)
         state = replace_user_subscription(state, uid)
         state = sync_group_subscriptions(%{state | uid: uid})
 
@@ -91,7 +112,9 @@ defmodule OpenChatWeb.WSHandler do
         }
 
         {:reply, {:text, Jason.encode!(reply)},
-         %{state | uid: uid, token: token, device_id: device_id}}
+         state
+         |> Map.merge(%{uid: uid, token: token, device_id: device_id})
+         |> Map.delete(:auth_timeout_ref)}
 
       {:error, error} ->
         reply = %{

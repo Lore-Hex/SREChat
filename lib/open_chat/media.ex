@@ -234,7 +234,7 @@ defmodule OpenChat.Media do
 
   defp store(path, filename, mime) do
     id = Base.url_encode64(:crypto.strong_rand_bytes(10), padding: false)
-    stored_name = id <> "-" <> filename
+    stored_name = id <> "-upload" <> Path.extname(filename)
 
     case media_storage() do
       "s3" -> store_s3(path, stored_name, mime)

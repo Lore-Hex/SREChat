@@ -50,7 +50,7 @@ defmodule OpenChatWeb.WSHandlerTest do
     assert reply["body"] == %{"status" => "OK", "code" => "200"}
   end
 
-  test "auth event accepts cached local JWTs after signing-secret rotation and expiry" do
+  test "auth event rejects expired local JWTs after signing-secret rotation" do
     previous_secret = Application.get_env(:open_chat, :local_jwt_secret)
 
     on_exit(fn ->
@@ -79,10 +79,11 @@ defmodule OpenChatWeb.WSHandlerTest do
 
     reply = Jason.decode!(json)
 
-    assert state.uid == "mobile-alice"
-    assert state.token == jwt
-    assert reply["sender"] == "mobile-alice"
-    assert reply["body"] == %{"status" => "OK", "code" => "200"}
+    assert state.uid == nil
+    assert state.token == nil
+    assert reply["type"] == "auth"
+    assert get_in(reply, ["body", "status"]) == "ERROR"
+    assert get_in(reply, ["body", "code"]) == "ERR_NO_AUTH"
   end
 
   test "authenticated sockets resync group subscriptions after join and leave" do
@@ -152,6 +153,16 @@ defmodule OpenChatWeb.WSHandlerTest do
     refute next_state.heartbeat_ref == state.heartbeat_ref
 
     assert :ok = WSHandler.terminate(:normal, nil, next_state)
+  end
+
+  test "unauthenticated websocket connections are closed after the auth timeout" do
+    assert {:ok, state} = WSHandler.websocket_init(%{uid: nil})
+    assert is_reference(state.auth_timeout_ref)
+    assert {:stop, ^state} = WSHandler.websocket_info(:auth_timeout, state)
+
+    authenticated = %{state | uid: "alice"}
+    assert {:ok, ^authenticated} = WSHandler.websocket_info(:auth_timeout, authenticated)
+    assert :ok = WSHandler.terminate(:normal, nil, authenticated)
   end
 
   test "authenticated read receipts update unread counts and broadcast a timestamped receipt" do

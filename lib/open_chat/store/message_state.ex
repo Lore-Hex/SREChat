@@ -142,7 +142,7 @@ defmodule OpenChat.Store.MessageState do
         "action" => action,
         "entities" => %{
           "by" => %{"entityType" => "user", "entity" => actor},
-          "for" => %{"entityType" => "group", "entity" => group},
+          "for" => %{"entityType" => "group", "entity" => Entities.public_group(group)},
           "on" => %{"entityType" => "user", "entity" => on_user}
         }
       }

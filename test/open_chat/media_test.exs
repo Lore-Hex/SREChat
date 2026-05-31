@@ -85,7 +85,8 @@ defmodule OpenChat.MediaTest do
     assert result["name"] == "sample_image.png"
     assert result["mimeType"] == "image/png"
     assert result["size"] == 9
-    assert result["url"] =~ ~r(^https://openchat.example/media/[A-Za-z0-9_-]+-sample_image\.png$)
+    assert result["url"] =~ ~r(^https://openchat.example/media/[A-Za-z0-9_-]+-upload\.png$)
+    refute result["url"] =~ "sample"
 
     stored_name =
       result["url"] |> String.replace("https://openchat.example/media/", "") |> URI.decode()

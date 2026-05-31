@@ -24,6 +24,10 @@ Parameters:
   AdminApiKey:
     Type: String
     NoEcho: true
+    Default: ""
+  AdminApiKeyParameterName:
+    Type: String
+    Default: ""
   DesiredCount:
     Type: Number
     Default: 2
@@ -38,13 +42,16 @@ Parameters:
     Default: "512"
   TaskMemory:
     Type: String
-    Default: "1024"
+    Default: "4096"
   RedisNodeType:
     Type: String
     Default: cache.t4g.micro
   UploadRetentionDays:
     Type: Number
     Default: 30
+
+Conditions:
+  HasAdminApiKeyParameter: !Not [!Equals [!Ref AdminApiKeyParameterName, ""]]
 
 Resources:
   Cluster:
@@ -71,6 +78,25 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - !If
+          - HasAdminApiKeyParameter
+          - PolicyName: !Sub OpenChat-${EnvironmentName}-ReadAdminApiKey
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - ssm:GetParameters
+                  Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AdminApiKeyParameterName}
+                - Effect: Allow
+                  Action:
+                    - kms:Decrypt
+                  Resource: "*"
+                  Condition:
+                    StringEquals:
+                      kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
+          - !Ref AWS::NoValue
 
   TaskRole:
     Type: AWS::IAM::Role
@@ -299,8 +325,11 @@ Resources:
               Value: "443"
             - Name: COMETCHAT_REGION
               Value: us
-            - Name: COMETCHAT_API_KEY
-              Value: !Ref AdminApiKey
+            - !If
+              - HasAdminApiKeyParameter
+              - !Ref AWS::NoValue
+              - Name: COMETCHAT_API_KEY
+                Value: !Ref AdminApiKey
             - Name: ACCEPT_UID_TOKENS
               Value: "false"
             - Name: CORS_ALLOWED_ORIGINS
@@ -333,6 +362,12 @@ Resources:
               Value: !Sub https://${DomainName}
             - Name: EXTENSION_DOMAIN
               Value: !Ref ExtensionDomain
+          Secrets:
+            - !If
+              - HasAdminApiKeyParameter
+              - Name: COMETCHAT_API_KEY
+                ValueFrom: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${AdminApiKeyParameterName}
+              - !Ref AWS::NoValue
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -355,6 +390,9 @@ Resources:
       DeploymentConfiguration:
         MaximumPercent: 200
         MinimumHealthyPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
       NetworkConfiguration:
         AwsvpcConfiguration:
           AssignPublicIp: ENABLED

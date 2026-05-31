@@ -783,26 +783,35 @@ defmodule OpenChatWeb.ApiRouter do
     decoded = URI.decode(file)
     filename = Path.basename(decoded)
 
-    if decoded == filename and Media.stored_name?(filename) do
-      case Media.fetch(filename) do
-        {:ok, %{path: path, content_type: content_type}} ->
-          conn
-          |> put_resp_content_type(
-            content_type || MIME.from_path(path) || "application/octet-stream"
-          )
-          |> send_file(200, path)
+    cond do
+      decoded != filename or not Media.stored_name?(filename) ->
+        media_not_found(conn)
 
-        {:ok, %{body: body, content_type: content_type}} ->
-          conn
-          |> put_resp_content_type(content_type || "application/octet-stream")
-          |> send_resp(200, body)
+      Config.media_storage() == "s3" ->
+        media_not_found(conn)
 
-        _other ->
-          JSON.error(conn, Errors.error("ERR_MEDIA_NOT_FOUND", "Media file was not found."), 404)
-      end
-    else
-      JSON.error(conn, Errors.error("ERR_MEDIA_NOT_FOUND", "Media file was not found."), 404)
+      true ->
+        case Media.fetch(filename) do
+          {:ok, %{path: path, content_type: content_type}} ->
+            conn
+            |> put_resp_content_type(
+              content_type || MIME.from_path(path) || "application/octet-stream"
+            )
+            |> send_file(200, path)
+
+          {:ok, %{body: body, content_type: content_type}} ->
+            conn
+            |> put_resp_content_type(content_type || "application/octet-stream")
+            |> send_resp(200, body)
+
+          _other ->
+            media_not_found(conn)
+        end
     end
+  end
+
+  defp media_not_found(conn) do
+    JSON.error(conn, Errors.error("ERR_MEDIA_NOT_FOUND", "Media file was not found."), 404)
   end
 
   defp with_user(conn, fun) do

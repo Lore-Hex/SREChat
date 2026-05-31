@@ -18,7 +18,7 @@ defmodule OpenChat.Store.AuthTokensTest do
     :ok
   end
 
-  test "local JWT lookup accepts canonical tokens and falls back to opaque tokens" do
+  test "local JWT lookup accepts canonical tokens and falls back to opaque non-JWT tokens" do
     token = AuthTokens.local_jwt(123, 456, Time.now())
 
     assert {:ok, "456"} = AuthTokens.local_jwt_token(token)
@@ -30,8 +30,7 @@ defmodule OpenChat.Store.AuthTokensTest do
 
     Application.put_env(:open_chat, :local_jwt_secret, "rotated-local-jwt-secret")
     assert :error = AuthTokens.local_jwt_token(token)
-    assert {:ok, "456"} = AuthTokens.local_jwt_embedded_token(token)
-    assert AuthTokens.lookup_tokens(token) == ["456"]
+    assert AuthTokens.lookup_tokens(token) == []
   end
 
   test "local JWT lookup rejects expired malformed and tampered local tokens" do
@@ -52,14 +51,9 @@ defmodule OpenChat.Store.AuthTokensTest do
     assert :error =
              AuthTokens.local_jwt_token(local_token(%{"token" => "old", "exp" => Time.now() - 1}))
 
-    assert {:ok, "old"} =
-             AuthTokens.local_jwt_embedded_token(
-               local_token(%{"token" => "old", "exp" => Time.now() - 1})
-             )
-
     token = local_token(%{"token" => "auth", "exp" => Time.now() + 60})
     assert :error = AuthTokens.local_jwt_token(token <> "tampered")
-    assert AuthTokens.lookup_tokens(token <> "tampered") == ["auth"]
+    assert AuthTokens.lookup_tokens(token <> "tampered") == []
   end
 
   defp local_token(payload) do

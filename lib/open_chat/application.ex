@@ -5,6 +5,7 @@ defmodule OpenChat.Application do
 
   @impl true
   def start(_type, _args) do
+    ensure_security_config!()
     ensure_media_storage!()
 
     port = Application.fetch_env!(:open_chat, :port)
@@ -19,6 +20,21 @@ defmodule OpenChat.Application do
 
     Logger.info("OpenChat listening on :#{port}")
     Supervisor.start_link(children, strategy: :one_for_one, name: OpenChat.Supervisor)
+  end
+
+  def ensure_security_config! do
+    ensure_admin_api_key!()
+  end
+
+  defp ensure_admin_api_key! do
+    api_key = OpenChat.Config.api_key()
+
+    if OpenChat.Config.reject_weak_admin_api_key?() and weak_secret?(api_key) do
+      raise ArgumentError,
+            "COMETCHAT_API_KEY must be blank to disable admin routes or a random value with at least 32 characters"
+    end
+
+    :ok
   end
 
   def ensure_media_storage! do
@@ -42,6 +58,13 @@ defmodule OpenChat.Application do
       other ->
         raise ArgumentError, "unsupported MEDIA_STORAGE=#{inspect(other)}; expected local or s3"
     end
+  end
+
+  defp weak_secret?(value) when value in [nil, ""], do: false
+
+  defp weak_secret?(value) do
+    value = value |> to_string() |> String.trim()
+    String.downcase(value) in ["none", "null", "undefined"] or String.length(value) < 32
   end
 
   defp dispatch do

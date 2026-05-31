@@ -3,7 +3,14 @@ defmodule OpenChat.ApplicationTest do
 
   alias OpenChat.Application, as: OpenChatApplication
 
-  @keys [:allow_local_media_storage, :media_storage, :s3_bucket, :upload_dir]
+  @keys [
+    :allow_local_media_storage,
+    :api_key,
+    :media_storage,
+    :reject_weak_admin_api_key,
+    :s3_bucket,
+    :upload_dir
+  ]
 
   setup do
     previous = Map.new(@keys, &{&1, Application.get_env(:open_chat, &1)})
@@ -69,5 +76,23 @@ defmodule OpenChat.ApplicationTest do
     assert_raise ArgumentError, ~r/S3_BUCKET is required/, fn ->
       OpenChatApplication.ensure_media_storage!()
     end
+  end
+
+  test "production-like security config rejects weak non-empty admin API keys" do
+    Application.put_env(:open_chat, :reject_weak_admin_api_key, true)
+
+    Application.put_env(:open_chat, :api_key, "")
+    assert :ok = OpenChatApplication.ensure_security_config!()
+
+    for weak <- ["None", "null", "short"] do
+      Application.put_env(:open_chat, :api_key, weak)
+
+      assert_raise ArgumentError, ~r/COMETCHAT_API_KEY must be blank/, fn ->
+        OpenChatApplication.ensure_security_config!()
+      end
+    end
+
+    Application.put_env(:open_chat, :api_key, String.duplicate("a", 32))
+    assert :ok = OpenChatApplication.ensure_security_config!()
   end
 end
