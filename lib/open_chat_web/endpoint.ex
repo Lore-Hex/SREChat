@@ -41,6 +41,7 @@ defmodule OpenChatWeb.Endpoint do
     |> Plug.Conn.put_resp_header("x-content-type-options", "nosniff")
     |> Plug.Conn.put_resp_header("x-frame-options", "DENY")
     |> Plug.Conn.put_resp_header("referrer-policy", "no-referrer")
+    |> Plug.Conn.put_resp_header("vary", "origin")
   end
 
   defp parse_body(conn, _opts) do

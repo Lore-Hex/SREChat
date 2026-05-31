@@ -165,6 +165,35 @@ defmodule OpenChatWeb.WSHandlerTest do
     assert :ok = WSHandler.terminate(:normal, nil, authenticated)
   end
 
+  test "websocket origin follows the configured origin allowlist" do
+    previous = Application.get_env(:open_chat, :cors_allowed_origins)
+
+    on_exit(fn ->
+      case previous do
+        nil -> Application.delete_env(:open_chat, :cors_allowed_origins)
+        value -> Application.put_env(:open_chat, :cors_allowed_origins, value)
+      end
+    end)
+
+    Application.put_env(:open_chat, :cors_allowed_origins, "https://allowed.example")
+
+    assert WSHandler.websocket_origin_allowed?(%{headers: %{}})
+
+    assert WSHandler.websocket_origin_allowed?(%{
+             headers: %{"origin" => "https://allowed.example"}
+           })
+
+    refute WSHandler.websocket_origin_allowed?(%{
+             headers: %{"origin" => "https://evil.example"}
+           })
+
+    Application.put_env(:open_chat, :cors_allowed_origins, "*")
+
+    assert WSHandler.websocket_origin_allowed?(%{
+             headers: %{"origin" => "https://anywhere.example"}
+           })
+  end
+
   test "authenticated read receipts update unread counts and broadcast a timestamped receipt" do
     {:ok, message} =
       Store.send_message("bob", %{

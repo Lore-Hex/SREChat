@@ -7,8 +7,35 @@ defmodule OpenChatWeb.WSHandler do
   @auth_timeout_ms 30_000
 
   @impl true
-  def init(req, _state),
-    do: {:cowboy_websocket, req, %{uid: nil, token: nil, device_id: nil, groups: MapSet.new()}}
+  def init(req, _state) do
+    if websocket_origin_allowed?(req) do
+      {:cowboy_websocket, req, %{uid: nil, token: nil, device_id: nil, groups: MapSet.new()}}
+    else
+      body =
+        Jason.encode!(%{
+          "error" => %{"code" => "ERR_FORBIDDEN", "message" => "Origin is not allowed."}
+        })
+
+      req =
+        :cowboy_req.reply(
+          403,
+          %{"content-type" => "application/json; charset=utf-8"},
+          body,
+          req
+        )
+
+      {:ok, req, %{}}
+    end
+  end
+
+  @doc false
+  def websocket_origin_allowed?(req) do
+    case request_origin(req) do
+      nil -> true
+      "" -> true
+      origin -> Config.cors_allowed_origin(origin) != nil
+    end
+  end
 
   @impl true
   def websocket_init(state), do: {:ok, state |> schedule_heartbeat() |> schedule_auth_timeout()}
@@ -200,4 +227,16 @@ defmodule OpenChatWeb.WSHandler do
       {:error, {:already_registered, _pid}} -> :ok
     end
   end
+
+  defp request_origin(req) do
+    case :cowboy_req.header("origin", req, nil) do
+      nil -> nil
+      :undefined -> nil
+      origin -> to_s(origin)
+    end
+  end
+
+  defp to_s(value) when is_binary(value), do: value
+  defp to_s(value) when is_atom(value), do: Atom.to_string(value)
+  defp to_s(value), do: to_string(value)
 end

@@ -124,10 +124,11 @@ defmodule OpenChat.StoreMessageStateTest do
     state =
       State.default()
       |> put_user(%{"uid" => "alice", "name" => "Alice", "authToken" => "secret"})
-      |> put_group("room")
+      |> put_group("room", %{"type" => "password", "password" => "group-secret"})
       |> GroupState.add_member("room", "alice", "participant")
 
     receiver = MessageState.receiver_entity(state, "group", "room")
+    refute Map.has_key?(receiver, "password")
 
     action =
       MessageState.message_action(
@@ -151,6 +152,7 @@ defmodule OpenChat.StoreMessageStateTest do
     assert get_in(action, ["data", "entities", "by", "entity", "uid"]) == "alice"
     refute Map.has_key?(get_in(action, ["data", "entities", "by", "entity"]), "authToken")
     assert get_in(action, ["data", "entities", "for", "entity", "membersCount"]) == 1
+    refute Map.has_key?(get_in(action, ["data", "entities", "for", "entity"]), "password")
   end
 
   test "group actions include actor target and group entities" do
@@ -196,8 +198,8 @@ defmodule OpenChat.StoreMessageStateTest do
     UserState.put(state, user)
   end
 
-  defp put_group(state, guid) do
-    group = Entities.group(%{"guid" => guid, "type" => "public"})
+  defp put_group(state, guid, attrs \\ %{}) do
+    group = Entities.group(Map.merge(%{"guid" => guid, "type" => "public"}, attrs))
 
     state
     |> put_in(["groups", guid], group)

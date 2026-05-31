@@ -159,6 +159,7 @@ defmodule OpenChat.Store.MessageState do
       get_in(state, ["groups", to_s(guid)]) || Entities.group(%{"guid" => guid, "name" => guid})
 
     GroupState.with_members_count(group, state)
+    |> Entities.public_group()
   end
 
   defp to_s(nil), do: ""
