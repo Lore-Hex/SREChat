@@ -193,7 +193,7 @@ store_admin_key_parameter() {
   jq -n \
     --arg name "$parameter_name" \
     --rawfile value "$value_file" \
-    '{Name: $name, Value: $value, Type: "SecureString", Overwrite: true}' >"$input_file"
+    '{Name: $name, Value: ($value | rtrimstr("\n")), Type: "SecureString", Overwrite: true}' >"$input_file"
 
   if aws ssm put-parameter \
     --profile "$profile" \
