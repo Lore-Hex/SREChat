@@ -121,12 +121,40 @@ defmodule OpenChat.RestCompatTest do
     assert %{"error" => %{"code" => "ERR_FORBIDDEN"}} = decode(response)
   end
 
+  test "legacy message interactions endpoint validates body message ids against the same conversation" do
+    {:ok, %{"authToken" => bot_token}} = Store.create_auth_token("bot")
+
+    {:ok, accessible} =
+      Store.send_message("alice", %{
+        "receiver" => "bot",
+        "receiverType" => "user",
+        "type" => "text",
+        "data" => %{"text" => "visible"}
+      })
+
+    {:ok, inaccessible} =
+      Store.send_message("alice", %{
+        "receiver" => "charlie",
+        "receiverType" => "user",
+        "type" => "text",
+        "data" => %{"text" => "hidden"}
+      })
+
+    response =
+      post_json("/v3/messages/#{accessible["id"]}/interactions", bot_token, %{
+        "messageId" => inaccessible["id"]
+      })
+
+    assert response.status == 403
+    assert %{"error" => %{"code" => "ERR_FORBIDDEN"}} = decode(response)
+  end
+
   test "legacy self member delete path leaves group with a user auth token" do
     {:ok, %{"authToken" => bot_token}} = Store.create_auth_token("bot")
     assert {:ok, _group} = Store.upsert_group(%{"guid" => "room", "type" => "public"})
     assert {:ok, _members} = Store.add_group_members("room", ["bot"])
 
-    response = delete_json("/v3/groups/room/members/bot", bot_token)
+    response = delete_json("/v3/groups/room/members/bot", bot_token, [{"appid", "public-app"}])
 
     assert response.status == 200
     assert %{"data" => %{"success" => true}} = decode(response)
@@ -146,6 +174,19 @@ defmodule OpenChat.RestCompatTest do
     assert Enum.any?(members, &(&1["uid"] == "alice"))
   end
 
+  test "legacy self member delete path does not fall back to user auth when apiKey is invalid" do
+    {:ok, %{"authToken" => bot_token}} = Store.create_auth_token("bot")
+    assert {:ok, _group} = Store.upsert_group(%{"guid" => "room", "type" => "public"})
+    assert {:ok, _members} = Store.add_group_members("room", ["bot"])
+
+    response = delete_json("/v3/groups/room/members/bot", bot_token, [{"apikey", "public-app"}])
+
+    assert response.status == 403
+    assert %{"error" => %{"code" => "ERR_FORBIDDEN"}} = decode(response)
+    assert {:ok, members} = Store.group_members("room")
+    assert Enum.any?(members, &(&1["uid"] == "bot"))
+  end
+
   defp get_json(path, token) do
     conn(:get, path)
     |> put_req_header("authtoken", token)
@@ -159,9 +200,13 @@ defmodule OpenChat.RestCompatTest do
     |> Endpoint.call([])
   end
 
-  defp delete_json(path, token) do
-    conn(:delete, path)
-    |> put_req_header("authtoken", token)
+  defp delete_json(path, token, extra_headers \\ []) do
+    extra_headers
+    |> Enum.reduce(
+      conn(:delete, path)
+      |> put_req_header("authtoken", token),
+      fn {key, value}, conn -> put_req_header(conn, key, value) end
+    )
     |> Endpoint.call([])
   end
 
