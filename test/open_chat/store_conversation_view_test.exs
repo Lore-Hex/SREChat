@@ -267,6 +267,38 @@ defmodule OpenChat.Store.ConversationViewTest do
       assert Enum.map(result, & &1["id"]) == ["3"]
     end
 
+    test "legacy id aliases are exclusive and infer append/prepend affixes" do
+      state = seeded_state()
+
+      after_message_id =
+        ConversationView.messages(state, "group_room", %{
+          "limit" => 10,
+          "messageId" => "1",
+          "affix" => "append",
+          "hideDeleted" => "false"
+        })
+
+      assert Enum.map(after_message_id, & &1["id"]) == ["2", "3"]
+
+      after_id =
+        ConversationView.messages(state, "group_room", %{
+          "limit" => 10,
+          "afterId" => "1",
+          "hideDeleted" => "false"
+        })
+
+      assert Enum.map(after_id, & &1["id"]) == ["2", "3"]
+
+      before_id =
+        ConversationView.messages(state, "group_room", %{
+          "limit" => 10,
+          "beforeId" => "3",
+          "hideDeleted" => "false"
+        })
+
+      assert Enum.map(before_id, & &1["id"]) == ["2", "1"]
+    end
+
     test "legacy timestamp aliases and sender filters apply before pagination" do
       state = seeded_state()
 

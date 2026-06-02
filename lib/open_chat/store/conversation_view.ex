@@ -108,12 +108,22 @@ defmodule OpenChat.Store.ConversationView do
       params["fromTimestamp"] || params["fromTimeStamp"] || params["from_timestamp"]
 
     timestamp = params["sentAt"] || params["timestamp"] || params["updatedAt"] || append_timestamp
-    id = params["id"] || params["cursorValue"]
+    after_id = params["afterId"] || params["after_id"] || params["fromId"] || params["from_id"]
+    before_id = params["beforeId"] || params["before_id"]
+
+    id =
+      params["id"] || params["messageId"] || params["message_id"] || params["msgId"] ||
+        params["msg_id"] || after_id || before_id || params["cursorValue"]
+
     cursor_id = params["cursorId"] || params["cursor_id"] || if(timestamp, do: id)
 
     affix =
       params["cursorAffix"] || params["affix"] ||
-        if(append_timestamp, do: "append", else: "prepend")
+        cond do
+          after_id -> "append"
+          append_timestamp -> "append"
+          true -> "prepend"
+        end
 
     cursor_field =
       params["cursorField"] || if(timestamp, do: "sentAt", else: if(id, do: "id", else: "sentAt"))
@@ -155,9 +165,15 @@ defmodule OpenChat.Store.ConversationView do
     append_timestamp =
       params["fromTimestamp"] || params["fromTimeStamp"] || params["from_timestamp"]
 
+    after_id = params["afterId"] || params["after_id"] || params["fromId"] || params["from_id"]
+
     affix =
       params["cursorAffix"] || params["affix"] ||
-        if(append_timestamp, do: "append", else: "prepend")
+        cond do
+          after_id -> "append"
+          append_timestamp -> "append"
+          true -> "prepend"
+        end
 
     messages =
       Enum.sort_by(messages, fn message ->

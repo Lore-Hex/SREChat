@@ -618,7 +618,9 @@ defmodule OpenChatWeb.ApiRouter do
   defp mark_conversation_receipt(conn, receiver_type, receiver_id, marker) do
     with_user(conn, fn conn, user, _token ->
       message_id =
-        conn.body_params["messageId"] || conn.body_params["id"] || conn.params["messageId"] || "0"
+        conn.body_params["messageId"] || conn.body_params["message_id"] ||
+          conn.body_params["msgId"] || conn.body_params["id"] || conn.params["messageId"] ||
+          conn.params["message_id"] || conn.params["msgId"] || conn.params["id"] || "0"
 
       store_response(conn, marker.(user["uid"], receiver_type, receiver_id, message_id), 200, 404)
     end)

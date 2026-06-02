@@ -160,10 +160,20 @@ defmodule OpenChatWeb.WSHandler do
 
   defp handle_receipt(event, %{uid: uid} = state) when is_binary(uid) and uid != "" do
     body = event["body"] || %{}
-    receiver = event["receiver"] || body["receiver"]
-    receiver_type = event["receiverType"] || body["receiverType"] || "user"
-    message_id = body["messageId"] || body["id"] || "0"
-    action = body["action"] || "read"
+
+    receiver =
+      event["receiver"] || event["receiverId"] || event["recipient"] || body["receiver"] ||
+        body["receiverId"] || body["recipient"]
+
+    receiver_type =
+      event["receiverType"] || event["receiver_type"] || body["receiverType"] ||
+        body["receiver_type"] || "user"
+
+    message_id =
+      event["messageId"] || event["message_id"] || event["msgId"] || event["id"] ||
+        body["messageId"] || body["message_id"] || body["msgId"] || body["id"] || "0"
+
+    action = event["action"] || body["action"] || "read"
 
     delivered? = action in ["delivered", "deliver", "message_delivered"]
 

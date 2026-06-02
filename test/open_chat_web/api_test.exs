@@ -86,6 +86,77 @@ defmodule OpenChatWeb.ApiTest do
     end)
   end
 
+  test "raw message id cursor aliases are exclusive for bot and legacy clients" do
+    sent =
+      for text <- ["cursor alias a", "cursor alias b", "cursor alias c"] do
+        auth_conn(:post, "/v3.0/messages", %{
+          "receiver" => "bob",
+          "receiverType" => "user",
+          "type" => "text",
+          "data" => %{"text" => text}
+        })
+        |> json()
+        |> get_in(["data"])
+      end
+
+    [first, second, third] = sent
+
+    conn =
+      auth_conn(
+        :get,
+        "/v3.0/users/alice/messages?messageId=#{first["id"]}&affix=append&limit=10",
+        %{},
+        "uid:bob"
+      )
+
+    assert Enum.map(json(conn)["data"], & &1["id"]) == [second["id"], third["id"]]
+
+    conn =
+      auth_conn(
+        :get,
+        "/v3.0/users/alice/messages?afterId=#{first["id"]}&limit=10",
+        %{},
+        "uid:bob"
+      )
+
+    assert Enum.map(json(conn)["data"], & &1["id"]) == [second["id"], third["id"]]
+
+    conn =
+      auth_conn(
+        :get,
+        "/v3.0/users/alice/messages?beforeId=#{third["id"]}&limit=10",
+        %{},
+        "uid:bob"
+      )
+
+    assert Enum.map(json(conn)["data"], & &1["id"]) == [first["id"], second["id"]]
+  end
+
+  test "conversation read receipts accept message id aliases in query params" do
+    message =
+      auth_conn(:post, "/v3.0/messages", %{
+        "receiver" => "bob",
+        "receiverType" => "user",
+        "type" => "text",
+        "data" => %{"text" => "read alias"}
+      })
+      |> json()
+      |> get_in(["data"])
+
+    conn =
+      auth_conn(
+        :post,
+        "/v3.0/users/alice/conversation/read?msgId=#{message["id"]}",
+        %{},
+        "uid:bob"
+      )
+
+    assert conn.status == 200
+
+    conn = auth_conn(:get, "/v3.0/messages?receiverType=user&unread=1&count=1", %{}, "uid:bob")
+    assert json(conn)["data"] == []
+  end
+
   test "admin v3 routes cover TTFM server-side CometChat calls" do
     assert admin_conn(:post, "/v3/users", %{
              "uid" => "dj-1",

@@ -229,6 +229,35 @@ defmodule OpenChatWeb.WSHandlerTest do
     assert is_integer(get_in(event, ["body", "timestamp"]))
   end
 
+  test "authenticated read receipts accept SDK and legacy field aliases" do
+    {:ok, message} =
+      Store.send_message("bob", %{
+        "receiver" => "alice",
+        "receiverType" => "user",
+        "data" => %{"text" => "please read alias"}
+      })
+
+    assert {:ok, [%{"entityId" => "bob", "count" => 1}]} =
+             Store.unread_counts("alice", %{"receiverType" => "user"})
+
+    state = %{uid: "alice", token: "uid:alice", device_id: "device-1"}
+
+    assert {:ok, ^state} =
+             WSHandler.websocket_handle(
+               {:text,
+                Jason.encode!(%{
+                  "type" => "receipts",
+                  "receiverId" => "bob",
+                  "receiver_type" => "user",
+                  "message_id" => message["id"],
+                  "action" => "read"
+                })},
+               state
+             )
+
+    assert {:ok, []} = Store.unread_counts("alice", %{"receiverType" => "user"})
+  end
+
   test "authenticated delivered receipts update delivered cursors and broadcast once" do
     {:ok, message} =
       Store.send_message("bob", %{

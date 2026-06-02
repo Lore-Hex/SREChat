@@ -73,7 +73,7 @@ defmodule OpenChatWeb.ApiResponse do
 
   defp cursor_meta(messages, params) do
     limit = params["per_page"] || params["limit"] || 30
-    affix = params["cursorAffix"] || params["affix"] || "prepend"
+    affix = message_cursor_affix(params)
 
     cursor_message =
       case affix do
@@ -93,10 +93,26 @@ defmodule OpenChatWeb.ApiResponse do
   end
 
   defp message_wire_order(messages, params) do
-    case params["cursorAffix"] || params["affix"] || "prepend" do
+    case message_cursor_affix(params) do
       "append" -> messages
       _fetch_previous -> Enum.reverse(messages)
     end
+  end
+
+  defp message_cursor_affix(params) do
+    params = params || %{}
+
+    after_id = params["afterId"] || params["after_id"] || params["fromId"] || params["from_id"]
+
+    append_timestamp =
+      params["fromTimestamp"] || params["fromTimeStamp"] || params["from_timestamp"]
+
+    params["cursorAffix"] || params["affix"] ||
+      cond do
+        after_id -> "append"
+        append_timestamp -> "append"
+        true -> "prepend"
+      end
   end
 
   defp reactions_page_with_meta(reactions, params) do
