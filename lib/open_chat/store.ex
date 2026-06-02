@@ -14,6 +14,7 @@ defmodule OpenChat.Store do
   alias OpenChat.Store.{
     Access,
     AuthTokens,
+    CacheKeys,
     ConversationView,
     Conversations,
     Entities,
@@ -224,9 +225,8 @@ defmodule OpenChat.Store do
 
   def handle_call({:refresh_from_pubsub, keys, event}, _from, state) do
     refresh =
-      keys
-      |> pubsub_key_refresh_keys()
-      |> Kernel.++(event_refresh_keys(event))
+      CacheKeys.for_pubsub_keys(keys)
+      |> Kernel.++(CacheKeys.for_event(event))
       |> Enum.uniq()
 
     {:reply, :ok, RedisPersistence.refresh_keys(State.default(), state, refresh)}
@@ -1312,122 +1312,6 @@ defmodule OpenChat.Store do
       RequestPlan.followup_refresh(request, state)
     )
   end
-
-  defp pubsub_key_refresh_keys(keys) do
-    keys
-    |> List.wrap()
-    |> Enum.flat_map(fn
-      {:user, uid} ->
-        user_cache_keys(uid)
-
-      {:group, guid} ->
-        group_cache_keys(guid)
-
-      _other ->
-        []
-    end)
-  end
-
-  defp event_refresh_keys(%{"type" => "message", "body" => %{} = message}) do
-    message_cache_keys(message) ++ action_subject_message_keys(message)
-  end
-
-  defp event_refresh_keys(%{"type" => "reaction", "body" => %{} = body}) do
-    message_id = body["messageId"] || body["message_id"] || body["id"]
-    message_record_keys(message_id) ++ [{"reactions", message_id}]
-  end
-
-  defp event_refresh_keys(%{"type" => "receipts", "sender" => uid, "body" => %{} = body} = event) do
-    receiver_type = event["receiverType"] || body["receiverType"] || body["type"] || "user"
-    receiver = event["receiver"] || body["receiver"] || body["receiverId"]
-    conv_id = body["conversationId"] || conversation_id_for(uid, receiver_type, receiver)
-
-    [
-      {"reads", uid},
-      {"delivered", uid},
-      {"unread_counts", uid},
-      {"conversation_latest", conv_id},
-      {"conversation_users", conv_id}
-    ]
-  end
-
-  defp event_refresh_keys(_event), do: []
-
-  defp message_cache_keys(message) do
-    conv_id =
-      message["conversationId"] ||
-        conversation_id_for(message["sender"], message["receiverType"], message["receiver"])
-
-    parent_id = message["parentId"] || message["parentMessageId"]
-    muid = message["muid"]
-
-    message_record_keys(message["id"]) ++
-      [
-        {"reactions", message["id"]},
-        {"conversation_messages", conv_id},
-        {"conversation_latest", conv_id},
-        {"conversation_users", conv_id},
-        {"message_muids", muid}
-      ] ++
-      message_record_keys(parent_id) ++
-      if(blank?(parent_id), do: [], else: [{"thread_messages", parent_id}]) ++
-      user_cache_keys(message["sender"]) ++ receiver_cache_keys(message)
-  end
-
-  defp action_subject_message_keys(message) do
-    case get_in(message, ["data", "entities", "on", "entity"]) do
-      %{"id" => _id, "conversationId" => _conv_id} = subject -> message_cache_keys(subject)
-      %{"id" => id} -> message_record_keys(id) ++ [{"reactions", id}]
-      _other -> []
-    end
-  end
-
-  defp receiver_cache_keys(%{"receiverType" => "group", "receiver" => guid}),
-    do: group_cache_keys(guid)
-
-  defp receiver_cache_keys(%{"receiver" => uid}), do: user_cache_keys(uid)
-  defp receiver_cache_keys(_message), do: []
-
-  defp user_cache_keys(uid) do
-    uid = to_s(uid)
-
-    if blank?(uid) do
-      []
-    else
-      [
-        {"users", uid},
-        {"user_groups", uid},
-        {"user_conversations", uid},
-        {"unread_counts", uid},
-        {"reads", uid},
-        {"delivered", uid},
-        {"hidden_conversations", uid},
-        {"blocks", uid}
-      ]
-    end
-  end
-
-  defp group_cache_keys(guid) do
-    guid = to_s(guid)
-
-    if blank?(guid) do
-      []
-    else
-      conv_id = group_conversation_id(guid)
-
-      [
-        {"groups", guid},
-        {"members", guid},
-        {"banned", guid},
-        {"conversation_messages", conv_id},
-        {"conversation_latest", conv_id},
-        {"conversation_users", conv_id}
-      ]
-    end
-  end
-
-  defp message_record_keys(value),
-    do: if(blank?(value) or to_s(value) == "0", do: [], else: [{"messages", value}])
 
   defp take_counter(state, counter) do
     fallback = max(to_int(state[counter]), 1)
