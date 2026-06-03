@@ -144,15 +144,13 @@ defmodule OpenChatWeb.WSHandlerTest do
     assert {:ok, ^state} = WSHandler.websocket_handle({:text, "not-json"}, state)
   end
 
-  test "websocket heartbeat sends protocol pings and keeps the timer replaceable" do
+  test "websocket init does not send server protocol heartbeats" do
     assert {:ok, state} = WSHandler.websocket_init(%{uid: "alice"})
-    assert is_reference(state.heartbeat_ref)
+    refute Map.has_key?(state, :heartbeat_ref)
 
-    assert {:reply, :ping, next_state} = WSHandler.websocket_info(:heartbeat, state)
-    assert is_reference(next_state.heartbeat_ref)
-    refute next_state.heartbeat_ref == state.heartbeat_ref
+    assert {:ok, ^state} = WSHandler.websocket_info(:heartbeat, state)
 
-    assert :ok = WSHandler.terminate(:normal, nil, next_state)
+    assert :ok = WSHandler.terminate(:normal, nil, state)
   end
 
   test "unauthenticated websocket connections are closed after the auth timeout" do

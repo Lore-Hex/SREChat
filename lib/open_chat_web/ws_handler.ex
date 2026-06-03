@@ -38,7 +38,7 @@ defmodule OpenChatWeb.WSHandler do
   end
 
   @impl true
-  def websocket_init(state), do: {:ok, state |> schedule_heartbeat() |> schedule_auth_timeout()}
+  def websocket_init(state), do: {:ok, schedule_auth_timeout(state)}
 
   @impl true
   def websocket_handle({:text, json}, state) do
@@ -73,8 +73,7 @@ defmodule OpenChatWeb.WSHandler do
   def websocket_info({:comet_event, event}, state),
     do: {:reply, {:text, Jason.encode!(event)}, state}
 
-  def websocket_info(:heartbeat, state),
-    do: {:reply, :ping, schedule_heartbeat(state)}
+  def websocket_info(:heartbeat, state), do: {:ok, state}
 
   def websocket_info(:auth_timeout, %{uid: uid} = state) when uid in [nil, ""],
     do: {:stop, state}
@@ -85,20 +84,9 @@ defmodule OpenChatWeb.WSHandler do
 
   @impl true
   def terminate(_reason, _req, state) do
-    cancel_heartbeat(state)
     cancel_auth_timeout(state)
     :ok
   end
-
-  defp schedule_heartbeat(state) do
-    cancel_heartbeat(state)
-    Map.put(state, :heartbeat_ref, Process.send_after(self(), :heartbeat, 25_000))
-  end
-
-  defp cancel_heartbeat(%{heartbeat_ref: ref}) when is_reference(ref),
-    do: Process.cancel_timer(ref)
-
-  defp cancel_heartbeat(_state), do: :ok
 
   defp schedule_auth_timeout(%{uid: uid} = state) when uid in [nil, ""] do
     cancel_auth_timeout(state)
