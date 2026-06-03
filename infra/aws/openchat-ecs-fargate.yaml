@@ -254,7 +254,7 @@ Resources:
       Port: 4000
       TargetType: ip
       HealthCheckEnabled: true
-      HealthCheckPath: /v3.0/settings
+      HealthCheckPath: /health
       HealthCheckProtocol: HTTP
       Matcher:
         HttpCode: "200"
@@ -385,7 +385,7 @@ Resources:
       DesiredCount: !Ref DesiredCount
       LaunchType: FARGATE
       PlatformVersion: LATEST
-      HealthCheckGracePeriodSeconds: 120
+      HealthCheckGracePeriodSeconds: 900
       DeploymentConfiguration:
         MaximumPercent: 200
         MinimumHealthyPercent: 100

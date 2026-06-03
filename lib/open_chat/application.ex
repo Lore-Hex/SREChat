@@ -18,8 +18,14 @@ defmodule OpenChat.Application do
        scheme: :http, plug: OpenChatWeb.Endpoint, options: [port: port, dispatch: dispatch()]}
     ]
 
-    Logger.info("OpenChat listening on :#{port}")
-    Supervisor.start_link(children, strategy: :one_for_one, name: OpenChat.Supervisor)
+    case Supervisor.start_link(children, strategy: :one_for_one, name: OpenChat.Supervisor) do
+      {:ok, _pid} = result ->
+        Logger.info("OpenChat listening on :#{port}")
+        result
+
+      other ->
+        other
+    end
   end
 
   def ensure_security_config! do
