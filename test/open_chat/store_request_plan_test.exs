@@ -35,6 +35,14 @@ defmodule OpenChat.StoreRequestPlanTest do
     assert plan.refresh == [{"users", "plan-user"}, {"tokens", "uid:plan-user"}]
   end
 
+  test "opaque auth token plans are read-only" do
+    plan = RequestPlan.build({:authenticate, "opaque-plan-token"})
+
+    refute plan.mutating?
+    assert plan.locks == []
+    assert plan.refresh == [{"tokens", "opaque-plan-token"}]
+  end
+
   test "group membership actions reserve message IDs through the shared counter" do
     join_plan = RequestPlan.build({:join_group, "plan-room", "plan-user", %{}})
     leave_plan = RequestPlan.build({:leave_group, "plan-room", "plan-user"})
@@ -73,6 +81,16 @@ defmodule OpenChat.StoreRequestPlanTest do
     assert plan.mutating?
     assert plan.locks == [{:token, "uid:jwt-plan-user"}, {:user, "jwt-plan-user"}]
     assert plan.refresh == [{"users", "jwt-plan-user"}, {"tokens", "uid:jwt-plan-user"}]
+  end
+
+  test "local JWT auth with an opaque token is read-only" do
+    jwt = AuthTokens.local_jwt("jwt-plan-user", "opaque-plan-token")
+
+    plan = RequestPlan.build({:authenticate, jwt})
+
+    refute plan.mutating?
+    assert plan.locks == []
+    assert plan.refresh == [{"tokens", "opaque-plan-token"}]
   end
 
   test "opaque auth tokens follow up by refreshing the mapped user key" do

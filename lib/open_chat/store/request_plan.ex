@@ -43,8 +43,14 @@ defmodule OpenChat.Store.RequestPlan do
   def build({:blocked_users, uid, params}), do: read(blocked_user_keys(uid, params))
   def build({:create_auth_token, uid}), do: mutate(user_scope(uid), [{"users", uid}])
   def build({:revoke_auth_token, token}), do: mutate(token_scope(token), [{"tokens", token}])
-  def build({:authenticate, token}), do: mutate(token_scopes(token), token_refresh_keys(token))
-  def build({:me, token}), do: mutate(token_scopes(token), token_refresh_keys(token))
+
+  def build({request, token}) when request in [:authenticate, :me] do
+    if token_requires_auth_mutation?(token) do
+      mutate(token_scopes(token), token_refresh_keys(token))
+    else
+      read(token_refresh_keys(token))
+    end
+  end
 
   def build({:upsert_group, attrs}) do
     attrs = stringify_keys(attrs)
@@ -370,6 +376,13 @@ defmodule OpenChat.Store.RequestPlan do
     |> AuthTokens.lookup_tokens()
     |> Enum.flat_map(&single_token_scopes/1)
     |> Enum.uniq()
+  end
+
+  defp token_requires_auth_mutation?(token) do
+    tokens = AuthTokens.lookup_tokens(token)
+
+    Config.accept_uid_tokens?() and
+      Enum.any?(tokens, &match?({:ok, _uid}, AuthTokens.uid_token(&1)))
   end
 
   defp single_token_scopes(token) do
