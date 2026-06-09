@@ -841,6 +841,7 @@ defmodule OpenChat.Store do
         case MessagePermissions.authorize(state, uid, message, :edit, opts) do
           :ok ->
             now = Time.now()
+            previous_latest_id = get_in(state, ["conversation_latest", message["conversationId"]])
             data = MessageData.merge(message["data"] || %{}, params["data"] || params)
 
             message =
@@ -867,6 +868,7 @@ defmodule OpenChat.Store do
               )
 
             {state, retention_ops} = MessageState.store_with_retention(state, action)
+            state = preserve_latest_for_nonlatest_action(state, message, previous_latest_id)
 
             persist_ops(
               [RedisPersistence.put("messages", id, message)] ++
@@ -892,6 +894,7 @@ defmodule OpenChat.Store do
         case MessagePermissions.authorize(state, uid, message, :delete, opts) do
           :ok ->
             now = Time.now()
+            previous_latest_id = get_in(state, ["conversation_latest", message["conversationId"]])
             original_participants = Unread.participants(state, message)
             state = Unread.message_deleted(state, message)
 
@@ -918,6 +921,7 @@ defmodule OpenChat.Store do
               )
 
             {state, retention_ops} = MessageState.store_with_retention(state, action)
+            state = preserve_latest_for_nonlatest_action(state, message, previous_latest_id)
 
             persist_ops(
               [RedisPersistence.put("messages", id, message)] ++
@@ -1808,6 +1812,36 @@ defmodule OpenChat.Store do
   defp to_s(nil), do: ""
   defp to_s(value) when is_binary(value), do: value
   defp to_s(value), do: to_string(value)
+
+  defp preserve_latest_for_nonlatest_action(state, message, previous_latest_id) do
+    conv_id = to_s(message["conversationId"])
+    subject_id = to_s(message["id"])
+    previous_latest_id = to_s(previous_latest_id)
+    previous_latest_message = get_in(state, ["messages", previous_latest_id])
+
+    cond do
+      blank?(conv_id) or blank?(previous_latest_id) ->
+        state
+
+      previous_latest_id == subject_id ->
+        state
+
+      action_for_subject?(previous_latest_message, subject_id) ->
+        state
+
+      previous_latest_message ->
+        put_in(state, ["conversation_latest", conv_id], previous_latest_id)
+
+      true ->
+        state
+    end
+  end
+
+  defp action_for_subject?(%{"category" => "action"} = message, subject_id) do
+    to_s(get_in(message, ["data", "entities", "on", "entity", "id"])) == subject_id
+  end
+
+  defp action_for_subject?(_message, _subject_id), do: false
 
   defp origin_resource(opts, message) do
     opts

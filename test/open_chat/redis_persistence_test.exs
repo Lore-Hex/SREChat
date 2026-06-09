@@ -1293,6 +1293,70 @@ defmodule OpenChat.RedisPersistenceTest do
     end)
   end
 
+  test "older edit and delete actions do not replace conversation latest across peer stores",
+       context do
+    with_redis(context, fn ->
+      peer = start_peer_store!()
+
+      try do
+        conv_id = Conversations.user_conversation_id("action-order-a", "action-order-b")
+
+        assert {:ok, older} =
+                 Store.send_message("action-order-a", %{
+                   "receiver" => "action-order-b",
+                   "receiverType" => "user",
+                   "data" => %{"text" => "older message"}
+                 })
+
+        assert {:ok, latest} =
+                 Store.send_message("action-order-a", %{
+                   "receiver" => "action-order-b",
+                   "receiverType" => "user",
+                   "data" => %{"text" => "stay latest"}
+                 })
+
+        latest_id = to_string(latest["id"])
+
+        assert {:ok, edited} =
+                 Store.edit_message("action-order-a", older["id"], %{
+                   "data" => %{"text" => "older message edited"}
+                 })
+
+        assert edited["data"]["action"] == "edited"
+        assert redis_json(context, "conversation_latest", conv_id) == latest_id
+
+        assert {:ok, [peer_conversation]} =
+                 Store.call_on(peer, {:conversations, "action-order-b", %{"limit" => 1}})
+
+        assert peer_conversation["latestMessageId"] == latest_id
+        assert get_in(peer_conversation, ["lastMessage", "data", "text"]) == "stay latest"
+
+        assert {:ok, deleted} =
+                 Store.call_on(
+                   peer,
+                   {:delete_message, "action-order-a", to_string(older["id"]), []}
+                 )
+
+        assert deleted["data"]["action"] == "deleted"
+        assert redis_json(context, "conversation_latest", conv_id) == latest_id
+
+        assert {:ok, [primary_conversation]} =
+                 Store.conversations("action-order-b", %{"limit" => 1})
+
+        assert primary_conversation["latestMessageId"] == latest_id
+        assert get_in(primary_conversation, ["lastMessage", "data", "text"]) == "stay latest"
+
+        assert {:ok, history} =
+                 Store.messages_for_user("action-order-b", "action-order-a", %{"limit" => 10})
+
+        assert Enum.any?(history, &(get_in(&1, ["data", "action"]) == "edited"))
+        assert Enum.any?(history, &(get_in(&1, ["data", "action"]) == "deleted"))
+      after
+        stop_peer_store(peer)
+      end
+    end)
+  end
+
   test "concurrent peer Store writes keep Redis IDs, indexes, and unread counts consistent",
        context do
     with_redis(context, fn ->
