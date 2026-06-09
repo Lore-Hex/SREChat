@@ -52,6 +52,9 @@ Parameters:
   LoadBalancerIdleTimeoutSeconds:
     Type: Number
     Default: 3600
+  WebsocketHeartbeatMs:
+    Type: Number
+    Default: 0
   ScaleInCooldownSeconds:
     Type: Number
     Default: 3600
@@ -352,7 +355,7 @@ Resources:
             - Name: DM_HISTORY_CONNECT_GRACE_MS
               Value: "600"
             - Name: WEBSOCKET_HEARTBEAT_MS
-              Value: "25000"
+              Value: !Ref WebsocketHeartbeatMs
             - Name: SEED_USERS_JSON
               Value: "[]"
             - Name: SEED_GROUPS_JSON
