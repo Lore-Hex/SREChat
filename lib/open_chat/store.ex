@@ -8,8 +8,9 @@ defmodule OpenChat.Store do
   """
 
   use GenServer
+  require Logger
 
-  alias OpenChat.{Config, Errors, Time}
+  alias OpenChat.{Config, Errors, Observability, Time}
 
   alias OpenChat.Store.{
     Access,
@@ -188,13 +189,40 @@ defmodule OpenChat.Store do
 
   defp call(server, request) do
     plan = RequestPlan.build(request)
+    request_name = request_name(request)
+    start = System.monotonic_time()
 
-    if plan.mutating? do
-      RedisPersistence.with_locks(plan.locks, fn ->
-        GenServer.call(server, {:locked_call, request, plan.refresh}, :infinity)
-      end)
-    else
-      GenServer.call(server, {:cache_call, request, plan.refresh}, :infinity)
+    try do
+      result =
+        if plan.mutating? do
+          RedisPersistence.with_locks(plan.locks, fn ->
+            GenServer.call(server, {:locked_call, request, plan.refresh}, :infinity)
+          end)
+        else
+          GenServer.call(server, {:cache_call, request, plan.refresh}, :infinity)
+        end
+
+      duration_ms = Observability.duration_ms(start)
+
+      Observability.record_store_call(
+        request_name,
+        plan.mutating?,
+        duration_ms,
+        result_outcome(result)
+      )
+
+      log_slow_store_call(request_name, duration_ms, result)
+      result
+    rescue
+      e ->
+        duration_ms = Observability.duration_ms(start)
+        Observability.record_store_call(request_name, plan.mutating?, duration_ms, "exception")
+        reraise e, __STACKTRACE__
+    catch
+      :exit, reason ->
+        duration_ms = Observability.duration_ms(start)
+        Observability.record_store_call(request_name, plan.mutating?, duration_ms, "exit")
+        exit(reason)
     end
   end
 
@@ -1808,6 +1836,33 @@ defmodule OpenChat.Store do
 
   defp stringify_keys(list) when is_list(list), do: Enum.map(list, &stringify_keys/1)
   defp stringify_keys(other), do: other
+
+  defp request_name(request) when is_tuple(request), do: request |> elem(0) |> to_s()
+  defp request_name(request), do: to_s(request)
+
+  defp result_outcome({:ok, _value}), do: "ok"
+  defp result_outcome({:ok, _value, _meta}), do: "ok"
+  defp result_outcome({:error, _error}), do: "error"
+  defp result_outcome(:error), do: "error"
+  defp result_outcome(_result), do: "ok"
+
+  defp log_slow_store_call(request_name, duration_ms, result) do
+    cond do
+      duration_ms >= 1_000 ->
+        Logger.warning(
+          "Store #{request_name} duration_ms=#{duration_ms} outcome=#{result_outcome(result)}"
+        )
+
+      match?({:error, _error}, result) ->
+        OpenChat.Observability.increment("store.errors", %{"request" => request_name})
+
+      result == :error ->
+        OpenChat.Observability.increment("store.errors", %{"request" => request_name})
+
+      true ->
+        :ok
+    end
+  end
 
   defp to_s(nil), do: ""
   defp to_s(value) when is_binary(value), do: value

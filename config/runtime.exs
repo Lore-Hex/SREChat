@@ -68,6 +68,7 @@ config :open_chat,
   host: public_host,
   ws_port: System.get_env("PUBLIC_WS_PORT") || System.get_env("PORT") || "4000",
   app_id: System.get_env("COMETCHAT_APP_ID") || "local-app",
+  version: System.get_env("OPENCHAT_VERSION") || System.get_env("OPENCHAT_IMAGE_TAG") || "dev",
   api_key: api_key,
   reject_weak_admin_api_key:
     boolean_env.("REJECT_WEAK_ADMIN_API_KEY", default_reject_weak_admin_api_key),

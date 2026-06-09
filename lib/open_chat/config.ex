@@ -28,6 +28,7 @@ defmodule OpenChat.Config do
 
   def app_id, do: Application.fetch_env!(:open_chat, :app_id)
   def api_key, do: Application.fetch_env!(:open_chat, :api_key)
+  def version, do: Application.get_env(:open_chat, :version, "dev")
   def reject_weak_admin_api_key?, do: boolean_env(:reject_weak_admin_api_key, false)
 
   def local_jwt_secret do

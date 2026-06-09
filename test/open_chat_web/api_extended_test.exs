@@ -66,6 +66,23 @@ defmodule OpenChatWeb.ApiExtendedTest do
     assert conn.resp_body == "ok"
   end
 
+  test "GET /observability is admin-only and exposes runtime counters" do
+    OpenChat.Observability.reset!()
+    OpenChat.Observability.record_ws("test_event")
+
+    forbidden = conn(:get, "/v3/observability") |> OpenChatWeb.Endpoint.call([])
+    assert forbidden.status == 403
+
+    conn = admin_conn(:get, "/v3/observability")
+    assert conn.status == 200
+
+    body = json(conn)
+    assert body["service"]["name"] == "openchat"
+    assert is_integer(body["service"]["uptimeSeconds"])
+    assert body["service"]["redisBootMode"] in ["full", "lazy"]
+    assert body["counters"]["ws.events|event=test_event"] == 1
+  end
+
   test "GET /settings returns settings" do
     conn = conn(:get, "/v3.0/settings") |> OpenChatWeb.Endpoint.call([])
     assert conn.status == 200

@@ -11,6 +11,7 @@ defmodule OpenChat.Application do
     port = Application.fetch_env!(:open_chat, :port)
 
     children = [
+      OpenChat.Observability,
       {Registry, keys: :duplicate, name: OpenChat.PubSub},
       OpenChat.Store,
       OpenChat.RedisBus,

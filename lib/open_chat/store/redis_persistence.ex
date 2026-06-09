@@ -3,7 +3,7 @@ defmodule OpenChat.Store.RedisPersistence do
 
   require Logger
 
-  alias OpenChat.{Config, RedisClient}
+  alias OpenChat.{Config, Observability, RedisClient}
 
   @buckets [
     "users",
@@ -126,9 +126,12 @@ defmodule OpenChat.Store.RedisPersistence do
       enabled?() ->
         scopes = normalize_lock_scopes(scopes)
         lock_value = Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false)
+        start = System.monotonic_time()
 
         case acquire_locks(scopes, lock_value, []) do
           {:ok, acquired} ->
+            Observability.record_redis_lock(scopes, "ok", Observability.duration_ms(start))
+
             try do
               fun.()
             after
@@ -136,10 +139,17 @@ defmodule OpenChat.Store.RedisPersistence do
             end
 
           {:error, reason} ->
+            Observability.record_redis_lock(scopes, "error", Observability.duration_ms(start))
+
+            Logger.warning(
+              "Redis lock failed scopes=#{lock_scope_label(scopes)} reason=#{inspect(reason)}"
+            )
+
             raise "Redis lock failed for #{inspect(scopes)}: #{inspect(reason)}"
         end
 
       configured?() ->
+        Observability.record_redis_lock(scopes, "unavailable", 0)
         raise "Redis lock failed for #{inspect(scopes)}: Redis is configured but unavailable"
 
       true ->
@@ -877,6 +887,26 @@ defmodule OpenChat.Store.RedisPersistence do
   defp redis_failed(context, reason, seed_fun) do
     Logger.warning("Redis #{context} failed: #{inspect(reason)}; using seeds")
     seed_fun.()
+  end
+
+  defp lock_scope_label(scopes) do
+    scopes
+    |> List.wrap()
+    |> Enum.map(fn
+      :global -> "global"
+      [scope | _rest] -> to_s(scope)
+      {scope, _id} -> to_s(scope)
+      {scope, _id, _extra} -> to_s(scope)
+      other -> to_s(other)
+    end)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.join("+")
+    |> case do
+      "" -> "none"
+      value -> value
+    end
   end
 
   defp normalize_refresh_keys(keys) do

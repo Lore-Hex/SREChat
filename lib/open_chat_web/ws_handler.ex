@@ -4,15 +4,18 @@ defmodule OpenChatWeb.WSHandler do
 
   require Logger
 
-  alias OpenChat.{Config, Store}
+  alias OpenChat.{Config, Observability, Store}
 
   @auth_timeout_ms 30_000
 
   @impl true
   def init(req, _state) do
     if websocket_origin_allowed?(req) do
+      Observability.record_ws("accepted")
       {:cowboy_websocket, req, %{uid: nil, token: nil, device_id: nil, groups: MapSet.new()}}
     else
+      Observability.record_ws("origin_rejected")
+
       body =
         Jason.encode!(%{
           "error" => %{"code" => "ERR_FORBIDDEN", "message" => "Origin is not allowed."}
@@ -40,7 +43,10 @@ defmodule OpenChatWeb.WSHandler do
   end
 
   @impl true
-  def websocket_init(state), do: {:ok, state |> schedule_heartbeat() |> schedule_auth_timeout()}
+  def websocket_init(state) do
+    Observability.add_gauge("ws.active", 1)
+    {:ok, state |> schedule_heartbeat() |> schedule_auth_timeout()}
+  end
 
   @impl true
   def websocket_handle({:text, json}, state) do
@@ -52,32 +58,43 @@ defmodule OpenChatWeb.WSHandler do
         handle_receipt(event, state)
 
       {:ok, %{"type" => "ping"}} ->
+        Observability.record_ws("client_ping")
         {:reply, {:text, Jason.encode!(%{"action" => "pong"})}, state}
 
       {:ok, %{"action" => "ping"}} ->
+        Observability.record_ws("client_ping")
         {:reply, {:text, Jason.encode!(%{"action" => "pong"})}, state}
 
       {:ok, _other} ->
+        Observability.record_ws("ignored_text")
         {:ok, state}
 
       _ ->
+        Observability.record_ws("malformed_text")
         {:ok, state}
     end
   end
 
-  def websocket_handle(:ping, state), do: {:reply, :pong, state}
+  def websocket_handle(:ping, state) do
+    Observability.record_ws("protocol_ping")
+    {:reply, :pong, state}
+  end
+
   def websocket_handle(_frame, state), do: {:ok, state}
 
   @impl true
   def websocket_info({:open_chat_system_event, %{"type" => "membership_changed"}}, state),
     do: {:ok, sync_group_subscriptions(state)}
 
-  def websocket_info({:comet_event, event}, state),
-    do: {:reply, {:text, Jason.encode!(event)}, state}
+  def websocket_info({:comet_event, event}, state) do
+    Observability.record_ws("event_forwarded", %{"type" => event["type"]})
+    {:reply, {:text, Jason.encode!(event)}, state}
+  end
 
   def websocket_info(:heartbeat, state) do
     case Config.websocket_heartbeat_ms() do
       interval when is_integer(interval) and interval > 0 ->
+        Observability.record_ws("heartbeat")
         {:reply, :ping, schedule_heartbeat(state)}
 
       _other ->
@@ -85,17 +102,26 @@ defmodule OpenChatWeb.WSHandler do
     end
   end
 
-  def websocket_info(:auth_timeout, %{uid: uid} = state) when uid in [nil, ""],
-    do: {:stop, state}
+  def websocket_info(:auth_timeout, %{uid: uid} = state) when uid in [nil, ""] do
+    Observability.record_ws("auth_timeout")
+    {:stop, state}
+  end
 
   def websocket_info(:auth_timeout, state), do: {:ok, state}
 
   def websocket_info(_msg, state), do: {:ok, state}
 
   @impl true
-  def terminate(_reason, _req, state) do
+  def terminate(reason, _req, state) do
     cancel_heartbeat(state)
     cancel_auth_timeout(state)
+    Observability.add_gauge("ws.active", -1)
+
+    Observability.record_ws("closed", %{
+      "reason" => close_reason(reason),
+      "authenticated" => authenticated?(state)
+    })
+
     :ok
   end
 
@@ -140,6 +166,7 @@ defmodule OpenChatWeb.WSHandler do
     case Store.authenticate(token) do
       {:ok, user} ->
         uid = user["uid"]
+        Observability.record_ws("auth_success")
         cancel_auth_timeout(state)
         state = replace_user_subscription(state, uid)
         state = sync_group_subscriptions(%{state | uid: uid})
@@ -160,6 +187,8 @@ defmodule OpenChatWeb.WSHandler do
          |> Map.delete(:auth_timeout_ref)}
 
       {:error, error} ->
+        Observability.record_ws("auth_failure", %{"code" => error["code"] || "401"})
+
         reply = %{
           "appId" => event["appId"] || Config.app_id(),
           "receiver" => event["receiver"] || "",
@@ -207,12 +236,15 @@ defmodule OpenChatWeb.WSHandler do
 
     case receipt_result do
       :ok ->
+        Observability.record_ws("receipt_ignored_or_ok")
         :ok
 
       {:ok, _payload} ->
+        Observability.record_ws("receipt_ok", %{"action" => action})
         :ok
 
       {:error, reason} ->
+        Observability.record_ws("receipt_error", %{"action" => action})
         Logger.warning("Ignoring websocket receipt after store failure: #{inspect(reason)}")
     end
 
@@ -285,4 +317,13 @@ defmodule OpenChatWeb.WSHandler do
   defp to_s(value) when is_binary(value), do: value
   defp to_s(value) when is_atom(value), do: Atom.to_string(value)
   defp to_s(value), do: to_string(value)
+
+  defp close_reason({:remote, code, _text}), do: "remote_#{code}"
+  defp close_reason({:error, reason}), do: "error_#{to_s(reason)}"
+  defp close_reason(:normal), do: "normal"
+  defp close_reason(:timeout), do: "timeout"
+  defp close_reason(_reason), do: "other"
+
+  defp authenticated?(%{uid: uid}) when is_binary(uid) and uid != "", do: true
+  defp authenticated?(_state), do: false
 end

@@ -21,6 +21,9 @@ Parameters:
     Type: AWS::EC2::Subnet::Id
   ImageUri:
     Type: String
+  AppVersion:
+    Type: String
+    Default: unknown
   AdminApiKey:
     Type: String
     NoEcho: true
@@ -339,6 +342,8 @@ Resources:
               Value: "443"
             - Name: COMETCHAT_REGION
               Value: us
+            - Name: OPENCHAT_VERSION
+              Value: !Ref AppVersion
             - !If
               - HasAdminApiKeyParameter
               - !Ref AWS::NoValue

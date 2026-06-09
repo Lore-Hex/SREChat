@@ -239,6 +239,7 @@ deploy_env() {
       PublicSubnet1="$subnet_1" \
       PublicSubnet2="$subnet_2" \
       ImageUri="$image_uri" \
+      AppVersion="$TAG" \
       AdminApiKeyParameterName="$admin_api_key_parameter_name" \
       DesiredCount="$DESIRED_COUNT" \
       MinCapacity="$MIN_CAPACITY" \
