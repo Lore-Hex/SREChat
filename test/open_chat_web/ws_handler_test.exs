@@ -322,6 +322,33 @@ defmodule OpenChatWeb.WSHandlerTest do
     refute_receive {:comet_event, _event}, 20
   end
 
+  test "authenticated receipt store failures do not close the websocket" do
+    previous = Application.get_env(:open_chat, :redis_url)
+
+    on_exit(fn ->
+      case previous do
+        nil -> Application.delete_env(:open_chat, :redis_url)
+        value -> Application.put_env(:open_chat, :redis_url, value)
+      end
+    end)
+
+    Application.put_env(:open_chat, :redis_url, "redis://configured-but-unavailable")
+
+    state = %{uid: "alice", token: "uid:alice", device_id: "device-1"}
+
+    assert {:ok, ^state} =
+             WSHandler.websocket_handle(
+               {:text,
+                Jason.encode!(%{
+                  "type" => "receipts",
+                  "receiver" => "bob",
+                  "receiverType" => "user",
+                  "body" => %{"messageId" => "1", "action" => "read"}
+                })},
+               state
+             )
+  end
+
   test "receipt events are ignored until the websocket is authenticated" do
     {:ok, message} =
       Store.send_message("bob", %{

@@ -159,7 +159,7 @@ defmodule OpenChat.Store.RequestPlan do
   def build({receipt, uid, receiver_type, receiver_id, message_id})
       when receipt in [:mark_read, :mark_unread] do
     mutate(
-      conversation_scope(uid, receiver_type, receiver_id) ++ user_scope(uid),
+      user_scope(uid),
       receipt_refresh_keys(uid, receiver_type, receiver_id, message_id) ++
         [{"reads", uid}] ++
         [{"unread_counts", uid}]
@@ -168,7 +168,7 @@ defmodule OpenChat.Store.RequestPlan do
 
   def build({:mark_delivered, uid, receiver_type, receiver_id, message_id}) do
     mutate(
-      conversation_scope(uid, receiver_type, receiver_id) ++ user_scope(uid),
+      user_scope(uid),
       receipt_refresh_keys(uid, receiver_type, receiver_id, message_id) ++ [{"delivered", uid}]
     )
   end

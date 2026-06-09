@@ -2,6 +2,8 @@ defmodule OpenChatWeb.WSHandler do
   @moduledoc false
   @behaviour :cowboy_websocket
 
+  require Logger
+
   alias OpenChat.{Config, Store}
 
   @auth_timeout_ms 30_000
@@ -191,21 +193,41 @@ defmodule OpenChatWeb.WSHandler do
 
     delivered? = action in ["delivered", "deliver", "message_delivered"]
 
-    cond do
-      action == "read" ->
-        Store.mark_read(uid, receiver_type, receiver, message_id)
+    receipt_result =
+      cond do
+        action == "read" ->
+          safe_receipt(fn -> Store.mark_read(uid, receiver_type, receiver, message_id) end)
 
-      delivered? ->
-        Store.mark_delivered(uid, receiver_type, receiver, message_id)
+        delivered? ->
+          safe_receipt(fn -> Store.mark_delivered(uid, receiver_type, receiver, message_id) end)
 
-      true ->
+        true ->
+          :ok
+      end
+
+    case receipt_result do
+      :ok ->
         :ok
+
+      {:ok, _payload} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Ignoring websocket receipt after store failure: #{inspect(reason)}")
     end
 
     {:ok, state}
   end
 
   defp handle_receipt(_event, state), do: {:ok, state}
+
+  defp safe_receipt(fun) do
+    fun.()
+  rescue
+    e -> {:error, Exception.message(e)}
+  catch
+    :exit, reason -> {:error, reason}
+  end
 
   defp replace_user_subscription(state, uid) do
     case Map.get(state, :uid) do

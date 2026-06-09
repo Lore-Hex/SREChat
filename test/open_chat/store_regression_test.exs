@@ -588,7 +588,7 @@ defmodule OpenChat.StoreRegressionTest do
     refute Enum.any?(default_visible_messages, &(&1["id"] == fourth_id))
 
     assert {:ok, debug_messages} =
-             Store.messages_for_user("bob", "alice", %{"hideDeleted" => "false"})
+             Store.messages_for_user("bob", "alice", %{"includeDeleted" => "true"})
 
     assert Enum.any?(debug_messages, &(&1["id"] == fourth_id and &1["deletedAt"]))
 

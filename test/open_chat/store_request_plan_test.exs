@@ -174,6 +174,10 @@ defmodule OpenChat.StoreRequestPlanTest do
              {"unread_counts", "alice"}
            ]
 
+    assert RequestPlan.build({:mark_read, "alice", "user", "bob", "55"}).locks == [
+             {:user, "alice"}
+           ]
+
     assert RequestPlan.build({:mark_delivered, "alice", "group", "room", "77"}).refresh == [
              {"conversation_messages", "group_room"},
              {"conversation_latest", "group_room"},
@@ -182,6 +186,10 @@ defmodule OpenChat.StoreRequestPlanTest do
              {"banned", "room"},
              {"messages", "77"},
              {"delivered", "alice"}
+           ]
+
+    assert RequestPlan.build({:mark_delivered, "alice", "group", "room", "77"}).locks == [
+             {:user, "alice"}
            ]
 
     assert RequestPlan.build(

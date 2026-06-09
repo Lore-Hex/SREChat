@@ -78,7 +78,9 @@ defmodule OpenChatWeb.ApiTest do
       })
 
       {elapsed_us, conn} =
-        :timer.tc(fn -> auth_conn(:get, "/v3.0/users/alice/messages?limit=10", %{}, "uid:bob") end)
+        :timer.tc(fn ->
+          auth_conn(:get, "/v3.0/users/alice/messages?limit=10", %{}, "uid:bob")
+        end)
 
       assert conn.status == 200
       assert [%{"data" => %{"text" => "history grace"}}] = json(conn)["data"]

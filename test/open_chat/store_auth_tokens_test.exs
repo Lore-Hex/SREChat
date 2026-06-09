@@ -36,7 +36,10 @@ defmodule OpenChat.Store.AuthTokensTest do
   test "local JWT lookup rejects expired malformed and tampered local tokens" do
     assert {:ok, "string-exp"} =
              AuthTokens.local_jwt_token(
-               local_token(%{"token" => "string-exp", "exp" => Integer.to_string(Time.now() + 60)})
+               local_token(%{
+                 "token" => "string-exp",
+                 "exp" => Integer.to_string(Time.now() + 60)
+               })
              )
 
     assert :error = AuthTokens.local_jwt_token(local_token(%{"token" => "missing-exp"}))

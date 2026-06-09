@@ -200,7 +200,11 @@ function recordRnEvent(events: any[], kind: string, message: any, cometChat: any
   const sender = entity?.getSender?.() || entity?.sender || message?.getSender?.();
   events.push({
     kind,
+    category: message?.getCategory?.() || message?.category,
+    type: message?.getType?.() || message?.type,
+    action: data.action,
     id: String(entity?.getId?.() || entity?.id || message?.getId?.() || message?.id || ''),
+    onId: String(data.entities?.on?.entity?.id || ''),
     text: entityData.text,
     reactions: metadata?.['@injected']?.extensions?.reactions || {},
     updatedAt: entity?.getUpdatedAt?.() ?? entity?.updatedAt,
@@ -326,6 +330,7 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
     new RNCometChat.MessageListener({
       onTextMessageReceived: (message: any) => recordRnEvent(rnEvents, 'text', message, RNCometChat),
       onMessageEdited: (message: any) => recordRnEvent(rnEvents, 'edited', message, RNCometChat),
+      onMessageDeleted: (message: any) => recordRnEvent(rnEvents, 'deleted', message, RNCometChat),
       onMessageReactionAdded: (reaction: any) =>
         rnEvents.push({
           kind: 'reaction-added',
@@ -349,6 +354,7 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
 
   const dmLatencies: number[] = [];
   const dmTexts: string[] = [];
+  const webSentDmMessages: Array<{ id: string; text: string }> = [];
 
   for (let i = 0; i < DM_MESSAGE_COUNT; i += 1) {
     const text = `rn-dm-${i}-${suffix}`;
@@ -356,7 +362,7 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
     const startedAt = Date.now();
 
     if (i % 2 === 0) {
-      await web.evaluate(
+      const sent = await web.evaluate(
         async ({ bobUid, text, aliceUid, suffix }) => {
           const { CometChat } = window as any;
           const message = new CometChat.TextMessage(bobUid, text, 'user');
@@ -373,10 +379,12 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
               type: 'user',
             },
           });
-          await CometChat.sendMessage(message);
+          const sent = await CometChat.sendMessage(message);
+          return { id: String(sent.getId()), text };
         },
         { bobUid, text, aliceUid, suffix },
       );
+      webSentDmMessages.push(sent);
       const seenAt = await waitFor(() => rnEvents.some((event) => event.kind === 'text' && event.text === text));
       expect(seenAt, `RN did not receive web DM ${text}`).toBeTruthy();
       const dmEvent = rnEvents.find((event) => event.kind === 'text' && event.text === text);
@@ -426,6 +434,26 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
     { bobUid, expectedCount: dmTexts.length },
   );
   expect(dmHistory).toEqual(expect.arrayContaining(dmTexts));
+
+  const deletedDm = webSentDmMessages[0];
+  await web.evaluate(async (messageId) => {
+    const { CometChat } = window as any;
+    await CometChat.deleteMessage(messageId);
+  }, deletedDm.id);
+
+  const dmDeleteSeenAt = await waitFor(() =>
+    rnEvents.some((event) => event.kind === 'deleted' && event.id === deletedDm.id),
+  );
+  expect(dmDeleteSeenAt, `RN did not receive DM delete ${deletedDm.id}`).toBeTruthy();
+
+  const rnDmHistoryAfterDelete = await new RNCometChat.MessagesRequestBuilder()
+    .setUID(aliceUid)
+    .setLimit(dmTexts.length + 10)
+    .build()
+    .fetchPrevious();
+  expect(rnDmHistoryAfterDelete.map((message: any) => message.getData?.()?.text).filter(Boolean)).not.toContain(
+    deletedDm.text,
+  );
 
   const webConversations = await web.evaluate(
     async ({ bobUid }) => {
@@ -581,6 +609,26 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
       expect(historyMessage.reactions?.['🎧']?.[bobUid]).toBeFalsy();
     }
   }
+
+  const deletedGroup = groupMessages.find((message) => !message.reacted) || groupMessages[0];
+  await web.evaluate(async (messageId) => {
+    const { CometChat } = window as any;
+    await CometChat.deleteMessage(messageId);
+  }, deletedGroup.id);
+
+  const groupDeleteSeenAt = await waitFor(() =>
+    rnEvents.some((event) => event.kind === 'deleted' && event.id === deletedGroup.id),
+  );
+  expect(groupDeleteSeenAt, `RN did not receive group delete ${deletedGroup.id}`).toBeTruthy();
+
+  const rnGroupHistoryAfterDelete = await new RNCometChat.MessagesRequestBuilder()
+    .setGUID(room)
+    .setLimit(groupMessages.length + 10)
+    .build()
+    .fetchPrevious();
+  expect(rnGroupHistoryAfterDelete.map((message: any) => message.getData?.()?.text).filter(Boolean)).not.toContain(
+    deletedGroup.text,
+  );
 
   expect(Math.max(...dmLatencies)).toBeLessThan(MAX_LIVE_LATENCY_MS);
   expect(Math.max(...reactionLatencies)).toBeLessThan(MAX_LIVE_LATENCY_MS);

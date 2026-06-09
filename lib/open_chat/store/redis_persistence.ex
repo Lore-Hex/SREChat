@@ -29,8 +29,8 @@ defmodule OpenChat.Store.RedisPersistence do
 
   @counters ["next_id", "next_reaction_id"]
   @version "7"
-  @lock_ttl_ms 60_000
-  @lock_attempts 600
+  @lock_ttl_ms 10_000
+  @lock_attempts 100
   @atomic_write_script """
   local prefix = ARGV[1]
   local version = ARGV[2]

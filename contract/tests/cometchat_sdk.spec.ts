@@ -973,7 +973,7 @@ test('reported room smoke: two users in one room see text, reactions, deletes, a
 
   const debugHistory = await request.get(`https://${TARGET_HOST}/groups/${room}/messages`, {
     headers: { authToken: BOB_TOKEN },
-    params: { per_page: 20, hideDeleted: 'false' },
+    params: { per_page: 20, includeDeleted: 'true' },
   });
   expect(debugHistory.ok()).toBeTruthy();
   const debugMessages = (await debugHistory.json()).data;

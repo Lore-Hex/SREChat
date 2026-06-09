@@ -166,24 +166,34 @@ defmodule OpenChat.Store.ConversationViewTest do
   end
 
   describe "messages/3 filtering, cursoring, and pagination" do
-    test "hides deleted messages by default and surfaces them when explicitly disabled" do
+    test "hides deleted messages by default and surfaces them only for explicit debug include" do
       state = seeded_state()
 
       hidden = ConversationView.messages(state, "group_room", %{"limit" => 10})
       assert Enum.map(hidden, & &1["id"]) == ["3", "1"]
 
-      # The implementation accepts string aliases for false (`"false"`, `"0"`, `"no"`).
-      # A literal `false` short-circuits the `||` fallback to `hideDeletedMessages`, so
-      # use the documented string aliases to keep deleted rows.
-      for falsy <- ["false", "FALSE", "0", "no"] do
+      # The RN SDK sends hideDeleted=0 by default; normal SDK history must still hide
+      # deleted originals so mobile refreshes do not resurrect removed messages.
+      for sdk_false <- [false, 0, "0", "false", "FALSE", "no"] do
+        hidden_with_sdk_default =
+          ConversationView.messages(state, "group_room", %{
+            "limit" => 10,
+            "hideDeleted" => sdk_false
+          })
+
+        assert Enum.map(hidden_with_sdk_default, & &1["id"]) == ["3", "1"],
+               "expected deleted message to stay hidden for hideDeleted=#{inspect(sdk_false)}"
+      end
+
+      for include <- [true, 1, "1", "true", "TRUE", "yes"] do
         shown =
           ConversationView.messages(state, "group_room", %{
             "limit" => 10,
-            "hideDeleted" => falsy
+            "includeDeleted" => include
           })
 
         assert Enum.map(shown, & &1["id"]) == ["3", "2", "1"],
-               "expected deleted message to appear for hideDeleted=#{inspect(falsy)}"
+               "expected deleted message to appear for includeDeleted=#{inspect(include)}"
       end
     end
 
@@ -275,7 +285,7 @@ defmodule OpenChat.Store.ConversationViewTest do
           "limit" => 10,
           "messageId" => "1",
           "affix" => "append",
-          "hideDeleted" => "false"
+          "includeDeleted" => "true"
         })
 
       assert Enum.map(after_message_id, & &1["id"]) == ["2", "3"]
@@ -284,7 +294,7 @@ defmodule OpenChat.Store.ConversationViewTest do
         ConversationView.messages(state, "group_room", %{
           "limit" => 10,
           "afterId" => "1",
-          "hideDeleted" => "false"
+          "includeDeleted" => "true"
         })
 
       assert Enum.map(after_id, & &1["id"]) == ["2", "3"]
@@ -293,7 +303,7 @@ defmodule OpenChat.Store.ConversationViewTest do
         ConversationView.messages(state, "group_room", %{
           "limit" => 10,
           "beforeId" => "3",
-          "hideDeleted" => "false"
+          "includeDeleted" => "true"
         })
 
       assert Enum.map(before_id, & &1["id"]) == ["2", "1"]
@@ -306,7 +316,7 @@ defmodule OpenChat.Store.ConversationViewTest do
         ConversationView.messages(state, "group_room", %{
           "limit" => 10,
           "updatedAt" => "100",
-          "hideDeleted" => "false",
+          "includeDeleted" => "true",
           "affix" => "append"
         })
 
@@ -316,7 +326,7 @@ defmodule OpenChat.Store.ConversationViewTest do
         ConversationView.messages(state, "group_room", %{
           "limit" => 10,
           "fromTimestamp" => "100",
-          "hideDeleted" => "false"
+          "includeDeleted" => "true"
         })
 
       assert Enum.map(after_from_timestamp, & &1["id"]) == ["2", "3"]
