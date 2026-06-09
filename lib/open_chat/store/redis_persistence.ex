@@ -300,8 +300,19 @@ defmodule OpenChat.Store.RedisPersistence do
   defp load(default_state, seed_fun) do
     case command(["GET", meta_key()]) do
       {:ok, nil} -> load_legacy_snapshot_or_seed(default_state, seed_fun)
-      {:ok, _version} -> read_state(default_state)
+      {:ok, _version} -> load_versioned_state(default_state)
       {:error, reason} -> redis_failed("key load", reason, seed_fun)
+    end
+  end
+
+  defp load_versioned_state(default_state) do
+    case Config.redis_boot_mode() do
+      "lazy" ->
+        Logger.info("Redis lazy boot enabled; skipping full startup state load")
+        default_state
+
+      _other ->
+        read_state(default_state)
     end
   end
 

@@ -110,6 +110,7 @@ config :open_chat,
   redis_url: System.get_env("REDIS_URL"),
   redis_key_prefix: System.get_env("REDIS_KEY_PREFIX") || "open_chat",
   redis_snapshot_key: System.get_env("REDIS_SNAPSHOT_KEY") || "open_chat:snapshot:v1",
+  redis_boot_mode: System.get_env("REDIS_BOOT_MODE") || "full",
   seed_users_json: System.get_env("SEED_USERS_JSON"),
   seed_groups_json: System.get_env("SEED_GROUPS_JSON"),
   accept_uid_tokens: accept_uid_tokens

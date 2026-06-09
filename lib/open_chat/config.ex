@@ -77,6 +77,15 @@ defmodule OpenChat.Config do
   def redis_url, do: Application.get_env(:open_chat, :redis_url)
   def redis_key_prefix, do: Application.fetch_env!(:open_chat, :redis_key_prefix)
   def redis_snapshot_key, do: Application.fetch_env!(:open_chat, :redis_snapshot_key)
+
+  def redis_boot_mode do
+    :open_chat
+    |> Application.get_env(:redis_boot_mode, "full")
+    |> to_string()
+    |> String.trim()
+    |> String.downcase()
+  end
+
   def seed_users_json, do: Application.fetch_env!(:open_chat, :seed_users_json)
   def seed_groups_json, do: Application.fetch_env!(:open_chat, :seed_groups_json)
   def accept_uid_tokens?, do: Application.fetch_env!(:open_chat, :accept_uid_tokens)

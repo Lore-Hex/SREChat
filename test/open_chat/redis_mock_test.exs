@@ -11,6 +11,7 @@ defmodule OpenChat.RedisMockTest do
           :redis_url,
           :redis_key_prefix,
           :redis_snapshot_key,
+          :redis_boot_mode,
           :redis_client,
           :redis_pubsub_client
         ],
@@ -24,6 +25,7 @@ defmodule OpenChat.RedisMockTest do
     Application.put_env(:open_chat, :redis_url, "mock://redis")
     Application.put_env(:open_chat, :redis_key_prefix, "mock:test")
     Application.put_env(:open_chat, :redis_snapshot_key, "mock:test:legacy_snapshot")
+    Application.put_env(:open_chat, :redis_boot_mode, "full")
     Application.put_env(:open_chat, :redis_client, MockRedis)
     Application.put_env(:open_chat, :redis_pubsub_client, MockRedis.PubSub)
 
@@ -380,6 +382,30 @@ defmodule OpenChat.RedisMockTest do
              {:error, {:unsupported, ["EVAL", "return 1", "1", "mock:test:int", "1"]}}
 
     assert MockRedis.command(OpenChat.Redis, ["NOOP"]) == {:error, {:unsupported, ["NOOP"]}}
+  end
+
+  test "lazy Redis boot skips full startup load and uses targeted refreshes" do
+    default = State.default()
+    start_mock_redis()
+
+    Application.put_env(:open_chat, :redis_boot_mode, "lazy")
+    MockRedis.put_string("mock:test:meta:version", "7")
+
+    assert {:ok, _} =
+             MockRedis.command(OpenChat.Redis, [
+               "SADD",
+               "mock:test:index:users",
+               "alice"
+             ])
+
+    MockRedis.put_string("mock:test:users:alice", Jason.encode!(%{"uid" => "alice"}))
+
+    assert RedisPersistence.load_or_seed(default, fn ->
+             flunk("lazy versioned Redis should not seed")
+           end) == default
+
+    refreshed = RedisPersistence.refresh_keys(default, default, [{:bucket, "users"}])
+    assert refreshed["users"] == %{"alice" => %{"uid" => "alice"}}
   end
 
   test "RedisBus publishes to mock Redis and consumes remote pubsub events" do

@@ -51,6 +51,7 @@ config :open_chat,
   redis_url: nil,
   redis_key_prefix: "open_chat",
   redis_snapshot_key: "open_chat:snapshot:v1",
+  redis_boot_mode: "full",
   seed_users_json: nil,
   seed_groups_json: nil,
   accept_uid_tokens: config_env() == :test
