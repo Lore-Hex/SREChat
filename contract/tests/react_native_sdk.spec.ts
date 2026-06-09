@@ -11,6 +11,8 @@ const ADMIN_API_KEY =
 const DM_MESSAGE_COUNT = Number(process.env.OPENCHAT_RN_DM_MESSAGES || 12);
 const GROUP_MESSAGE_COUNT = Number(process.env.OPENCHAT_RN_GROUP_MESSAGES || 12);
 const MAX_LIVE_LATENCY_MS = Number(process.env.OPENCHAT_RN_MAX_LIVE_LATENCY_MS || 5000);
+const RN_WS_SOAK_MS = Number(process.env.OPENCHAT_RN_WS_SOAK_MS || 180_000);
+const RN_WS_SOAK_INTERVAL_MS = Number(process.env.OPENCHAT_RN_WS_SOAK_INTERVAL_MS || 45_000);
 
 if (TARGET_HOST.startsWith('localhost') || TARGET_HOST.startsWith('127.0.0.1')) {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED ||= '0';
@@ -737,5 +739,131 @@ test('real React Native SDK receives app-shaped DMs from a web peer', async ({ b
   } catch {
     // RN SDK cleanup is noisy in the Node shim harness; the assertions above
     // are the compatibility contract.
+  }
+});
+
+test('real React Native SDK stays live across websocket idle periods', async ({ browser, request }) => {
+  test.skip(!ADMIN_API_KEY, 'Requires OPENCHAT_ADMIN_API_KEY for staging user/group setup.');
+  test.setTimeout(RN_WS_SOAK_MS + 90_000);
+  installReactNativeNodeShims();
+
+  const { CometChat: RNCometChat } = require('@cometchat/chat-sdk-react-native');
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const aliceUid = `rn-soak-alice-${suffix}`;
+  const bobUid = `rn-soak-bob-${suffix}`;
+  const room = `rn-soak-room-${suffix}`;
+
+  await adminPost(request, '/users', { uid: aliceUid, name: 'RN Soak Alice' });
+  await adminPost(request, '/users', { uid: bobUid, name: 'RN Soak Bob' });
+  const aliceAuth = await adminPost(request, `/users/${aliceUid}/auth_tokens`);
+  const bobAuth = await adminPost(request, `/users/${bobUid}/auth_tokens`);
+  await adminPost(request, '/groups', { guid: room, name: 'RN Soak Room', type: 'public' });
+  await adminPost(request, `/groups/${room}/members`, { participants: [aliceUid, bobUid] });
+
+  const web = await browser.newPage();
+  await loadWebSdk(web, aliceAuth.authToken);
+  await web.evaluate(
+    async ({ room }) => {
+      const { CometChat } = window as any;
+      try {
+        await CometChat.joinGroup(room);
+      } catch (e: any) {
+        if (e?.code !== 'ERR_ALREADY_JOINED') throw e;
+      }
+    },
+    { room },
+  );
+
+  const rnSettings = new RNCometChat.AppSettingsBuilder()
+    .subscribePresenceForAllUsers()
+    .setRegion('us')
+    .overrideClientHost(TARGET_HOST)
+    .overrideAdminHost(TARGET_HOST.replace(/\/v3\.0$/, '/v3'))
+    .autoEstablishSocketConnection(true)
+    .build();
+  await RNCometChat.init(APP_ID, rnSettings);
+  await RNCometChat.login(bobAuth.authToken);
+  try {
+    await RNCometChat.joinGroup(room);
+  } catch (e: any) {
+    if (e?.code !== 'ERR_ALREADY_JOINED') throw e;
+  }
+
+  const rnEvents: any[] = [];
+  const connectionEvents: any[] = [];
+  const listenerId = `OPENCHAT_RN_SOAK_${suffix}`;
+  const connectionListenerId = `OPENCHAT_RN_SOAK_CONNECTION_${suffix}`;
+
+  RNCometChat.addConnectionListener(
+    connectionListenerId,
+    new RNCometChat.ConnectionListener({
+      onConnected: () => connectionEvents.push({ kind: 'connected', at: Date.now() }),
+      onDisconnected: () => connectionEvents.push({ kind: 'disconnected', at: Date.now() }),
+    }),
+  );
+
+  RNCometChat.addMessageListener(
+    listenerId,
+    new RNCometChat.MessageListener({
+      onTextMessageReceived: (message: any) => recordRnEvent(rnEvents, 'text', message, RNCometChat),
+      onMessageEdited: (message: any) => recordRnEvent(rnEvents, 'edited', message, RNCometChat),
+    }),
+  );
+
+  await web.waitForTimeout(1500);
+
+  const iterations = Math.max(2, Math.floor(RN_WS_SOAK_MS / RN_WS_SOAK_INTERVAL_MS) + 1);
+  const texts: string[] = [];
+  const latencies: number[] = [];
+
+  for (let i = 0; i < iterations; i += 1) {
+    if (i > 0) {
+      await web.waitForTimeout(RN_WS_SOAK_INTERVAL_MS);
+    }
+
+    const text = `rn-soak-${i}-${suffix}-${Date.now()}`;
+    texts.push(text);
+    const startedAt = Date.now();
+
+    await web.evaluate(
+      async ({ room, text }) => {
+        const { CometChat } = window as any;
+        await CometChat.sendMessage(new CometChat.TextMessage(room, text, 'group'));
+      },
+      { room, text },
+    );
+
+    const seenAt = await waitFor(() => rnEvents.some((event) => event.kind === 'text' && event.text === text), 30_000);
+    expect(seenAt, `RN did not receive group text after idle: ${text}`).toBeTruthy();
+    latencies.push(Number(seenAt) - startedAt);
+  }
+
+  expect(rnEvents.filter((event) => event.kind === 'text').map((event) => event.text)).toEqual(
+    expect.arrayContaining(texts),
+  );
+  expect(connectionEvents.filter((event) => event.kind === 'disconnected')).toEqual([]);
+  expect(Math.max(...latencies)).toBeLessThan(MAX_LIVE_LATENCY_MS);
+
+  console.log(
+    JSON.stringify(
+      {
+        target: TARGET_HOST,
+        durationMs: RN_WS_SOAK_MS,
+        intervalMs: RN_WS_SOAK_INTERVAL_MS,
+        iterations,
+        maxLatencyMs: Math.max(...latencies),
+        disconnects: connectionEvents.filter((event) => event.kind === 'disconnected').length,
+      },
+      null,
+      2,
+    ),
+  );
+
+  await web.close();
+  try {
+    RNCometChat.removeMessageListener(listenerId);
+    RNCometChat.removeConnectionListener(connectionListenerId);
+  } catch {
+    // The assertions above are the compatibility contract.
   }
 });

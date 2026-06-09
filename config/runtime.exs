@@ -13,7 +13,7 @@ default_group_unread_fanout_limit = 1_000
 default_group_presence_ttl_seconds = 1_800
 default_group_max_presence = 5_000
 default_dm_history_connect_grace_ms = if config_env() == :test, do: 0, else: 600
-default_websocket_heartbeat_ms = 0
+default_websocket_heartbeat_ms = 25_000
 default_media_storage = if config_env() == :prod, do: "s3", else: "local"
 
 default_upload_allowed_mime_types =

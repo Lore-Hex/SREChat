@@ -54,7 +54,7 @@ Parameters:
     Default: 3600
   WebsocketHeartbeatMs:
     Type: Number
-    Default: 0
+    Default: 25000
   ScaleInCooldownSeconds:
     Type: Number
     Default: 3600
