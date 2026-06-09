@@ -49,6 +49,15 @@ Parameters:
   UploadRetentionDays:
     Type: Number
     Default: 30
+  LoadBalancerIdleTimeoutSeconds:
+    Type: Number
+    Default: 3600
+  ScaleInCooldownSeconds:
+    Type: Number
+    Default: 3600
+  ScaleOutCooldownSeconds:
+    Type: Number
+    Default: 120
 
 Conditions:
   HasAdminApiKeyParameter: !Not [!Equals [!Ref AdminApiKeyParameterName, ""]]
@@ -239,6 +248,9 @@ Resources:
       Name: !Sub openchat-${EnvironmentName}
       Scheme: internet-facing
       Type: application
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: !Ref LoadBalancerIdleTimeoutSeconds
       SecurityGroups:
         - !Ref AlbSecurityGroup
       Subnets:
@@ -339,6 +351,8 @@ Resources:
               Value: "10000000"
             - Name: DM_HISTORY_CONNECT_GRACE_MS
               Value: "600"
+            - Name: WEBSOCKET_HEARTBEAT_MS
+              Value: "25000"
             - Name: SEED_USERS_JSON
               Value: "[]"
             - Name: SEED_GROUPS_JSON
@@ -429,6 +443,8 @@ Resources:
       ScalingTargetId: !Ref ScalableTarget
       TargetTrackingScalingPolicyConfiguration:
         TargetValue: 60
+        ScaleInCooldown: !Ref ScaleInCooldownSeconds
+        ScaleOutCooldown: !Ref ScaleOutCooldownSeconds
         PredefinedMetricSpecification:
           PredefinedMetricType: ECSServiceAverageCPUUtilization
 

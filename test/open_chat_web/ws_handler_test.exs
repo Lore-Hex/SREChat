@@ -144,11 +144,44 @@ defmodule OpenChatWeb.WSHandlerTest do
     assert {:ok, ^state} = WSHandler.websocket_handle({:text, "not-json"}, state)
   end
 
-  test "websocket init does not send server protocol heartbeats" do
+  test "websocket heartbeat sends protocol pings and keeps the timer replaceable" do
+    previous = Application.get_env(:open_chat, :websocket_heartbeat_ms)
+
+    on_exit(fn ->
+      case previous do
+        nil -> Application.delete_env(:open_chat, :websocket_heartbeat_ms)
+        value -> Application.put_env(:open_chat, :websocket_heartbeat_ms, value)
+      end
+    end)
+
+    Application.put_env(:open_chat, :websocket_heartbeat_ms, 25_000)
+
+    assert {:ok, state} = WSHandler.websocket_init(%{uid: "alice"})
+    assert is_reference(state.heartbeat_ref)
+
+    assert {:reply, :ping, next_state} = WSHandler.websocket_info(:heartbeat, state)
+    assert is_reference(next_state.heartbeat_ref)
+    refute next_state.heartbeat_ref == state.heartbeat_ref
+
+    assert :ok = WSHandler.terminate(:normal, nil, next_state)
+  end
+
+  test "websocket heartbeat can be disabled for controlled deployments" do
+    previous = Application.get_env(:open_chat, :websocket_heartbeat_ms)
+
+    on_exit(fn ->
+      case previous do
+        nil -> Application.delete_env(:open_chat, :websocket_heartbeat_ms)
+        value -> Application.put_env(:open_chat, :websocket_heartbeat_ms, value)
+      end
+    end)
+
+    Application.put_env(:open_chat, :websocket_heartbeat_ms, 0)
+
     assert {:ok, state} = WSHandler.websocket_init(%{uid: "alice"})
     refute Map.has_key?(state, :heartbeat_ref)
-
-    assert {:ok, ^state} = WSHandler.websocket_info(:heartbeat, state)
+    assert {:ok, next_state} = WSHandler.websocket_info(:heartbeat, state)
+    refute Map.has_key?(next_state, :heartbeat_ref)
 
     assert :ok = WSHandler.terminate(:normal, nil, state)
   end

@@ -10,6 +10,7 @@ defmodule OpenChat.Config do
   @default_group_presence_ttl_seconds 1_800
   @default_group_max_presence 5_000
   @default_dm_history_connect_grace_ms 0
+  @default_websocket_heartbeat_ms 25_000
   @default_upload_allowed_mime_types ~w(
     image/jpeg
     image/png
@@ -101,6 +102,9 @@ defmodule OpenChat.Config do
   def dm_history_connect_grace_ms,
     do:
       non_negative_integer_env(:dm_history_connect_grace_ms, @default_dm_history_connect_grace_ms)
+
+  def websocket_heartbeat_ms,
+    do: non_negative_integer_env(:websocket_heartbeat_ms, @default_websocket_heartbeat_ms)
 
   def public_group_reads_enabled?,
     do: boolean_env(:public_group_reads_enabled, true)
