@@ -1,6 +1,7 @@
 defmodule OpenChatWeb.JSON do
   @moduledoc false
   import Plug.Conn
+  alias OpenChat.Observability
   alias OpenChat.Store.MessageData
 
   def ok(conn, data, status \\ 200) do
@@ -16,6 +17,8 @@ defmodule OpenChatWeb.JSON do
   end
 
   def error(conn, error, status \\ 400) do
+    Observability.record_api_error(conn.method, conn.request_path, status, error)
+
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(status, Jason.encode!(%{"error" => error}))

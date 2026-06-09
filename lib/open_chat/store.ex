@@ -208,7 +208,8 @@ defmodule OpenChat.Store do
         request_name,
         plan.mutating?,
         duration_ms,
-        result_outcome(result)
+        result_outcome(result),
+        result_tags(result)
       )
 
       log_slow_store_call(request_name, duration_ms, result)
@@ -1845,6 +1846,10 @@ defmodule OpenChat.Store do
   defp result_outcome({:error, _error}), do: "error"
   defp result_outcome(:error), do: "error"
   defp result_outcome(_result), do: "ok"
+
+  defp result_tags({:error, %{"code" => code}}), do: %{"code" => code}
+  defp result_tags({:error, %{code: code}}), do: %{"code" => code}
+  defp result_tags(_result), do: %{}
 
   defp log_slow_store_call(request_name, duration_ms, result) do
     cond do

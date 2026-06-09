@@ -3,15 +3,20 @@ defmodule OpenChatWeb.Auth do
 
   import Plug.Conn
 
-  alias OpenChat.{Config, Errors, Store}
+  alias OpenChat.{Config, Errors, Observability, Store}
   alias OpenChatWeb.JSON
 
   def with_user(conn, fun) do
     token = token(conn)
 
     case Store.authenticate(token) do
-      {:ok, user} -> fun.(conn, user, token)
-      {:error, e} -> JSON.error(conn, e, 401)
+      {:ok, user} ->
+        Observability.record_auth_attempt("rest", "ok", present?(token))
+        fun.(conn, user, token)
+
+      {:error, e} ->
+        Observability.record_auth_attempt("rest", e["code"] || "error", present?(token))
+        JSON.error(conn, e, 401)
     end
   end
 
@@ -64,4 +69,5 @@ defmodule OpenChatWeb.Auth do
   defp header(conn, key), do: conn |> get_req_header(String.downcase(key)) |> List.first()
 
   defp blank?(value), do: value in [nil, "", false]
+  defp present?(value), do: not blank?(value)
 end

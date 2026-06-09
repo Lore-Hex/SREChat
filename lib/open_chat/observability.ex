@@ -54,15 +54,36 @@ defmodule OpenChat.Observability do
     observe("http.duration_ms", duration_ms, tags)
   end
 
-  def record_store_call(request, mutating?, duration_ms, outcome) do
-    tags = %{
-      "request" => request,
-      "mutating" => to_s(mutating?),
-      "outcome" => outcome
-    }
+  def record_store_call(request, mutating?, duration_ms, outcome, extra_tags \\ %{}) do
+    tags =
+      %{
+        "request" => request,
+        "mutating" => to_s(mutating?),
+        "outcome" => outcome
+      }
+      |> Map.merge(stringify_tags(extra_tags))
 
     increment("store.calls", tags)
     observe("store.duration_ms", duration_ms, tags)
+  end
+
+  def record_api_error(method, path, status, error) do
+    tags = %{
+      "method" => to_s(method),
+      "path" => path_template(path),
+      "status" => status_class(status),
+      "code" => error_code(error)
+    }
+
+    increment("http.errors", tags)
+  end
+
+  def record_auth_attempt(surface, outcome, token_present?) do
+    increment("auth.attempts", %{
+      "surface" => surface,
+      "outcome" => outcome,
+      "token_present" => to_s(token_present?)
+    })
   end
 
   def record_redis_lock(scopes, outcome, wait_ms) do
@@ -208,6 +229,10 @@ defmodule OpenChat.Observability do
   defp tag_value(value) when value in [nil, ""], do: "unknown"
   defp tag_value(value) when is_boolean(value), do: to_string(value)
   defp tag_value(value), do: value |> to_s() |> String.slice(0, 80)
+
+  defp error_code(%{"code" => code}), do: tag_value(code)
+  defp error_code(%{code: code}), do: tag_value(code)
+  defp error_code(_error), do: "unknown"
 
   defp status_class(status) when is_integer(status), do: "#{div(status, 100)}xx"
   defp status_class(status), do: status |> to_s() |> status_class_from_string()

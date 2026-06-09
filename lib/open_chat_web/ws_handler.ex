@@ -166,6 +166,7 @@ defmodule OpenChatWeb.WSHandler do
     case Store.authenticate(token) do
       {:ok, user} ->
         uid = user["uid"]
+        Observability.record_auth_attempt("websocket", "ok", present?(token))
         Observability.record_ws("auth_success")
         cancel_auth_timeout(state)
         state = replace_user_subscription(state, uid)
@@ -187,6 +188,12 @@ defmodule OpenChatWeb.WSHandler do
          |> Map.delete(:auth_timeout_ref)}
 
       {:error, error} ->
+        Observability.record_auth_attempt(
+          "websocket",
+          error["code"] || "error",
+          present?(token)
+        )
+
         Observability.record_ws("auth_failure", %{"code" => error["code"] || "401"})
 
         reply = %{
@@ -317,6 +324,8 @@ defmodule OpenChatWeb.WSHandler do
   defp to_s(value) when is_binary(value), do: value
   defp to_s(value) when is_atom(value), do: Atom.to_string(value)
   defp to_s(value), do: to_string(value)
+
+  defp present?(value), do: to_s(value) != ""
 
   defp close_reason({:remote, code, _text}), do: "remote_#{code}"
   defp close_reason({:error, reason}), do: "error_#{to_s(reason)}"
