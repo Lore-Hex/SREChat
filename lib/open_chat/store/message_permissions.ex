@@ -14,8 +14,8 @@ defmodule OpenChat.Store.MessagePermissions do
       blank?(actor_uid) ->
         forbidden(action)
 
-      action_message?(message) ->
-        Errors.forbidden("Action messages cannot be edited or deleted.")
+      action == :edit and action_message?(message) ->
+        Errors.forbidden("Action messages cannot be edited.")
 
       deleted?(message) ->
         Errors.forbidden("Deleted messages cannot be edited or deleted.")

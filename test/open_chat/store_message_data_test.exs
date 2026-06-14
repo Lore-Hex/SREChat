@@ -7,8 +7,35 @@ defmodule OpenChat.StoreMessageDataTest do
     assert MessageData.infer_type(%{"category" => "custom"}, []) == "custom"
     assert MessageData.infer_type(%{"category" => "custom", "type" => "poll"}, []) == "poll"
     assert MessageData.infer_type(%{"data" => ~s({"customData":{"kind":"poll"}})}, []) == "custom"
-    assert MessageData.infer_type(%{"data" => %{"url" => "/media/a.png"}}, []) == "file"
+    assert MessageData.infer_type(%{"data" => %{"url" => "/media/a.png"}}, []) == "image"
+
+    assert MessageData.infer_type(%{"data" => %{"url" => "https://cdn.example/a.gif"}}, []) ==
+             "image"
+
+    assert MessageData.infer_type(
+             %{"data" => %{"url" => "https://cdn.example/a.gif?signature=123"}},
+             []
+           ) == "image"
+
+    assert MessageData.infer_type(
+             %{
+               "data" => %{
+                 "url" => "https://cdn.example/a",
+                 "metadata" => %{"chatMessage" => %{"media" => %{"type" => "gif"}}}
+               }
+             },
+             []
+           ) == "image"
+
+    assert MessageData.infer_type(%{"data" => %{"url" => "https://cdn.example/doc.pdf"}}, []) ==
+             "file"
+
     assert MessageData.infer_type(%{"type" => "image"}, [%{}]) == "image"
+
+    assert MessageData.infer_type(%{}, [
+             %Plug.Upload{path: "/tmp/a", filename: "reaction.gif", content_type: "image/gif"}
+           ]) == "image"
+
     assert MessageData.infer_type(%{"data" => %{"text" => "hi"}}, []) == "text"
   end
 

@@ -1095,6 +1095,8 @@ defmodule OpenChat.Store do
   def handle_call({:mark_read, uid, receiver_type, receiver_id, message_id}, _from, state) do
     case Access.receipt(state, uid, receiver_type, receiver_id, message_id) do
       :ok ->
+        message_id = read_cursor_or_latest(state, uid, receiver_type, receiver_id, message_id)
+
         {state, payload} =
           Conversations.mark_read(state, uid, receiver_type, receiver_id, message_id, Time.now())
 
@@ -1927,6 +1929,21 @@ defmodule OpenChat.Store do
     |> case do
       value when value in [nil, ""] -> "server"
       value -> value
+    end
+  end
+
+  defp read_cursor_or_latest(state, uid, receiver_type, receiver_id, message_id) do
+    case to_s(message_id) do
+      value when value in ["", "0"] ->
+        state
+        |> Conversations.latest_message(conversation_id_for(uid, receiver_type, receiver_id))
+        |> case do
+          %{"id" => latest_id} -> latest_id
+          _other -> message_id
+        end
+
+      _other ->
+        message_id
     end
   end
 

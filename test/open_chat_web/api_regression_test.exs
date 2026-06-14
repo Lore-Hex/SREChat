@@ -1253,6 +1253,10 @@ defmodule OpenChatWeb.ApiRegressionTest do
 
     assert conn.status == 200
     assert get_in(json(conn), ["data", "data", "action"]) == "edited"
+    action = json(conn)["data"]
+
+    assert auth_conn(:delete, "/v3.0/messages/#{action["id"]}", %{}, "uid:api-owner").status ==
+             200
 
     conn =
       auth_conn(:post, "/v3.0/messages", %{
@@ -1296,9 +1300,19 @@ defmodule OpenChatWeb.ApiRegressionTest do
     # inside the visible text. OpenChat must accept this shape and return it
     # verbatim through the user-facing fetch route so snowy converters can parse it.
     room = "ttfm-socket-room"
-    assert admin_conn(:post, "/v3/groups", %{"guid" => room, "type" => "public"}).status == 201
+
+    assert admin_conn(:post, "/v3/groups", %{
+             "guid" => room,
+             "type" => "public",
+             "ownerUid" => "room-owner"
+           }).status == 201
 
     assert auth_conn(:post, "/v3.0/groups/#{room}/members", %{}, "uid:alice").status in [200, 201]
+
+    assert auth_conn(:post, "/v3.0/groups/#{room}/members", %{}, "uid:room-owner").status in [
+             200,
+             201
+           ]
 
     text =
       "<@uid:alice> played <consumableId:c-456>"
@@ -1348,6 +1362,10 @@ defmodule OpenChatWeb.ApiRegressionTest do
 
     assert get_in(fetched, ["data", "metadata", "chatMessage", "songs"]) ==
              chat_message_envelope["songs"]
+
+    delete_conn = auth_conn(:delete, "/v3.0/messages/#{sent["id"]}", %{}, "uid:room-owner")
+    assert delete_conn.status == 200
+    assert get_in(json(delete_conn), ["data", "data", "action"]) == "deleted"
   end
 
   test "history and live payloads do not expose malformed legacy media messages to the SDK" do

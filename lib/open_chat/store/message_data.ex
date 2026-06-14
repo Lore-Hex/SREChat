@@ -7,13 +7,26 @@ defmodule OpenChat.Store.MessageData do
 
   def infer_type(params, uploads) do
     data = normalise_data(params["data"] || %{})
+    explicit_type = params["type"] |> to_s() |> blank_to_nil()
 
     cond do
-      params["category"] == "custom" -> params["type"] || "custom"
-      Map.has_key?(data, "customData") -> "custom"
-      uploads != [] -> params["type"] || "file"
-      Map.has_key?(data, "url") -> params["type"] || "file"
-      true -> "text"
+      params["category"] == "custom" ->
+        params["type"] || "custom"
+
+      Map.has_key?(data, "customData") ->
+        "custom"
+
+      not is_nil(explicit_type) ->
+        explicit_type
+
+      uploads != [] ->
+        media_type(data, uploads) || "file"
+
+      Map.has_key?(data, "url") or Map.has_key?(data, "attachments") ->
+        media_type(data, uploads) || "file"
+
+      true ->
+        "text"
     end
   end
 
@@ -213,6 +226,88 @@ defmodule OpenChat.Store.MessageData do
     end)
   end
 
+  defp media_type(data, uploads) do
+    [
+      mime_from_uploads(uploads),
+      mime_from_attachments(data["attachments"]),
+      data["mimeType"],
+      data["contentType"],
+      get_in(data, ["metadata", "chatMessage", "media", "type"]),
+      mime_from_path(data["name"]),
+      data["url"] |> to_s() |> URI.parse() |> Map.get(:path) |> mime_from_path()
+    ]
+    |> Enum.find_value(&mime_kind/1)
+  rescue
+    _error -> nil
+  end
+
+  defp mime_from_uploads(uploads) do
+    uploads
+    |> List.wrap()
+    |> List.flatten()
+    |> Enum.find_value(fn
+      %Plug.Upload{content_type: content_type, filename: filename} ->
+        first_present([normalise_mime(content_type), mime_from_path(filename)])
+
+      %{"content_type" => content_type, "filename" => filename} ->
+        first_present([normalise_mime(content_type), mime_from_path(filename)])
+
+      %{"contentType" => content_type, "filename" => filename} ->
+        first_present([normalise_mime(content_type), mime_from_path(filename)])
+
+      _other ->
+        nil
+    end)
+  end
+
+  defp mime_from_attachments([attachment | _]) when is_map(attachment) do
+    first_present([
+      attachment["mimeType"],
+      attachment["contentType"],
+      attachment["type"],
+      mime_from_path(attachment["name"] || attachment["url"])
+    ])
+  end
+
+  defp mime_from_attachments(_attachments), do: nil
+
+  defp normalise_mime(value) do
+    value
+    |> to_s()
+    |> String.split(";", parts: 2)
+    |> List.first()
+    |> String.trim()
+  end
+
+  defp mime_from_path(value) do
+    path = to_s(value)
+
+    path =
+      case URI.parse(path) do
+        %URI{path: parsed_path} when is_binary(parsed_path) and parsed_path != "" -> parsed_path
+        _other -> path
+      end
+
+    if path == "", do: nil, else: MIME.from_path(path)
+  rescue
+    _error -> nil
+  end
+
+  defp mime_kind(value) do
+    value = value |> normalise_mime() |> String.downcase()
+
+    cond do
+      String.starts_with?(value, "image/") -> "image"
+      String.starts_with?(value, "video/") -> "video"
+      String.starts_with?(value, "audio/") -> "audio"
+      value in ["image", "photo", "gif", "jpg", "jpeg", "png", "webp", "heic", "heif"] -> "image"
+      value in ["video", "mp4", "mov", "webm", "m4v"] -> "video"
+      value in ["audio", "mp3", "m4a", "wav", "ogg"] -> "audio"
+      value != "" -> "file"
+      true -> nil
+    end
+  end
+
   defp normalise_data(value) when is_binary(value) do
     case Jason.decode(value) do
       {:ok, decoded} when is_map(decoded) -> stringify_keys(decoded)
@@ -233,6 +328,9 @@ defmodule OpenChat.Store.MessageData do
 
   defp stringify_keys(list) when is_list(list), do: Enum.map(list, &stringify_keys/1)
   defp stringify_keys(other), do: other
+
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value), do: value
 
   defp to_s(nil), do: ""
   defp to_s(value) when is_binary(value), do: value

@@ -619,8 +619,8 @@ defmodule OpenChat.StoreRegressionTest do
 
     assert edited["data"]["action"] == "edited"
 
-    assert {:error, %{"code" => "ERR_FORBIDDEN"}} =
-             Store.delete_message("alice", edited["id"])
+    assert {:ok, deleted_edit_notice} = Store.delete_message("alice", edited["id"])
+    assert deleted_edit_notice["data"]["action"] == "deleted"
 
     guid = "secure-room"
 
@@ -668,6 +668,9 @@ defmodule OpenChat.StoreRegressionTest do
              })
 
     assert admin_edited["data"]["action"] == "edited"
+
+    assert {:ok, owner_deleted_action_notice} = Store.delete_message("owner", admin_edited["id"])
+    assert owner_deleted_action_notice["data"]["action"] == "deleted"
 
     assert {:ok, fourth_group_message} =
              Store.send_message("alice", %{

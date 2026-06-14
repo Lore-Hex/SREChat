@@ -92,12 +92,42 @@ defmodule OpenChat.Store.PermissionsTest do
                MessagePermissions.authorize(State.default(), nil, %{"sender" => "alice"}, :delete)
     end
 
-    test "action messages and already-deleted messages can never be edited or deleted" do
-      action_msg = %{"sender" => "alice", "category" => "action"}
+    test "action messages cannot be edited but follow delete permissions" do
+      action_msg = %{"sender" => "alice", "category" => "action", "receiverType" => "user"}
 
-      assert {:error, %{"message" => "Action messages cannot be edited or deleted."}} =
+      assert {:error, %{"message" => "Action messages cannot be edited."}} =
                MessagePermissions.authorize(State.default(), "alice", action_msg, :edit)
 
+      assert :ok = MessagePermissions.authorize(State.default(), "alice", action_msg, :delete)
+
+      assert {:error, %{"code" => "ERR_FORBIDDEN"}} =
+               MessagePermissions.authorize(State.default(), "bob", action_msg, :delete)
+    end
+
+    test "group moderators can delete action messages" do
+      state =
+        State.default()
+        |> put_in(["groups", "room"], %{"owner" => "owner"})
+        |> put_in(["members", "room"], %{
+          "mod" => %{"scope" => "moderator"},
+          "participant" => %{"scope" => "participant"}
+        })
+
+      action_msg = %{
+        "sender" => "system",
+        "category" => "action",
+        "receiverType" => "group",
+        "receiver" => "room"
+      }
+
+      assert :ok = MessagePermissions.authorize(state, "owner", action_msg, :delete)
+      assert :ok = MessagePermissions.authorize(state, "mod", action_msg, :delete)
+
+      assert {:error, %{"code" => "ERR_FORBIDDEN"}} =
+               MessagePermissions.authorize(state, "participant", action_msg, :delete)
+    end
+
+    test "already-deleted messages can never be edited or deleted" do
       deleted_msg = %{"sender" => "alice", "deletedAt" => "2026-01-01T00:00:00Z"}
 
       assert {:error, %{"message" => "Deleted messages cannot be edited or deleted."}} =

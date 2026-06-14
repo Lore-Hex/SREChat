@@ -214,6 +214,10 @@ defmodule OpenChatWeb.WSHandlerTest do
              headers: %{"origin" => "https://allowed.example"}
            })
 
+    for origin <- ["capacitor://localhost", "ionic://localhost", "file://", "http://localhost"] do
+      assert WSHandler.websocket_origin_allowed?(%{headers: %{"origin" => origin}})
+    end
+
     refute WSHandler.websocket_origin_allowed?(%{
              headers: %{"origin" => "https://evil.example"}
            })

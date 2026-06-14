@@ -14,7 +14,7 @@ defmodule OpenChatWeb.WSHandler do
       Observability.record_ws("accepted")
       {:cowboy_websocket, req, %{uid: nil, token: nil, device_id: nil, groups: MapSet.new()}}
     else
-      Observability.record_ws("origin_rejected")
+      Observability.record_ws("origin_rejected", origin_tags(req))
 
       body =
         Jason.encode!(%{
@@ -38,7 +38,7 @@ defmodule OpenChatWeb.WSHandler do
     case request_origin(req) do
       nil -> true
       "" -> true
-      origin -> Config.cors_allowed_origin(origin) != nil
+      origin -> is_native_app_origin(origin) or Config.cors_allowed_origin(origin) != nil
     end
   end
 
@@ -135,6 +135,36 @@ defmodule OpenChatWeb.WSHandler do
       _other ->
         Map.delete(state, :heartbeat_ref)
     end
+  end
+
+  defp origin_tags(req) do
+    origin = request_origin(req)
+    uri = if is_binary(origin), do: URI.parse(origin), else: %URI{}
+
+    %{
+      "origin_scheme" => uri.scheme || "unknown",
+      "origin_host" => uri.host || "unknown"
+    }
+  rescue
+    _error -> %{"origin_scheme" => "unknown", "origin_host" => "unknown"}
+  end
+
+  defp is_native_app_origin(origin) when is_binary(origin) do
+    case URI.parse(origin) do
+      %URI{scheme: scheme, host: host} ->
+        scheme in ["capacitor", "ionic", "file"] or local_origin?(scheme, host)
+
+      _other ->
+        false
+    end
+  rescue
+    _error -> false
+  end
+
+  defp is_native_app_origin(_origin), do: false
+
+  defp local_origin?(scheme, host) do
+    scheme in ["http", "https"] and host in ["localhost", "127.0.0.1", "::1", "10.0.2.2"]
   end
 
   defp cancel_heartbeat(%{heartbeat_ref: ref}) when is_reference(ref),

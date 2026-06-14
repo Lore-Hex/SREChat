@@ -65,6 +65,49 @@ defmodule OpenChatWeb.ApiTest do
 
     assert [%{"conversationWith" => %{"uid" => "alice"}, "unreadMessageCount" => 0}] =
              json(conn)["data"]
+
+    conn = auth_conn(:get, "/v3.0/messages?receiverType=user&unread=1&count=1", %{}, "uid:bob")
+    assert json(conn)["data"] == []
+  end
+
+  test "conversation read without a message cursor clears DM unread against the latest message" do
+    first =
+      auth_conn(:post, "/v3.0/messages", %{
+        "receiver" => "bob",
+        "receiverType" => "user",
+        "type" => "text",
+        "category" => "message",
+        "data" => %{"text" => "first unread"}
+      })
+      |> json()
+      |> get_in(["data"])
+
+    second =
+      auth_conn(:post, "/v3.0/messages", %{
+        "receiver" => "bob",
+        "receiverType" => "user",
+        "type" => "text",
+        "category" => "message",
+        "data" => %{"text" => "second unread"}
+      })
+      |> json()
+      |> get_in(["data"])
+
+    assert to_string(second["id"]) > to_string(first["id"])
+
+    conn = auth_conn(:get, "/v3.0/messages?receiverType=user&unread=1&count=1", %{}, "uid:bob")
+    assert [%{"entityId" => "alice", "count" => 2}] = json(conn)["data"]
+
+    conn = auth_conn(:post, "/v3.0/users/alice/conversation/read", %{}, "uid:bob")
+    assert conn.status == 200
+    assert get_in(json(conn), ["data", "messageId"]) == to_string(second["id"])
+
+    conn = auth_conn(:get, "/v3.0/messages?receiverType=user&unread=1&count=1", %{}, "uid:bob")
+    assert json(conn)["data"] == []
+
+    conn = auth_conn(:get, "/v3.0/conversations?conversationType=user", %{}, "uid:bob")
+    assert [%{"unreadMessageCount" => 0, "lastReadMessageId" => read_id}] = json(conn)["data"]
+    assert read_id == to_string(second["id"])
   end
 
   test "DM history endpoint can hold a short SDK websocket grace period" do
