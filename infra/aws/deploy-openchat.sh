@@ -29,8 +29,8 @@ PRODUCTION_EXTENSION_CERTIFICATE_ARN="arn:aws:acm:us-east-2:829838608284:certifi
 STAGING_ADMIN_API_KEY_PARAMETER_NAME="${OPENCHAT_STAGING_ADMIN_API_KEY_PARAMETER_NAME:-/openchat/staging/admin-api-key}"
 PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME="${OPENCHAT_PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME:-/openchat/production/admin-api-key}"
 
-STAGING_CORS_ALLOWED_ORIGINS="https://staging.hang.fm,https://staging.tt.live,https://staging.hangout.fm,https://openchat.staging.tt.fm,http://localhost:3000,http://localhost:4173,http://localhost:5173"
-PRODUCTION_CORS_ALLOWED_ORIGINS="https://hang.fm,https://www.hang.fm,https://hangout.fm,https://www.hangout.fm,https://tt.live,https://www.tt.live,https://openchat.prod.tt.fm"
+STAGING_CORS_ALLOWED_ORIGINS="https://staging.hang.fm,https://staging.tt.live,https://staging.hangout.fm,https://openchat.staging.tt.fm,https://*.discordsays.com,http://localhost:3000,http://localhost:4173,http://localhost:5173"
+PRODUCTION_CORS_ALLOWED_ORIGINS="https://hang.fm,https://www.hang.fm,https://hangout.fm,https://www.hangout.fm,https://tt.live,https://www.tt.live,https://openchat.prod.tt.fm,https://*.discordsays.com"
 
 STAGING_HOSTED_ZONE_ID="Z012303725HTFF0I5JI42"
 PRODUCTION_HOSTED_ZONE_ID="Z10095773LLWNGK1FKJ1Q"

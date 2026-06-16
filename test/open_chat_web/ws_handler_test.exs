@@ -206,7 +206,11 @@ defmodule OpenChatWeb.WSHandlerTest do
       end
     end)
 
-    Application.put_env(:open_chat, :cors_allowed_origins, "https://allowed.example")
+    Application.put_env(
+      :open_chat,
+      :cors_allowed_origins,
+      "https://allowed.example,https://*.discordsays.com"
+    )
 
     assert WSHandler.websocket_origin_allowed?(%{headers: %{}})
 
@@ -214,9 +218,21 @@ defmodule OpenChatWeb.WSHandlerTest do
              headers: %{"origin" => "https://allowed.example"}
            })
 
+    assert WSHandler.websocket_origin_allowed?(%{
+             headers: %{"origin" => "https://1120784239546347531.discordsays.com"}
+           })
+
+    assert WSHandler.websocket_origin_allowed?(%{
+             headers: %{"origin" => "https://allowed.example:443"}
+           })
+
     for origin <- ["capacitor://localhost", "ionic://localhost", "file://", "http://localhost"] do
       assert WSHandler.websocket_origin_allowed?(%{headers: %{"origin" => origin}})
     end
+
+    refute WSHandler.websocket_origin_allowed?(%{
+             headers: %{"origin" => "http://1120784239546347531.discordsays.com"}
+           })
 
     refute WSHandler.websocket_origin_allowed?(%{
              headers: %{"origin" => "https://evil.example"}

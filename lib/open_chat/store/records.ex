@@ -422,11 +422,20 @@ defmodule OpenChat.Store.Records do
   @spec scope(term()) :: String.t()
   def scope("participants"), do: "participant"
   def scope("members"), do: "participant"
+  def scope("admins"), do: "admin"
+  def scope("moderators"), do: "moderator"
+  def scope("mod"), do: "moderator"
+  def scope("mods"), do: "moderator"
+  def scope("administrator"), do: "admin"
+  def scope("administrators"), do: "admin"
 
   def scope(scope) when scope in ["owner", "admin", "moderator", "participant"],
     do: scope
 
   def scope("coOwner"), do: "coOwner"
+  def scope("coowner"), do: "coOwner"
+  def scope("co_owner"), do: "coOwner"
+  def scope("co-owner"), do: "coOwner"
   def scope(_scope), do: "participant"
 
   defp normalise_data(value) when is_binary(value) do

@@ -106,6 +106,56 @@ defmodule OpenChat.StoreMessageStateTest do
     refute get_in(message, ["data", "metadata", "@injected", "extensions", "reactions"])
   end
 
+  test "expose_metadata synthesizes chatMessage metadata for raw text and media messages" do
+    message =
+      MessageState.expose_metadata(%{
+        "id" => 22,
+        "sender" => "alice",
+        "type" => "text",
+        "category" => "message",
+        "data" => %{
+          "text" => "hello from a bot",
+          "entities" => %{
+            "sender" => %{"entity" => %{"uid" => "alice", "name" => "Alice"}}
+          }
+        }
+      })
+
+    assert get_in(message, ["metadata", "chatMessage", "message"]) == "hello from a bot"
+    assert get_in(message, ["metadata", "chatMessage", "userName"]) == "Alice"
+    assert get_in(message, ["metadata", "chatMessage", "userUuid"]) == "alice"
+    assert get_in(message, ["data", "metadata", "chatMessage", "uuid"]) == "22"
+
+    media =
+      MessageState.expose_metadata(%{
+        "id" => 23,
+        "sender" => "alice",
+        "type" => "image",
+        "category" => "message",
+        "data" => %{
+          "caption" => "gif caption",
+          "attachments" => [
+            %{
+              "name" => "reaction.gif",
+              "mimeType" => "image/gif",
+              "url" => "https://cdn.example/reaction.gif"
+            }
+          ],
+          "metadata" => %{"@injected" => %{"extensions" => %{}}}
+        }
+      })
+
+    assert get_in(media, ["metadata", "@injected", "extensions"]) == %{}
+    assert get_in(media, ["metadata", "chatMessage", "message"]) == "gif caption"
+
+    assert get_in(media, ["metadata", "chatMessage", "media", "uri"]) ==
+             "https://cdn.example/reaction.gif"
+
+    assert get_in(media, ["metadata", "chatMessage", "imageUrls"]) == [
+             "https://cdn.example/reaction.gif"
+           ]
+  end
+
   test "remove_reaction removes empty reaction buckets and preserves other users" do
     state =
       State.default()

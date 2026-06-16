@@ -313,6 +313,65 @@ defmodule OpenChatWeb.ApiRegressionTest do
     assert get_in(history, ["metadata", "chatMessage", "message"]) == "metadata text"
   end
 
+  test "raw text and gif URL messages get client-compatible metadata for bots and pins" do
+    room = "api-raw-metadata-room"
+
+    assert admin_conn(:post, "/v3/groups", %{"guid" => room, "type" => "public"}).status == 201
+    assert auth_conn(:post, "/v3.0/groups/#{room}/members", %{}, "uid:alice").status == 200
+
+    text_conn =
+      auth_conn(:post, "/v3.0/messages", %{
+        "receiver" => room,
+        "receiverType" => "group",
+        "data" => %{"text" => "raw bot text"}
+      })
+
+    assert text_conn.status == 201
+    text = json(text_conn)["data"]
+    assert text["type"] == "text"
+    assert get_in(text, ["metadata", "chatMessage", "message"]) == "raw bot text"
+    assert get_in(text, ["metadata", "chatMessage", "userUuid"]) == "alice"
+    assert get_in(text, ["data", "metadata", "chatMessage", "uuid"]) == to_string(text["id"])
+
+    gif_conn =
+      auth_conn(:post, "/v3.0/messages", %{
+        "receiver" => room,
+        "receiverType" => "group",
+        "data" => %{"text" => "https://cdn.example.com/reaction.gif"}
+      })
+
+    assert gif_conn.status == 201
+    gif = json(gif_conn)["data"]
+    assert gif["type"] == "image"
+
+    assert [%{"mimeType" => "image/gif", "url" => "https://cdn.example.com/reaction.gif"}] =
+             get_in(gif, ["data", "attachments"])
+
+    assert get_in(gif, ["metadata", "chatMessage", "message"]) ==
+             "https://cdn.example.com/reaction.gif"
+
+    history_conn =
+      auth_conn(
+        :get,
+        "/v3.0/groups/#{room}/messages?limit=10&timestamp=#{System.system_time(:millisecond)}",
+        %{},
+        "uid:alice"
+      )
+
+    assert history_conn.status == 200
+    history = json(history_conn)["data"]
+
+    assert Enum.any?(
+             history,
+             &(get_in(&1, ["metadata", "chatMessage", "message"]) == "raw bot text")
+           )
+
+    assert Enum.any?(
+             history,
+             &(&1["type"] == "image" and get_in(&1, ["data", "attachments"]) != nil)
+           )
+  end
+
   test "group member write APIs require owner or moderator privileges for user tokens" do
     assert admin_conn(:post, "/v3/groups", %{
              "guid" => "api-member-security",

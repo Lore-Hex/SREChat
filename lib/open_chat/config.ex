@@ -123,11 +123,15 @@ defmodule OpenChat.Config do
     do: boolean_env(:public_group_joins_as_visits, false)
 
   def cors_allowed_origin(origin) do
+    origin = origin |> to_s() |> String.trim()
     allowed = cors_allowed_origins()
+    normalised_origin = normalise_origin(origin)
 
     cond do
       "*" in allowed -> "*"
+      origin == "" -> nil
       origin in allowed -> origin
+      Enum.any?(allowed, &origin_entry_matches?(&1, origin, normalised_origin)) -> origin
       true -> nil
     end
   end
@@ -225,6 +229,76 @@ defmodule OpenChat.Config do
     end
   end
 
+  defp origin_entry_matches?(entry, origin, normalised_origin) do
+    entry = entry |> to_s() |> String.trim()
+
+    cond do
+      entry == "" ->
+        false
+
+      normalised_origin != nil and normalise_origin(entry) == normalised_origin ->
+        true
+
+      wildcard_origin_match?(entry, origin) ->
+        true
+
+      true ->
+        false
+    end
+  end
+
+  defp normalise_origin(value) do
+    case URI.parse(value) do
+      %URI{scheme: scheme, host: host, port: port}
+      when is_binary(scheme) and is_binary(host) ->
+        scheme = String.downcase(scheme)
+        host = String.downcase(host)
+        port_suffix = if default_port?(scheme, port), do: "", else: ":#{port}"
+        "#{scheme}://#{host}#{port_suffix}"
+
+      _other ->
+        nil
+    end
+  rescue
+    _error -> nil
+  end
+
+  defp wildcard_origin_match?(entry, origin) do
+    with %URI{scheme: entry_scheme, host: <<"*.", suffix::binary>>, port: entry_port} <-
+           URI.parse(entry),
+         %URI{scheme: origin_scheme, host: origin_host, port: origin_port} <- URI.parse(origin),
+         true <- is_binary(entry_scheme) and is_binary(origin_scheme),
+         true <- String.downcase(entry_scheme) == String.downcase(origin_scheme),
+         true <- origin_port_allowed?(entry_scheme, entry_port, origin_port),
+         true <- is_binary(origin_host) do
+      suffix = String.downcase(suffix)
+      origin_host = String.downcase(origin_host)
+      origin_host != suffix and String.ends_with?(origin_host, "." <> suffix)
+    else
+      _other -> false
+    end
+  rescue
+    _error -> false
+  end
+
+  defp default_port?("http", 80), do: true
+  defp default_port?("https", 443), do: true
+  defp default_port?(_scheme, nil), do: true
+  defp default_port?(_scheme, _port), do: false
+
+  defp origin_port_allowed?(scheme, entry_port, origin_port) do
+    cond do
+      entry_port == origin_port ->
+        true
+
+      default_port?(String.downcase(to_s(scheme)), entry_port) ->
+        default_port?(scheme, origin_port)
+
+      true ->
+        false
+    end
+  end
+
   defp cors_csv_env(key) do
     case Application.get_env(:open_chat, key, "*") do
       nil ->
@@ -244,4 +318,8 @@ defmodule OpenChat.Config do
         |> Enum.reject(&(&1 == ""))
     end
   end
+
+  defp to_s(nil), do: ""
+  defp to_s(value) when is_binary(value), do: value
+  defp to_s(value), do: to_string(value)
 end

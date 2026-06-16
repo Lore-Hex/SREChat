@@ -74,16 +74,19 @@ defmodule OpenChat.Store.MessageState do
     data_metadata = data["metadata"]
     top_metadata = message["metadata"]
 
-    cond do
-      is_map(data_metadata) and map_size(data_metadata) > 0 ->
-        Map.put(message, "metadata", data_metadata)
+    message =
+      cond do
+        is_map(data_metadata) and map_size(data_metadata) > 0 ->
+          Map.put(message, "metadata", data_metadata)
 
-      is_map(top_metadata) and map_size(top_metadata) > 0 ->
-        Map.put(message, "data", Map.put(data, "metadata", top_metadata))
+        is_map(top_metadata) and map_size(top_metadata) > 0 ->
+          Map.put(message, "data", Map.put(data, "metadata", top_metadata))
 
-      true ->
-        message
-    end
+        true ->
+          message
+      end
+
+    ensure_chat_message_metadata(message)
   end
 
   @spec remove_reaction(map(), term(), term(), term()) :: map()
@@ -165,6 +168,113 @@ defmodule OpenChat.Store.MessageState do
   defp to_s(nil), do: ""
   defp to_s(value) when is_binary(value), do: value
   defp to_s(value), do: to_string(value)
+
+  defp ensure_chat_message_metadata(message) do
+    data = message["data"] || %{}
+    metadata = message["metadata"] || data["metadata"] || %{}
+
+    if needs_chat_message_metadata?(message, data, metadata) do
+      metadata = Map.put(metadata, "chatMessage", fallback_chat_message(message, data))
+
+      message
+      |> Map.put("metadata", metadata)
+      |> Map.put("data", Map.put(data, "metadata", metadata))
+    else
+      message
+    end
+  end
+
+  defp needs_chat_message_metadata?(message, data, metadata) do
+    message["category"] in [nil, "message"] and
+      message["type"] in ["text", "image", "video", "audio", "file", "media"] and
+      not is_map(metadata["chatMessage"]) and
+      not is_map(data["customData"])
+  end
+
+  defp fallback_chat_message(message, data) do
+    sender = get_in(data, ["entities", "sender", "entity"]) || %{}
+    text = fallback_message_text(data)
+    media = fallback_media(data)
+
+    %{
+      "uuid" => to_s(message["muid"] || message["id"]),
+      "id" => message["id"],
+      "message" => text,
+      "type" => "user",
+      "userName" => sender["name"] || to_s(message["sender"]),
+      "userUuid" => to_s(message["sender"]),
+      "media" => media,
+      "imageUrls" => fallback_image_urls(data, media)
+    }
+    |> compact()
+  end
+
+  defp fallback_message_text(data) do
+    first_present([
+      data["caption"],
+      data["text"],
+      get_in(data, ["attachments", Access.at(0), "name"]),
+      ""
+    ])
+  end
+
+  defp fallback_media(data) do
+    case data["attachments"] do
+      [%{} = attachment | _rest] ->
+        %{
+          "name" => attachment["name"],
+          "type" => attachment["mimeType"] || attachment["contentType"] || attachment["type"],
+          "uri" => attachment["url"],
+          "url" => attachment["url"]
+        }
+        |> compact()
+
+      _other ->
+        nil
+    end
+  end
+
+  defp fallback_image_urls(data, media) do
+    urls =
+      [
+        data["url"],
+        if(is_map(media), do: media["uri"] || media["url"]),
+        get_in(data, ["attachments", Access.at(0), "url"])
+      ]
+      |> Enum.filter(&image_url?/1)
+
+    if urls == [], do: nil, else: Enum.uniq(urls)
+  end
+
+  defp image_url?(value) when is_binary(value) do
+    case MIME.from_path(URI.parse(value).path || value) do
+      "image/" <> _rest -> true
+      _other -> false
+    end
+  rescue
+    _error -> false
+  end
+
+  defp image_url?(_value), do: false
+
+  defp first_present(values) do
+    Enum.find(values, fn
+      value when is_binary(value) -> value != ""
+      nil -> false
+      false -> false
+      _value -> true
+    end)
+  end
+
+  defp compact(map) do
+    Map.reject(map, fn
+      {_key, nil} -> true
+      {_key, ""} -> true
+      {_key, []} -> true
+      {_key, value} when is_map(value) -> map_size(value) == 0
+      _other -> false
+    end)
+  end
 
   defp put_reaction_extension_metadata(data, reaction_map) do
     metadata = data["metadata"] || %{}

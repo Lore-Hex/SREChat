@@ -88,11 +88,18 @@ defmodule OpenChat.ConfigTest do
     Application.put_env(
       :open_chat,
       :cors_allowed_origins,
-      "https://example.com, https://www.example.com"
+      "https://example.com, https://www.example.com, https://*.discordsays.com"
     )
 
     assert Config.cors_allowed_origin("https://example.com") == "https://example.com"
+    assert Config.cors_allowed_origin("https://example.com:443") == "https://example.com:443"
     assert Config.cors_allowed_origin("https://www.example.com") == "https://www.example.com"
+
+    assert Config.cors_allowed_origin("https://1120784239546347531.discordsays.com") ==
+             "https://1120784239546347531.discordsays.com"
+
+    assert Config.cors_allowed_origin("https://discordsays.com") == nil
+    assert Config.cors_allowed_origin("http://1120784239546347531.discordsays.com") == nil
     assert Config.cors_allowed_origin("https://evil.example") == nil
 
     Application.put_env(:open_chat, :cors_allowed_origins, "")

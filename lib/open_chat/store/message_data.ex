@@ -25,6 +25,9 @@ defmodule OpenChat.Store.MessageData do
       Map.has_key?(data, "url") or Map.has_key?(data, "attachments") ->
         media_type(data, uploads) || "file"
 
+      media_url?(data["text"]) ->
+        media_type(data, uploads) || "file"
+
       true ->
         "text"
     end
@@ -168,6 +171,8 @@ defmodule OpenChat.Store.MessageData do
       get_in(data, ["metadata", "chatMessage", "media", "uri"]),
       get_in(data, ["metadata", "chatMessage", "media", "url"]),
       get_in(data, ["metadata", "chatMessage", "imageUrls", Access.at(0)]),
+      media_url(data["text"]),
+      media_url(data["caption"]),
       get_in(message, ["metadata", "chatMessage", "media", "uri"]),
       get_in(message, ["metadata", "chatMessage", "media", "url"]),
       get_in(message, ["metadata", "chatMessage", "imageUrls", Access.at(0)])
@@ -234,7 +239,8 @@ defmodule OpenChat.Store.MessageData do
       data["contentType"],
       get_in(data, ["metadata", "chatMessage", "media", "type"]),
       mime_from_path(data["name"]),
-      data["url"] |> to_s() |> URI.parse() |> Map.get(:path) |> mime_from_path()
+      data["url"] |> to_s() |> URI.parse() |> Map.get(:path) |> mime_from_path(),
+      data["text"] |> to_s() |> URI.parse() |> Map.get(:path) |> mime_from_path()
     ]
     |> Enum.find_value(&mime_kind/1)
   rescue
@@ -307,6 +313,27 @@ defmodule OpenChat.Store.MessageData do
       true -> nil
     end
   end
+
+  defp media_url?(value), do: media_url(value) != nil
+
+  defp media_url(value) when is_binary(value) do
+    value = String.trim(value)
+
+    with %URI{scheme: scheme, host: host, path: path} when scheme in ["http", "https"] <-
+           URI.parse(value),
+         true <- is_binary(host) and host != "",
+         true <- is_binary(path) and path != "",
+         mime when is_binary(mime) <- mime_from_path(path),
+         kind when kind in ["image", "video", "audio"] <- mime_kind(mime) do
+      value
+    else
+      _other -> nil
+    end
+  rescue
+    _error -> nil
+  end
+
+  defp media_url(_value), do: nil
 
   defp normalise_data(value) when is_binary(value) do
     case Jason.decode(value) do

@@ -13,6 +13,9 @@ defmodule OpenChat.Store.PermissionsTest do
           "mod" => %{"scope" => "moderator"},
           "admin" => %{"role" => "admin"},
           "co" => %{"scope" => "coOwner"},
+          "co-alias" => %{"scope" => "co-owner"},
+          "mods-alias" => %{"scope" => "mods"},
+          "admins-alias" => %{"role" => "admins"},
           "plain" => %{}
         })
 
@@ -20,6 +23,9 @@ defmodule OpenChat.Store.PermissionsTest do
       assert GroupPermissions.can_moderate?(state, "room", "mod")
       assert GroupPermissions.can_moderate?(state, "room", "admin")
       assert GroupPermissions.can_moderate?(state, "room", "co")
+      assert GroupPermissions.can_moderate?(state, "room", "co-alias")
+      assert GroupPermissions.can_moderate?(state, "room", "mods-alias")
+      assert GroupPermissions.can_moderate?(state, "room", "admins-alias")
       refute GroupPermissions.can_moderate?(state, "room", "plain")
     end
 

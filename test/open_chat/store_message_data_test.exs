@@ -30,6 +30,15 @@ defmodule OpenChat.StoreMessageDataTest do
     assert MessageData.infer_type(%{"data" => %{"url" => "https://cdn.example/doc.pdf"}}, []) ==
              "file"
 
+    assert MessageData.infer_type(
+             %{"data" => %{"text" => "https://cdn.example/reaction.gif"}},
+             []
+           ) ==
+             "image"
+
+    assert MessageData.infer_type(%{"data" => %{"text" => "https://cdn.example/doc.pdf"}}, []) ==
+             "text"
+
     assert MessageData.infer_type(%{"type" => "image"}, [%{}]) == "image"
 
     assert MessageData.infer_type(%{}, [
@@ -198,6 +207,22 @@ defmodule OpenChat.StoreMessageDataTest do
 
     assert [%{"url" => "https://cdn.example.com/media/photo.png", "name" => "photo.png"}] =
              get_in(message, ["data", "attachments"])
+  end
+
+  test "ensure_media_wire_shape restores attachment data from gif URLs sent as text" do
+    message =
+      MessageData.ensure_media_wire_shape(%{
+        "type" => "image",
+        "data" => %{"text" => "https://cdn.example.com/reaction.gif?signature=123"}
+      })
+
+    assert [
+             %{
+               "url" => "https://cdn.example.com/reaction.gif?signature=123",
+               "name" => "reaction.gif",
+               "mimeType" => "image/gif"
+             }
+           ] = get_in(message, ["data", "attachments"])
   end
 
   test "ensure_media_wire_shape downgrades unrecoverable legacy media so SDK history cannot throw" do
