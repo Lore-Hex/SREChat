@@ -462,12 +462,7 @@ defmodule OpenChat.Store.RequestPlan do
   defp group_delete_keys(guid) do
     conv_id = Conversations.group_conversation_id(guid)
 
-    group_keys(guid) ++
-      [
-        {"conversation_messages", conv_id},
-        {"conversation_latest", conv_id},
-        {"conversation_users", conv_id}
-      ]
+    group_keys(guid) ++ conversation_delete_index_keys(conv_id)
   end
 
   defp conversation_delete_keys(conversation_id) do
@@ -481,13 +476,15 @@ defmodule OpenChat.Store.RequestPlan do
     [conversation_id]
     |> Kernel.++(extra_ids)
     |> Enum.uniq()
-    |> Enum.flat_map(fn conv_id ->
-      [
-        {"conversation_messages", conv_id},
-        {"conversation_latest", conv_id},
-        {"conversation_users", conv_id}
-      ]
-    end)
+    |> Enum.flat_map(&conversation_delete_index_keys/1)
+  end
+
+  defp conversation_delete_index_keys(conv_id) do
+    [
+      {:conversation_all, conv_id},
+      {"conversation_latest", conv_id},
+      {"conversation_users", conv_id}
+    ]
   end
 
   defp conversation_index_keys(conversation_id) do

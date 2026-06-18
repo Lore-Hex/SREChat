@@ -694,6 +694,52 @@ defmodule OpenChat.RedisPersistenceTest do
     end)
   end
 
+  test "conversation cleanup refreshes full Redis history before deleting message records",
+       context do
+    with_redis(context, fn ->
+      with_open_chat_env(%{redis_boot_mode: "lazy"}, fn ->
+        conv_id = Conversations.group_conversation_id("cleanup-history-room")
+        now = OpenChat.Time.now()
+        ids = Enum.map(1..5, &to_string/1)
+
+        Enum.each(ids, fn id ->
+          redis_put_json(context, ["messages", id], %{
+            "id" => String.to_integer(id),
+            "sender" => "cleanup-user",
+            "receiver" => "cleanup-history-room",
+            "receiverType" => "group",
+            "type" => "text",
+            "category" => "message",
+            "muid" => "cleanup-muid-#{id}",
+            "data" => %{"text" => "cleanup #{id}", "reactions" => []},
+            "sentAt" => now + String.to_integer(id),
+            "updatedAt" => now + String.to_integer(id),
+            "conversationId" => conv_id
+          })
+
+          redis_put_json(context, ["message_muids", "cleanup-muid-#{id}"], id)
+        end)
+
+        redis_put_json(context, ["conversation_messages", conv_id], ids)
+        redis_put_json(context, ["conversation_users", conv_id], ["cleanup-user"])
+        redis_put_json(context, ["user_conversations", "cleanup-user"], [conv_id])
+
+        assert {:ok, %{"conversationId" => ^conv_id}} = Store.delete_conversation(conv_id)
+
+        assert redis_get_raw(context, redis_key(context, "conversation_messages", conv_id)) == nil
+        assert redis_get_raw(context, redis_key(context, "conversation_users", conv_id)) == nil
+
+        for id <- ids do
+          assert redis_get_raw(context, redis_key(context, "messages", id)) == nil
+          assert redis_get_raw(context, redis_key(context, "reactions", id)) == nil
+
+          assert redis_get_raw(context, redis_key(context, "message_muids", "cleanup-muid-#{id}")) ==
+                   nil
+        end
+      end)
+    end)
+  end
+
   test "targeted secondary-index refreshes load muid and conversation changes", context do
     with_redis(context, fn ->
       assert {:ok, first} =

@@ -255,10 +255,10 @@ defmodule OpenChat.StoreRequestPlanTest do
     assert delete_conversation.mutating?
 
     assert delete_conversation.refresh == [
-             {"conversation_messages", "user_alice_bob"},
+             {:conversation_all, "user_alice_bob"},
              {"conversation_latest", "user_alice_bob"},
              {"conversation_users", "user_alice_bob"},
-             {"conversation_messages", "group_user_alice_bob"},
+             {:conversation_all, "group_user_alice_bob"},
              {"conversation_latest", "group_user_alice_bob"},
              {"conversation_users", "group_user_alice_bob"}
            ]
@@ -277,7 +277,7 @@ defmodule OpenChat.StoreRequestPlanTest do
              {"groups", "room"},
              {"members", "room"},
              {"banned", "room"},
-             {"conversation_messages", "group_room"},
+             {:conversation_all, "group_room"},
              {"conversation_latest", "group_room"},
              {"conversation_users", "group_room"}
            ]

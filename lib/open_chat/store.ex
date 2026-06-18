@@ -999,9 +999,15 @@ defmodule OpenChat.Store do
       )
       |> Enum.uniq()
 
-    {state, ops} = delete_conversation_indexes(state, ids)
+    message_ids =
+      ids
+      |> Enum.flat_map(fn id -> Map.get(state["conversation_messages"], id, []) end)
+      |> Enum.uniq()
 
-    persist_ops(ops)
+    {state, conversation_ops} = delete_conversation_indexes(state, ids)
+    {state, message_ops} = delete_message_records(state, message_ids)
+
+    persist_ops(conversation_ops ++ message_ops)
     {:reply, {:ok, %{"success" => true, "conversationId" => conversation_id}}, state}
   end
 

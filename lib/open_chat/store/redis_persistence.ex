@@ -407,19 +407,22 @@ defmodule OpenChat.Store.RedisPersistence do
   end
 
   defp refresh_records(default_state, state, keys) do
-    {record_keys, counter_keys, bucket_keys, conversation_pages} =
-      Enum.reduce(keys, {[], [], [], []}, fn
-        {:record, bucket, id}, {records, counters, buckets, pages} ->
-          {[{bucket, id} | records], counters, buckets, pages}
+    {record_keys, counter_keys, bucket_keys, conversation_pages, conversation_all} =
+      Enum.reduce(keys, {[], [], [], [], []}, fn
+        {:record, bucket, id}, {records, counters, buckets, pages, all} ->
+          {[{bucket, id} | records], counters, buckets, pages, all}
 
-        {:counter, counter}, {records, counters, buckets, pages} ->
-          {records, [counter | counters], buckets, pages}
+        {:counter, counter}, {records, counters, buckets, pages, all} ->
+          {records, [counter | counters], buckets, pages, all}
 
-        {:bucket, bucket}, {records, counters, buckets, pages} ->
-          {records, counters, [bucket | buckets], pages}
+        {:bucket, bucket}, {records, counters, buckets, pages, all} ->
+          {records, counters, [bucket | buckets], pages, all}
 
-        {:conversation_page, conv_id, params}, {records, counters, buckets, pages} ->
-          {records, counters, buckets, [{conv_id, params} | pages]}
+        {:conversation_page, conv_id, params}, {records, counters, buckets, pages, all} ->
+          {records, counters, buckets, [{conv_id, params} | pages], all}
+
+        {:conversation_all, conv_id}, {records, counters, buckets, pages, all} ->
+          {records, counters, buckets, pages, [conv_id | all]}
 
         _other, acc ->
           acc
@@ -429,15 +432,24 @@ defmodule OpenChat.Store.RedisPersistence do
     bucket_keys = Enum.uniq(bucket_keys)
     conversation_pages = Enum.uniq(conversation_pages)
 
+    conversation_all =
+      conversation_all |> Enum.map(&to_s/1) |> Enum.reject(&(&1 == "")) |> Enum.uniq()
+
     state =
       state
       |> read_records(record_keys)
       |> read_buckets(bucket_keys)
 
+    {state, all_message_keys} = read_full_conversations(state, conversation_all)
     {state, page_message_keys} = read_conversation_pages(state, conversation_pages)
 
     related_keys =
-      Enum.uniq(record_keys ++ bucket_record_keys(state, bucket_keys) ++ page_message_keys)
+      Enum.uniq(
+        record_keys ++
+          bucket_record_keys(state, bucket_keys) ++
+          all_message_keys ++
+          page_message_keys
+      )
 
     state
     |> read_related_token_users(related_keys)
@@ -493,6 +505,36 @@ defmodule OpenChat.Store.RedisPersistence do
       |> Enum.flat_map(fn {conv_id, params} ->
         conversation_page_message_ids(state, conv_id, params)
       end)
+      |> Enum.map(&{"messages", &1})
+      |> Enum.uniq()
+
+    state =
+      state
+      |> read_records(message_keys)
+      |> read_related_reactions(message_keys)
+
+    {state, message_keys}
+  end
+
+  defp read_full_conversations(state, []), do: {state, []}
+
+  defp read_full_conversations(state, conv_ids) do
+    conversation_keys =
+      conv_ids
+      |> Enum.map(&{"conversation_messages", &1})
+      |> Enum.uniq()
+
+    state = read_records(state, conversation_keys)
+
+    message_keys =
+      conv_ids
+      |> Enum.flat_map(fn conv_id ->
+        state
+        |> get_in(["conversation_messages", conv_id])
+        |> List.wrap()
+        |> Enum.map(&to_s/1)
+      end)
+      |> Enum.reject(&(&1 == ""))
       |> Enum.map(&{"messages", &1})
       |> Enum.uniq()
 
@@ -1049,6 +1091,9 @@ defmodule OpenChat.Store.RedisPersistence do
       {:conversation_page, conv_id, params} ->
         normalize_conversation_page_key(conv_id, params)
 
+      {:conversation_all, conv_id} ->
+        normalize_conversation_all_key(conv_id)
+
       {bucket, id} ->
         normalize_record_key(bucket, id)
 
@@ -1086,6 +1131,16 @@ defmodule OpenChat.Store.RedisPersistence do
       []
     else
       [{:conversation_page, conv_id, stringify_keys(params || %{})}]
+    end
+  end
+
+  defp normalize_conversation_all_key(conv_id) do
+    conv_id = to_s(conv_id)
+
+    if conv_id == "" do
+      []
+    else
+      [{:conversation_all, conv_id}]
     end
   end
 
