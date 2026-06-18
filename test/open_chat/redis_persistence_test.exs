@@ -653,6 +653,47 @@ defmodule OpenChat.RedisPersistenceTest do
     end)
   end
 
+  test "message history refresh loads a bounded Redis page instead of a whole conversation",
+       context do
+    with_redis(context, fn ->
+      with_open_chat_env(%{redis_conversation_refresh_limit: 20}, fn ->
+        conv_id = Conversations.user_conversation_id("bounded-a", "bounded-b")
+        now = OpenChat.Time.now()
+        ids = Enum.map(1..80, &to_string/1)
+
+        Enum.each(ids, fn id ->
+          redis_put_json(context, ["messages", id], %{
+            "id" => String.to_integer(id),
+            "sender" => "bounded-a",
+            "receiver" => "bounded-b",
+            "receiverType" => "user",
+            "type" => "text",
+            "category" => "message",
+            "data" => %{"text" => "bounded #{id}", "reactions" => []},
+            "sentAt" => now + String.to_integer(id),
+            "updatedAt" => now + String.to_integer(id),
+            "conversationId" => conv_id
+          })
+        end)
+
+        redis_put_json(context, ["conversation_messages", conv_id], ids)
+
+        assert {:ok, page} =
+                 Store.messages_for_user("bounded-a", "bounded-b", %{"limit" => 10})
+
+        assert Enum.map(page, &to_string(&1["id"])) == Enum.map(80..71//-1, &to_string/1)
+
+        cached_message_ids = Store |> :sys.get_state() |> Map.fetch!("messages") |> Map.keys()
+
+        assert "80" in cached_message_ids
+        assert "51" in cached_message_ids
+        refute "50" in cached_message_ids
+        refute "1" in cached_message_ids
+        assert length(cached_message_ids) == 30
+      end)
+    end)
+  end
+
   test "targeted secondary-index refreshes load muid and conversation changes", context do
     with_redis(context, fn ->
       assert {:ok, first} =

@@ -9,6 +9,7 @@ DESIRED_COUNT="${OPENCHAT_DESIRED_COUNT:-3}"
 MIN_CAPACITY="${OPENCHAT_MIN_CAPACITY:-3}"
 MAX_CAPACITY="${OPENCHAT_MAX_CAPACITY:-8}"
 TASK_MEMORY="${OPENCHAT_TASK_MEMORY:-4096}"
+REDIS_NODE_TYPE="${OPENCHAT_REDIS_NODE_TYPE:-cache.t4g.medium}"
 WEBSOCKET_HEARTBEAT_MS="${OPENCHAT_WEBSOCKET_HEARTBEAT_MS:-25000}"
 
 STAGING_PROFILE="${OPENCHAT_STAGING_PROFILE:-tt-staging}"
@@ -245,6 +246,7 @@ deploy_env() {
       MinCapacity="$MIN_CAPACITY" \
       MaxCapacity="$MAX_CAPACITY" \
       TaskMemory="$TASK_MEMORY" \
+      RedisNodeType="$REDIS_NODE_TYPE" \
       WebsocketHeartbeatMs="$WEBSOCKET_HEARTBEAT_MS"
 
   ensure_extension_routing "$profile" "$env_name" "$hosted_zone_id" "$extension_domain" "$extension_certificate_arn"

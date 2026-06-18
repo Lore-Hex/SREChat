@@ -407,16 +407,19 @@ defmodule OpenChat.Store.RedisPersistence do
   end
 
   defp refresh_records(default_state, state, keys) do
-    {record_keys, counter_keys, bucket_keys} =
-      Enum.reduce(keys, {[], [], []}, fn
-        {:record, bucket, id}, {records, counters, buckets} ->
-          {[{bucket, id} | records], counters, buckets}
+    {record_keys, counter_keys, bucket_keys, conversation_pages} =
+      Enum.reduce(keys, {[], [], [], []}, fn
+        {:record, bucket, id}, {records, counters, buckets, pages} ->
+          {[{bucket, id} | records], counters, buckets, pages}
 
-        {:counter, counter}, {records, counters, buckets} ->
-          {records, [counter | counters], buckets}
+        {:counter, counter}, {records, counters, buckets, pages} ->
+          {records, [counter | counters], buckets, pages}
 
-        {:bucket, bucket}, {records, counters, buckets} ->
-          {records, counters, [bucket | buckets]}
+        {:bucket, bucket}, {records, counters, buckets, pages} ->
+          {records, counters, [bucket | buckets], pages}
+
+        {:conversation_page, conv_id, params}, {records, counters, buckets, pages} ->
+          {records, counters, buckets, [{conv_id, params} | pages]}
 
         _other, acc ->
           acc
@@ -424,13 +427,17 @@ defmodule OpenChat.Store.RedisPersistence do
 
     record_keys = Enum.uniq(record_keys)
     bucket_keys = Enum.uniq(bucket_keys)
+    conversation_pages = Enum.uniq(conversation_pages)
 
     state =
       state
       |> read_records(record_keys)
       |> read_buckets(bucket_keys)
 
-    related_keys = Enum.uniq(record_keys ++ bucket_record_keys(state, bucket_keys))
+    {state, page_message_keys} = read_conversation_pages(state, conversation_pages)
+
+    related_keys =
+      Enum.uniq(record_keys ++ bucket_record_keys(state, bucket_keys) ++ page_message_keys)
 
     state
     |> read_related_token_users(related_keys)
@@ -470,6 +477,33 @@ defmodule OpenChat.Store.RedisPersistence do
     end)
   end
 
+  defp read_conversation_pages(state, []), do: {state, []}
+
+  defp read_conversation_pages(state, pages) do
+    conversation_keys =
+      pages
+      |> Enum.map(fn {conv_id, _params} -> {"conversation_messages", to_s(conv_id)} end)
+      |> Enum.reject(fn {_bucket, id} -> id == "" end)
+      |> Enum.uniq()
+
+    state = read_records(state, conversation_keys)
+
+    message_keys =
+      pages
+      |> Enum.flat_map(fn {conv_id, params} ->
+        conversation_page_message_ids(state, conv_id, params)
+      end)
+      |> Enum.map(&{"messages", &1})
+      |> Enum.uniq()
+
+    state =
+      state
+      |> read_records(message_keys)
+      |> read_related_reactions(message_keys)
+
+    {state, message_keys}
+  end
+
   defp bucket_record_keys(state, buckets) do
     buckets
     |> Enum.flat_map(fn bucket ->
@@ -485,7 +519,6 @@ defmodule OpenChat.Store.RedisPersistence do
       record_keys
       |> Enum.filter(fn {bucket, _id} ->
         bucket in [
-          "conversation_messages",
           "conversation_latest",
           "thread_messages",
           "message_muids"
@@ -501,6 +534,97 @@ defmodule OpenChat.Store.RedisPersistence do
     |> read_records(message_keys)
     |> read_related_reactions(message_keys)
     |> read_related_message_participants(message_keys)
+  end
+
+  defp conversation_page_message_ids(state, conv_id, params) do
+    ids =
+      state
+      |> get_in(["conversation_messages", to_s(conv_id)])
+      |> List.wrap()
+      |> Enum.map(&to_s/1)
+      |> Enum.reject(&(&1 == ""))
+
+    window = conversation_page_window(params)
+    cursor_id = conversation_cursor_id(params)
+    affix = conversation_cursor_affix(params)
+
+    case cursor_index(ids, cursor_id) do
+      nil ->
+        take_recent(ids, window)
+
+      index when affix == "append" ->
+        ids
+        |> Enum.drop(index + 1)
+        |> Enum.take(window)
+
+      index ->
+        start = max(index - window, 0)
+
+        ids
+        |> Enum.slice(start, index - start)
+    end
+  end
+
+  defp conversation_page_window(params) do
+    params = stringify_keys(params || %{})
+    requested = to_int(params["per_page"] || params["limit"] || 30)
+    max(Config.redis_conversation_refresh_limit(), max(requested, 1) * 3)
+  end
+
+  defp conversation_cursor_id(params) do
+    params = stringify_keys(params || %{})
+
+    after_id = params["afterId"] || params["after_id"] || params["fromId"] || params["from_id"]
+    before_id = params["beforeId"] || params["before_id"]
+
+    explicit_id =
+      params["id"] || params["messageId"] || params["message_id"] || params["msgId"] ||
+        params["msg_id"] || after_id || before_id || params["cursorId"] || params["cursor_id"]
+
+    cond do
+      to_s(explicit_id) != "" ->
+        to_s(explicit_id)
+
+      params["cursorField"] == "id" and to_s(params["cursorValue"]) != "" ->
+        to_s(params["cursorValue"])
+
+      params["cursor_field"] == "id" and to_s(params["cursor_value"]) != "" ->
+        to_s(params["cursor_value"])
+
+      true ->
+        nil
+    end
+  end
+
+  defp conversation_cursor_affix(params) do
+    params = stringify_keys(params || %{})
+
+    cond do
+      params["cursorAffix"] in ["append", "prepend"] ->
+        params["cursorAffix"]
+
+      params["affix"] in ["append", "prepend"] ->
+        params["affix"]
+
+      not blank?(params["afterId"] || params["after_id"] || params["fromId"] || params["from_id"]) ->
+        "append"
+
+      not blank?(params["fromTimestamp"] || params["fromTimeStamp"] || params["from_timestamp"]) ->
+        "append"
+
+      true ->
+        "prepend"
+    end
+  end
+
+  defp cursor_index(_ids, nil), do: nil
+  defp cursor_index(ids, cursor_id), do: Enum.find_index(ids, &(&1 == to_s(cursor_id)))
+
+  defp take_recent(ids, window) do
+    ids
+    |> Enum.reverse()
+    |> Enum.take(window)
+    |> Enum.reverse()
   end
 
   defp read_related_reactions(state, message_keys) do
@@ -922,6 +1046,9 @@ defmodule OpenChat.Store.RedisPersistence do
       {:record, bucket, id} ->
         normalize_record_key(bucket, id)
 
+      {:conversation_page, conv_id, params} ->
+        normalize_conversation_page_key(conv_id, params)
+
       {bucket, id} ->
         normalize_record_key(bucket, id)
 
@@ -949,6 +1076,16 @@ defmodule OpenChat.Store.RedisPersistence do
       [{:bucket, bucket}]
     else
       []
+    end
+  end
+
+  defp normalize_conversation_page_key(conv_id, params) do
+    conv_id = to_s(conv_id)
+
+    if conv_id == "" do
+      []
+    else
+      [{:conversation_page, conv_id, stringify_keys(params || %{})}]
     end
   end
 
@@ -995,4 +1132,15 @@ defmodule OpenChat.Store.RedisPersistence do
   end
 
   defp to_int(value), do: value |> to_s() |> to_int()
+
+  defp stringify_keys(%{__struct__: _} = struct), do: struct
+
+  defp stringify_keys(map) when is_map(map) do
+    Map.new(map, fn {k, v} -> {to_s(k), stringify_keys(v)} end)
+  end
+
+  defp stringify_keys(list) when is_list(list), do: Enum.map(list, &stringify_keys/1)
+  defp stringify_keys(other), do: other
+
+  defp blank?(value), do: value in [nil, "", false]
 end

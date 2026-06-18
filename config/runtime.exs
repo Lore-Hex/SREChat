@@ -12,6 +12,7 @@ default_group_message_retention_days = 30
 default_group_unread_fanout_limit = 1_000
 default_group_presence_ttl_seconds = 1_800
 default_group_max_presence = 5_000
+default_redis_conversation_refresh_limit = 150
 default_dm_history_connect_grace_ms = if config_env() == :test, do: 0, else: 600
 default_websocket_heartbeat_ms = 25_000
 default_media_storage = if config_env() == :prod, do: "s3", else: "local"
@@ -96,6 +97,8 @@ config :open_chat,
   group_presence_ttl_seconds:
     integer_env.("GROUP_PRESENCE_TTL_SECONDS", default_group_presence_ttl_seconds),
   group_max_presence: integer_env.("GROUP_MAX_PRESENCE", default_group_max_presence),
+  redis_conversation_refresh_limit:
+    integer_env.("REDIS_CONVERSATION_REFRESH_LIMIT", default_redis_conversation_refresh_limit),
   dm_history_connect_grace_ms:
     non_negative_integer_env.("DM_HISTORY_CONNECT_GRACE_MS", default_dm_history_connect_grace_ms),
   websocket_heartbeat_ms:

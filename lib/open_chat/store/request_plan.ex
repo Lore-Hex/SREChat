@@ -144,13 +144,17 @@ defmodule OpenChat.Store.RequestPlan do
   def build({:find_message_by_muid, muid}), do: read([{"message_muids", muid}])
   def build({:find_message_by_muid_for, _uid, muid, _opts}), do: read([{"message_muids", muid}])
 
-  def build({:messages_for_user, uid, peer_uid, _params}),
-    do: read([{"conversation_messages", Conversations.user_conversation_id(uid, peer_uid)}])
+  def build({:messages_for_user, uid, peer_uid, params}),
+    do:
+      read([
+        {:conversation_page, Conversations.user_conversation_id(uid, peer_uid), params}
+      ])
 
-  def build({:messages_for_group, _uid, guid, _params}),
+  def build({:messages_for_group, _uid, guid, params}),
     do:
       read(
-        group_keys(guid) ++ [{"conversation_messages", Conversations.group_conversation_id(guid)}]
+        group_keys(guid) ++
+          [{:conversation_page, Conversations.group_conversation_id(guid), params}]
       )
 
   def build({:messages_for_thread, _uid, parent_id, _params}),
