@@ -9,7 +9,7 @@ defmodule OpenChat.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
-      preferred_cli_env: [test: :test],
+      preferred_cli_env: [test: :test, "test.load": :test],
       elixirc_paths: elixirc_paths(Mix.env())
     ]
   end
@@ -37,7 +37,7 @@ defmodule OpenChat.MixProject do
   defp aliases do
     [
       test: ["test --trace"],
-      "test.load": ["test --only load --trace"]
+      "test.load": ["test --include load --trace test/open_chat/load_perf_test.exs"]
     ]
   end
 end

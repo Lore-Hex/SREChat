@@ -686,10 +686,10 @@ defmodule OpenChat.RedisPersistenceTest do
         cached_message_ids = Store |> :sys.get_state() |> Map.fetch!("messages") |> Map.keys()
 
         assert "80" in cached_message_ids
-        assert "51" in cached_message_ids
-        refute "50" in cached_message_ids
+        assert "61" in cached_message_ids
+        refute "60" in cached_message_ids
         refute "1" in cached_message_ids
-        assert length(cached_message_ids) == 30
+        assert length(cached_message_ids) == 20
       end)
     end)
   end

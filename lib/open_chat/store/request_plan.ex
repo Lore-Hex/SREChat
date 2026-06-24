@@ -157,6 +157,10 @@ defmodule OpenChat.Store.RequestPlan do
           [{:conversation_page, Conversations.group_conversation_id(guid), params}]
       )
 
+  def build({request, token, _id, _params})
+      when request in [:messages_for_user_token, :messages_for_group_token],
+      do: read(token_refresh_keys(token))
+
   def build({:messages_for_thread, _uid, parent_id, _params}),
     do: read([{"messages", parent_id}, {"thread_messages", parent_id}])
 
@@ -237,6 +241,29 @@ defmodule OpenChat.Store.RequestPlan do
     |> AuthTokens.lookup_tokens()
     |> Enum.flat_map(&auth_user_refresh_keys(&1, state))
     |> Enum.uniq()
+  end
+
+  def followup_refresh({:messages_for_user_token, token, peer_uid, params}, state) do
+    case authenticated_uid(token, state) do
+      nil ->
+        []
+
+      uid ->
+        user_record_keys(uid) ++
+          [{:conversation_page, Conversations.user_conversation_id(uid, peer_uid), params}]
+    end
+  end
+
+  def followup_refresh({:messages_for_group_token, token, guid, params}, state) do
+    case authenticated_uid(token, state) do
+      nil ->
+        []
+
+      uid ->
+        user_record_keys(uid) ++
+          group_keys(guid) ++
+          [{:conversation_page, Conversations.group_conversation_id(guid), params}]
+    end
   end
 
   def followup_refresh({:send_message, sender_uid, params, _uploads, _opts}, state) do
@@ -422,6 +449,17 @@ defmodule OpenChat.Store.RequestPlan do
       {:ok, uid} -> [{"users", uid}, {"tokens", token}]
       :error -> [{"tokens", token}]
     end
+  end
+
+  defp authenticated_uid(token, state) do
+    token
+    |> AuthTokens.lookup_tokens()
+    |> Enum.find_value(fn candidate ->
+      case AuthTokens.uid_token(candidate) do
+        {:ok, uid} -> uid
+        :error -> get_in(state, ["tokens", candidate])
+      end
+    end)
   end
 
   defp auth_user_refresh_keys(token, state) do

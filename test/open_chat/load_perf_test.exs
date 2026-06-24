@@ -336,6 +336,79 @@ defmodule OpenChat.LoadPerfTest do
     assert_http_user_history_recorded("uid:http-concurrent-b", "http-concurrent-a", sent)
   end
 
+  test "HTTP auth-token history load preserves visibility under concurrent reads" do
+    with_redis(fn _context ->
+      messages = env_int("OPENCHAT_LOAD_HTTP_AUTH_MESSAGES", 300)
+      reads = env_int("OPENCHAT_LOAD_HTTP_AUTH_READS", 120)
+      concurrency = env_int("OPENCHAT_LOAD_HTTP_AUTH_READ_CONCURRENCY", 24)
+      min_send_rate = env_int("OPENCHAT_MIN_HTTP_AUTH_MSG_PER_SEC", 20)
+      min_read_rate = env_int("OPENCHAT_MIN_HTTP_AUTH_READ_PER_SEC", 20)
+      max_read_p95_ms = env_int("OPENCHAT_MAX_HTTP_AUTH_HISTORY_P95_MS", 750)
+
+      sender = "http-auth-load-a"
+      receiver = "http-auth-load-b"
+      {:ok, _sender} = Store.upsert_user(%{"uid" => sender, "name" => sender})
+      {:ok, _receiver} = Store.upsert_user(%{"uid" => receiver, "name" => receiver})
+      {:ok, %{"authToken" => sender_token}} = Store.create_auth_token(sender)
+      {:ok, %{"authToken" => receiver_token}} = Store.create_auth_token(receiver)
+
+      {sent, send_seconds} =
+        timed(fn ->
+          Enum.map(1..messages, fn i ->
+            body = %{
+              "receiver" => receiver,
+              "receiverType" => "user",
+              "type" => "text",
+              "data" => %{"text" => "http auth #{i}"}
+            }
+
+            {response, _ms} =
+              timed_conn(fn ->
+                conn(:post, "/v3.0/messages", Jason.encode!(body))
+                |> Plug.Conn.put_req_header("content-type", "application/json")
+                |> Plug.Conn.put_req_header("authtoken", sender_token)
+                |> Endpoint.call([])
+              end)
+
+            assert response.status == 201
+            get_in(Jason.decode!(response.resp_body), ["data"])
+          end)
+        end)
+
+      expected_ids =
+        sent
+        |> Enum.take(-100)
+        |> Enum.map(&to_s(&1["id"]))
+        |> MapSet.new()
+
+      {read_pages, read_seconds} =
+        timed(fn ->
+          concurrent_map(1..reads, concurrency, fn _i ->
+            {response, ms} =
+              timed_conn(fn ->
+                conn(:get, "/v3.0/users/#{sender}/messages?limit=100")
+                |> Plug.Conn.put_req_header("authtoken", receiver_token)
+                |> Endpoint.call([])
+              end)
+
+            assert response.status == 200
+            page = get_in(Jason.decode!(response.resp_body), ["data"])
+            ids = page |> Enum.map(&to_s(&1["id"])) |> MapSet.new()
+            assert MapSet.subset?(expected_ids, ids)
+            {length(page), ms}
+          end)
+        end)
+
+      read_latencies_ms = Enum.map(read_pages, fn {_count, ms} -> ms end)
+      read_p95_ms = percentile(read_latencies_ms, 0.95)
+
+      assert_rate("HTTP auth-token messages", messages, send_seconds, min_send_rate)
+      assert_rate("HTTP auth-token history reads", reads, read_seconds, min_read_rate)
+      IO.puts("HTTP auth-token history p95: #{Float.round(read_p95_ms, 1)}ms")
+      assert read_p95_ms <= max_read_p95_ms
+    end)
+  end
+
   test "concurrent reaction load preserves rows, summaries, extension metadata, and history" do
     users = env_int("OPENCHAT_LOAD_REACTION_USERS", 36)
     messages = env_int("OPENCHAT_LOAD_REACTION_MESSAGES", 30)
@@ -994,7 +1067,12 @@ defmodule OpenChat.LoadPerfTest do
     end)
   end
 
-  defp fetch_all_pages(fetch_page, cursor \\ nil, acc \\ []) do
+  defp fetch_all_pages(fetch_page, cursor \\ nil, acc \\ [], seen_cursors \\ MapSet.new()) do
+    if cursor do
+      refute MapSet.member?(seen_cursors, cursor),
+             "pagination cursor did not advance past #{inspect(cursor)}"
+    end
+
     params =
       %{"limit" => 100, "cursorField" => "id"}
       |> maybe_put("cursorValue", cursor)
@@ -1006,8 +1084,12 @@ defmodule OpenChat.LoadPerfTest do
     if length(page) < 100 do
       acc
     else
-      next_cursor = page |> List.last() |> Map.fetch!("id") |> to_s()
-      fetch_all_pages(fetch_page, next_cursor, acc)
+      next_cursor = page |> List.first() |> Map.fetch!("id") |> to_s()
+
+      refute next_cursor == cursor,
+             "pagination returned the cursor message again without advancing"
+
+      fetch_all_pages(fetch_page, next_cursor, acc, MapSet.put(seen_cursors, cursor))
     end
   end
 
@@ -1078,6 +1160,17 @@ defmodule OpenChat.LoadPerfTest do
   defp timed(fun) do
     {microseconds, result} = :timer.tc(fun)
     {result, microseconds / 1_000_000}
+  end
+
+  defp timed_conn(fun) do
+    {microseconds, result} = :timer.tc(fun)
+    {result, microseconds / 1_000}
+  end
+
+  defp percentile(values, percentile) do
+    sorted = Enum.sort(values)
+    index = max(ceil(length(sorted) * percentile) - 1, 0)
+    Enum.at(sorted, index, 0.0)
   end
 
   defp assert_rate(label, count, seconds, minimum) do

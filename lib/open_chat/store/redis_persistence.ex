@@ -610,7 +610,7 @@ defmodule OpenChat.Store.RedisPersistence do
   defp conversation_page_window(params) do
     params = stringify_keys(params || %{})
     requested = to_int(params["per_page"] || params["limit"] || 30)
-    max(Config.redis_conversation_refresh_limit(), max(requested, 1) * 3)
+    min(Config.redis_conversation_refresh_limit(), max(requested, 1) * 3)
   end
 
   defp conversation_cursor_id(params) do

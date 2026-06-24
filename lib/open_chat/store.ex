@@ -143,6 +143,12 @@ defmodule OpenChat.Store do
   def messages_for_group(uid, guid, params \\ %{}),
     do: call({:messages_for_group, to_s(uid), to_s(guid), params})
 
+  def messages_for_user_token(token, peer_uid, params \\ %{}),
+    do: call({:messages_for_user_token, token, to_s(peer_uid), params})
+
+  def messages_for_group_token(token, guid, params \\ %{}),
+    do: call({:messages_for_group_token, token, to_s(guid), params})
+
   def messages_for_thread(uid, parent_id, params \\ %{}),
     do: call({:messages_for_thread, to_s(uid), to_s(parent_id), params})
 
@@ -1066,6 +1072,24 @@ defmodule OpenChat.Store do
     {:reply, {:ok, messages}, state}
   end
 
+  def handle_call({:messages_for_user_token, token, peer_uid, params}, _from, state) do
+    case authenticate_in_state(state, token) do
+      {{:ok, user}, state} ->
+        uid = user["uid"]
+        conv_id = user_conversation_id(uid, peer_uid)
+
+        messages =
+          state
+          |> ConversationView.messages(conv_id, params)
+          |> hydrate_messages_for_viewer(state, uid)
+
+        {:reply, {:ok, messages}, state}
+
+      {error, state} ->
+        {:reply, error, state}
+    end
+  end
+
   def handle_call({:messages_for_group, uid, guid, params}, _from, state) do
     if GroupState.read_allowed?(state, guid, uid) do
       conv_id = group_conversation_id(guid)
@@ -1078,6 +1102,29 @@ defmodule OpenChat.Store do
       {:reply, {:ok, messages}, state}
     else
       {:reply, {:error, Errors.not_member(guid)}, state}
+    end
+  end
+
+  def handle_call({:messages_for_group_token, token, guid, params}, _from, state) do
+    case authenticate_in_state(state, token) do
+      {{:ok, user}, state} ->
+        uid = user["uid"]
+
+        if GroupState.read_allowed?(state, guid, uid) do
+          conv_id = group_conversation_id(guid)
+
+          messages =
+            state
+            |> ConversationView.messages(conv_id, params)
+            |> hydrate_messages_for_viewer(state, uid)
+
+          {:reply, {:ok, messages}, state}
+        else
+          {:reply, {:error, Errors.not_member(guid)}, state}
+        end
+
+      {error, state} ->
+        {:reply, error, state}
     end
   end
 

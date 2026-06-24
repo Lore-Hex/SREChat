@@ -300,25 +300,31 @@ defmodule OpenChatWeb.ApiRouter do
   end
 
   get "/users/:list_id/messages" do
-    with_user(conn, fn conn, user, _token ->
-      case Store.messages_for_user(user["uid"], list_id, conn.query_params) do
-        {:ok, messages} ->
-          wait_for_dm_history_connect_grace()
-          messages_response(conn, messages, conn.query_params)
+    token = Auth.token(conn)
 
-        {:error, e} ->
-          JSON.error(conn, e, 400)
-      end
-    end)
+    case Store.messages_for_user_token(token, list_id, conn.query_params) do
+      {:ok, messages} ->
+        wait_for_dm_history_connect_grace()
+        messages_response(conn, messages, conn.query_params)
+
+      {:error, e} ->
+        JSON.error(conn, e, 401)
+    end
   end
 
   get "/groups/:list_id/messages" do
-    with_user(conn, fn conn, user, _token ->
-      case Store.messages_for_group(user["uid"], list_id, conn.query_params) do
-        {:ok, messages} -> messages_response(conn, messages, conn.query_params)
-        {:error, e} -> JSON.error(conn, e, 400)
-      end
-    end)
+    token = Auth.token(conn)
+
+    case Store.messages_for_group_token(token, list_id, conn.query_params) do
+      {:ok, messages} ->
+        messages_response(conn, messages, conn.query_params)
+
+      {:error, %{"code" => "ERR_NO_AUTH"} = e} ->
+        JSON.error(conn, e, 401)
+
+      {:error, e} ->
+        JSON.error(conn, e, 400)
+    end
   end
 
   get "/messages/:list_id/thread" do
@@ -366,34 +372,37 @@ defmodule OpenChatWeb.ApiRouter do
   end
 
   get "/messages" do
-    with_user(conn, fn conn, user, _token ->
-      params = Map.merge(conn.query_params, conn.params)
+    params = Map.merge(conn.query_params, conn.params)
 
-      cond do
-        truthy?(params["unread"]) and truthy?(params["count"]) ->
-          {:ok, rows} = Store.unread_counts(user["uid"], params)
-          JSON.ok(conn, rows)
+    cond do
+      legacy_direct_messages_query?(params) ->
+        peer_uid = params["sender"] || params["receiver"] || params["uid"]
 
-        legacy_direct_messages_query?(params) ->
-          peer_uid = params["sender"] || params["receiver"] || params["uid"]
+        case Store.messages_for_user_token(Auth.token(conn), peer_uid, params) do
+          {:ok, messages} -> messages_response(conn, messages, params)
+          {:error, %{"code" => "ERR_NO_AUTH"} = e} -> JSON.error(conn, e, 401)
+          {:error, e} -> JSON.error(conn, e, 400)
+        end
 
-          case Store.messages_for_user(user["uid"], peer_uid, params) do
-            {:ok, messages} -> messages_response(conn, messages, params)
-            {:error, e} -> JSON.error(conn, e, 400)
+      legacy_group_messages_query?(params) ->
+        guid = params["receiver"] || params["guid"] || params["group"]
+
+        case Store.messages_for_group_token(Auth.token(conn), guid, params) do
+          {:ok, messages} -> messages_response(conn, messages, params)
+          {:error, %{"code" => "ERR_NO_AUTH"} = e} -> JSON.error(conn, e, 401)
+          {:error, e} -> JSON.error(conn, e, 400)
+        end
+
+      true ->
+        with_user(conn, fn conn, user, _token ->
+          if truthy?(params["unread"]) and truthy?(params["count"]) do
+            {:ok, rows} = Store.unread_counts(user["uid"], params)
+            JSON.ok(conn, rows)
+          else
+            JSON.ok(conn, [])
           end
-
-        legacy_group_messages_query?(params) ->
-          guid = params["receiver"] || params["guid"] || params["group"]
-
-          case Store.messages_for_group(user["uid"], guid, params) do
-            {:ok, messages} -> messages_response(conn, messages, params)
-            {:error, e} -> JSON.error(conn, e, 400)
-          end
-
-        true ->
-          JSON.ok(conn, [])
-      end
-    end)
+        end)
+    end
   end
 
   post "/messages" do
