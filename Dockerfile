@@ -1,7 +1,7 @@
 FROM public.ecr.aws/docker/library/elixir:1.17-otp-27-slim
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential git openssl ca-certificates \
+RUN apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends build-essential git openssl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 ENV MIX_ENV=prod
