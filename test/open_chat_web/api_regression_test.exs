@@ -265,6 +265,59 @@ defmodule OpenChatWeb.ApiRegressionTest do
     assert json(conn)["error"]["code"] == "ERR_NOT_A_MEMBER"
   end
 
+  test "sdk joinGroup does not demote scoped admins or moderators" do
+    room = "api-join-preserves-scope"
+
+    assert admin_conn(:post, "/v3/groups", %{
+             "guid" => room,
+             "type" => "public",
+             "ownerUid" => "room-owner"
+           }).status == 201
+
+    assert admin_conn(:post, "/v3/groups/#{room}/members", %{
+             "admins" => ["room-owner", "room-admin"],
+             "moderators" => ["room-mod"],
+             "participants" => ["alice"]
+           }).status == 200
+
+    for uid <- ["room-owner", "room-admin", "room-mod"] do
+      assert auth_conn(:post, "/v3.0/groups/#{room}/members", %{}, "uid:#{uid}").status == 200
+    end
+
+    conn = admin_conn(:get, "/v3/groups/#{room}/members?scope=admin,moderator")
+    scopes = Map.new(json(conn)["data"], &{&1["uid"], &1["scope"]})
+
+    assert scopes["room-owner"] == "admin"
+    assert scopes["room-admin"] == "admin"
+    assert scopes["room-mod"] == "moderator"
+
+    conn =
+      auth_conn(:post, "/v3.0/messages", %{
+        "receiver" => room,
+        "receiverType" => "group",
+        "data" => %{"text" => "delete me"}
+      })
+
+    assert conn.status == 201
+    message = json(conn)["data"]
+
+    assert auth_conn(:delete, "/v3.0/messages/#{message["id"]}", %{}, "uid:room-owner").status ==
+             200
+
+    conn =
+      auth_conn(:post, "/v3.0/messages", %{
+        "receiver" => room,
+        "receiverType" => "group",
+        "data" => %{"text" => "delete me too"}
+      })
+
+    assert conn.status == 201
+    message = json(conn)["data"]
+
+    assert auth_conn(:delete, "/v3.0/messages/#{message["id"]}", %{}, "uid:room-mod").status ==
+             200
+  end
+
   test "text message metadata is exposed for the Hangout history converter" do
     room = "api-metadata-room"
 

@@ -565,6 +565,15 @@ defmodule OpenChat.Store do
           GroupState.member_limit_reached?(state, guid, uid) ->
             {:reply, {:error, GroupState.member_limit_error(guid)}, state}
 
+          GroupState.member?(state, guid, uid) ->
+            group =
+              state["groups"][guid]
+              |> Map.put("hasJoined", true)
+              |> GroupState.with_members_count(state)
+
+            persist_ops(PersistenceOps.user(state, [uid]))
+            {:reply, {:ok, group}, state}
+
           true ->
             {_user, state} = UserState.ensure(state, uid)
             state = GroupState.add_member(state, guid, uid, "participant")

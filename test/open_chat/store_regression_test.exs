@@ -203,6 +203,32 @@ defmodule OpenChat.StoreRegressionTest do
     assert Enum.any?(groups, &(&1["guid"] == "scoped-room"))
   end
 
+  test "sdk join preserves elevated group member scopes" do
+    guid = "join-preserves-scope-room"
+
+    assert {:ok, _group} =
+             Store.upsert_group(%{"guid" => guid, "type" => "public", "ownerUid" => "owner"})
+
+    assert {:ok, _data} =
+             Store.set_group_scopes(guid, %{
+               "admins" => ["owner", "admin"],
+               "moderators" => ["mod"],
+               "participants" => ["alice"]
+             })
+
+    assert {:ok, _joined_owner} = Store.join_group(guid, "owner", %{})
+    assert {:ok, _joined_admin} = Store.join_group(guid, "admin", %{})
+    assert {:ok, _joined_mod} = Store.join_group(guid, "mod", %{})
+
+    assert {:ok, members} = Store.group_members(guid)
+    scopes = Map.new(members, &{&1["uid"], &1["scope"]})
+
+    assert scopes["owner"] == "admin"
+    assert scopes["admin"] == "admin"
+    assert scopes["mod"] == "moderator"
+    assert scopes["alice"] == "participant"
+  end
+
   test "public group sends auto-join the sender when SDK join was missed" do
     guid = "auto-join-send-room"
     assert {:ok, _group} = Store.upsert_group(%{"guid" => guid, "type" => "public"})

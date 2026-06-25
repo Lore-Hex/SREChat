@@ -133,6 +133,40 @@ defmodule OpenChat.RedisPersistenceTest do
     end)
   end
 
+  test "sdk group joins preserve Redis-backed elevated scopes", context do
+    with_redis(context, fn ->
+      guid = "redis-join-preserves-scope-room"
+
+      assert {:ok, _group} =
+               Store.upsert_group(%{"guid" => guid, "type" => "public", "ownerUid" => "owner"})
+
+      assert {:ok, _data} =
+               Store.set_group_scopes(guid, %{
+                 "admins" => ["owner", "admin"],
+                 "moderators" => ["mod"],
+                 "participants" => ["alice"]
+               })
+
+      assert {:ok, _joined_owner} = Store.join_group(guid, "owner", %{})
+      assert {:ok, _joined_admin} = Store.join_group(guid, "admin", %{})
+      assert {:ok, _joined_mod} = Store.join_group(guid, "mod", %{})
+
+      assert redis_json(context, "members", guid)["owner"]["scope"] == "admin"
+      assert redis_json(context, "members", guid)["admin"]["scope"] == "admin"
+      assert redis_json(context, "members", guid)["mod"]["scope"] == "moderator"
+
+      restart_store!()
+
+      assert {:ok, members} = Store.group_members(guid)
+      scopes = Map.new(members, &{&1["uid"], &1["scope"]})
+
+      assert scopes["owner"] == "admin"
+      assert scopes["admin"] == "admin"
+      assert scopes["mod"] == "moderator"
+      assert scopes["alice"] == "participant"
+    end)
+  end
+
   test "uid-token auth persists generated users and token mappings per key", context do
     with_redis(context, fn ->
       assert {:ok, me} = Store.me("uid:redis-uid-token-user")
