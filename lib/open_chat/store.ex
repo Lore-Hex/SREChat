@@ -200,12 +200,17 @@ defmodule OpenChat.Store do
 
     try do
       result =
-        if plan.mutating? do
-          RedisPersistence.with_locks(plan.locks, fn ->
-            GenServer.call(server, {:locked_call, request, plan.refresh}, :infinity)
-          end)
-        else
-          GenServer.call(server, {:cache_call, request, plan.refresh}, :infinity)
+        cond do
+          plan.mutating? ->
+            RedisPersistence.with_locks(plan.locks, fn ->
+              GenServer.call(server, {:locked_call, request, plan.refresh}, :infinity)
+            end)
+
+          direct_redis_read?(server) ->
+            direct_cache_call(request, plan.refresh)
+
+          true ->
+            GenServer.call(server, {:cache_call, request, plan.refresh}, :infinity)
         end
 
       duration_ms = Observability.duration_ms(start)
@@ -230,6 +235,17 @@ defmodule OpenChat.Store do
         duration_ms = Observability.duration_ms(start)
         Observability.record_store_call(request_name, plan.mutating?, duration_ms, "exit")
         exit(reason)
+    end
+  end
+
+  defp direct_redis_read?(server),
+    do: server == __MODULE__ and RedisPersistence.enabled?()
+
+  defp direct_cache_call(request, refresh) do
+    state = refresh_request_state(request, State.default(), refresh)
+
+    case handle_call(request, self(), state) do
+      {:reply, reply, _state} -> reply
     end
   end
 

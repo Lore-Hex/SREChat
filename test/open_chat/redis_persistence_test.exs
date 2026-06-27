@@ -687,7 +687,7 @@ defmodule OpenChat.RedisPersistenceTest do
     end)
   end
 
-  test "message history refresh loads a bounded Redis page instead of a whole conversation",
+  test "message history reads load a bounded Redis page without warming the Store mailbox",
        context do
     with_redis(context, fn ->
       with_open_chat_env(%{redis_conversation_refresh_limit: 20}, fn ->
@@ -719,11 +719,7 @@ defmodule OpenChat.RedisPersistenceTest do
 
         cached_message_ids = Store |> :sys.get_state() |> Map.fetch!("messages") |> Map.keys()
 
-        assert "80" in cached_message_ids
-        assert "61" in cached_message_ids
-        refute "60" in cached_message_ids
-        refute "1" in cached_message_ids
-        assert length(cached_message_ids) == 20
+        assert cached_message_ids == []
       end)
     end)
   end

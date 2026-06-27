@@ -1,7 +1,7 @@
 defmodule OpenChat.RedisMockTest do
   use ExUnit.Case, async: false
 
-  alias OpenChat.{MockRedis, RedisBus}
+  alias OpenChat.{MockRedis, RedisBus, Store}
   alias OpenChat.Store.{RedisPersistence, RequestPlan, State}
 
   setup do
@@ -563,6 +563,43 @@ defmodule OpenChat.RedisMockTest do
 
     assert_receive {:comet_event, %{"text" => "local-only"}}
     :sys.get_state(RedisBus)
+  end
+
+  test "Redis-backed history reads bypass the Store mailbox" do
+    start_mock_redis()
+    Store.reset!()
+
+    guid = "read-lane-room"
+    alice = "read-lane-alice"
+    bob = "read-lane-bob"
+
+    assert {:ok, _user} = Store.upsert_user(%{"uid" => alice, "name" => "Alice"})
+    assert {:ok, _user} = Store.upsert_user(%{"uid" => bob, "name" => "Bob"})
+    assert {:ok, _group} = Store.upsert_group(%{"guid" => guid, "type" => "public"})
+    assert {:ok, _members} = Store.add_group_members(guid, [alice, bob], "participant")
+    assert {:ok, %{"authToken" => token}} = Store.create_auth_token(bob)
+
+    assert {:ok, sent} =
+             Store.send_message(alice, %{
+               "receiver" => guid,
+               "receiverType" => "group",
+               "type" => "text",
+               "data" => %{"text" => "bypass history"}
+             })
+
+    :sys.suspend(Store)
+
+    try do
+      task =
+        Task.async(fn ->
+          Store.messages_for_group_token(token, guid, %{"limit" => 10})
+        end)
+
+      assert {:ok, messages} = Task.await(task, 500)
+      assert Enum.any?(messages, &(to_string(&1["id"]) == to_string(sent["id"])))
+    after
+      :sys.resume(Store)
+    end
   end
 
   test "RedisBus init handles already-started and failed pubsub clients" do
