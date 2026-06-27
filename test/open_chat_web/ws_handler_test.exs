@@ -117,6 +117,34 @@ defmodule OpenChatWeb.WSHandlerTest do
     assert state.groups == MapSet.new()
   end
 
+  test "sdk join for existing members resyncs stale websocket group subscriptions" do
+    assert {:ok, _group} =
+             Store.upsert_group(%{"guid" => "ws-existing-member-room", "type" => "public"})
+
+    assert {:ok, _joined} = Store.join_group("ws-existing-member-room", "alice", %{})
+
+    {:reply, {:text, _json}, state} =
+      WSHandler.websocket_handle(
+        {:text,
+         Jason.encode!(%{
+           "type" => "auth",
+           "body" => %{"auth" => "uid:alice"}
+         })},
+        %{uid: nil, token: nil, device_id: nil}
+      )
+
+    OpenChat.PubSub.unsubscribe({:group, "ws-existing-member-room"})
+    state = %{state | groups: MapSet.new()}
+    refute subscribed?({:group, "ws-existing-member-room"})
+
+    assert {:ok, _already_joined} = Store.join_group("ws-existing-member-room", "alice", %{})
+    assert_receive {:open_chat_system_event, %{"type" => "membership_changed"} = event}
+    assert {:ok, state} = WSHandler.websocket_info({:open_chat_system_event, event}, state)
+
+    assert subscribed?({:group, "ws-existing-member-room"})
+    assert state.groups == MapSet.new(["ws-existing-member-room"])
+  end
+
   test "auth event returns an error payload for invalid tokens" do
     {:reply, {:text, json}, state} =
       WSHandler.websocket_handle(

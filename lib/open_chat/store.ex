@@ -572,6 +572,7 @@ defmodule OpenChat.Store do
               |> GroupState.with_members_count(state)
 
             persist_ops(PersistenceOps.user(state, [uid]))
+            PubSubFanout.membership_changed([uid])
             {:reply, {:ok, group}, state}
 
           true ->
