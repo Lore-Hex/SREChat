@@ -506,6 +506,41 @@ defmodule OpenChat.RedisMockTest do
     refute_receive {:comet_event, %{"text" => "self-origin"}}, 20
   end
 
+  test "RedisBus delivers remote events before slow store refresh completes" do
+    start_mock_redis()
+    terminate_redis_bus()
+    restart_redis_bus()
+
+    {:ok, _} = OpenChat.PubSub.subscribe({:user, "slow-refresh"})
+    MockRedis.force_pipeline({:sleep, 150, {:ok, []}})
+
+    remote_payload =
+      Jason.encode!(%{
+        "origin" => "remote",
+        "keys" => [["user", "slow-refresh"]],
+        "event" => %{"text" => "do not block websocket delivery"},
+        "system" => false
+      })
+
+    started = System.monotonic_time()
+
+    send(Process.whereis(RedisBus), {
+      :redix_pubsub,
+      self(),
+      make_ref(),
+      :message,
+      %{channel: "mock:test:events", payload: remote_payload}
+    })
+
+    assert_receive {:comet_event, %{"text" => "do not block websocket delivery"}}, 75
+
+    elapsed_ms =
+      System.convert_time_unit(System.monotonic_time() - started, :native, :millisecond)
+
+    assert elapsed_ms < 100
+    Process.sleep(180)
+  end
+
   test "PubSub locally delivers even when Redis publish fails" do
     start_mock_redis()
     terminate_redis_bus()

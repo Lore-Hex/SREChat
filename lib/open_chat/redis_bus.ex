@@ -131,13 +131,14 @@ defmodule OpenChat.RedisBus do
            Jason.decode(payload),
          false <- origin == state.origin do
       keys = keys |> Enum.map(&decode_key/1) |> Enum.reject(&is_nil/1)
-      refresh_store(keys, event)
 
       if decoded["system"] == true do
         OpenChat.PubSub.local_system_broadcast(keys, event)
       else
         OpenChat.PubSub.local_broadcast(keys, event)
       end
+
+      refresh_store_async(keys, event)
     end
 
     {:noreply, state}
@@ -149,6 +150,11 @@ defmodule OpenChat.RedisBus do
     OpenChat.Store.refresh_from_pubsub(keys, event)
   catch
     :exit, reason -> Logger.warning("Redis event store refresh failed: #{inspect(reason)}")
+  end
+
+  defp refresh_store_async(keys, event) do
+    Task.start(fn -> refresh_store(keys, event) end)
+    :ok
   end
 
   defp channel, do: Config.redis_key_prefix() <> ":events"
