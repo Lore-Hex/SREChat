@@ -910,6 +910,62 @@ defmodule OpenChat.RedisPersistenceTest do
     end)
   end
 
+  test "conversation reads clear stale unread rows when read cursor reaches indexed latest",
+       context do
+    with_redis(context, fn ->
+      now = OpenChat.Time.now()
+      conv_id = Conversations.user_conversation_id("stale-red-a", "stale-red-b")
+
+      latest = %{
+        "id" => 7101,
+        "sender" => "stale-red-b",
+        "receiver" => "stale-red-a",
+        "receiverType" => "user",
+        "type" => "text",
+        "category" => "message",
+        "data" => %{"text" => "already read", "reactions" => []},
+        "sentAt" => now,
+        "updatedAt" => now,
+        "conversationId" => conv_id
+      }
+
+      redis_put_json(context, ["messages", "7101"], latest)
+      redis_put_json(context, ["conversation_latest", conv_id], "7101")
+
+      redis_put_json(context, ["conversation_users", conv_id], [
+        "stale-red-a",
+        "stale-red-b"
+      ])
+
+      redis_put_json(context, ["user_conversations", "stale-red-a"], [conv_id])
+      redis_put_json(context, ["user_conversations", "stale-red-b"], [conv_id])
+      redis_put_json(context, ["reads", "stale-red-a"], %{conv_id => %{"messageId" => "7101"}})
+      redis_put_json(context, ["unread_counts", "stale-red-a"], %{conv_id => 99})
+
+      for {bucket, id} <- [
+            {"messages", "7101"},
+            {"conversation_latest", conv_id},
+            {"conversation_users", conv_id},
+            {"user_conversations", "stale-red-a"},
+            {"user_conversations", "stale-red-b"},
+            {"reads", "stale-red-a"},
+            {"unread_counts", "stale-red-a"}
+          ] do
+        redis_index!(context, bucket, id)
+      end
+
+      assert {:ok, []} = Store.unread_counts("stale-red-a", %{"receiverType" => "user"})
+
+      assert {:ok, [conversation]} =
+               Store.conversations("stale-red-a", %{"conversationType" => "user", "limit" => 1})
+
+      assert conversation["latestMessageId"] == "7101"
+      assert conversation["lastReadMessageId"] == "7101"
+      assert conversation["unreadMessageCount"] == 0
+      assert redis_get_raw(context, redis_key(context, "conversation_messages", conv_id)) == nil
+    end)
+  end
+
   test "message history refreshes Redis reactions for loaded conversation messages",
        context do
     with_redis(context, fn ->

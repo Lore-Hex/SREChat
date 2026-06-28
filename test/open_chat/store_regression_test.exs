@@ -569,6 +569,64 @@ defmodule OpenChat.StoreRegressionTest do
              Store.unread_counts("bob", %{"receiverType" => "user"})
   end
 
+  test "DM unread APIs self-heal stale red-dot rows" do
+    assert {:ok, first} =
+             Store.send_message("alice", %{
+               "receiver" => "bob",
+               "receiverType" => "user",
+               "data" => %{"text" => "already read"}
+             })
+
+    assert {:ok, second} =
+             Store.send_message("alice", %{
+               "receiver" => "bob",
+               "receiverType" => "user",
+               "data" => %{"text" => "latest read"}
+             })
+
+    assert {:ok, _read} = Store.mark_read("bob", "user", "alice", second["id"])
+    conv_id = "user_alice_bob"
+
+    :sys.replace_state(Store, fn state ->
+      update_in(state, ["unread_counts"], fn rows ->
+        rows = rows || %{}
+        Map.put(rows, "bob", Map.put(rows["bob"] || %{}, conv_id, 99))
+      end)
+    end)
+
+    assert {:ok, []} = Store.unread_counts("bob", %{"receiverType" => "user"})
+
+    assert {:ok, [%{"unreadMessageCount" => 0, "lastReadMessageId" => read_id}]} =
+             Store.conversations("bob", %{"conversationType" => "user"})
+
+    assert read_id == to_string(second["id"])
+    refute read_id == to_string(first["id"])
+  end
+
+  test "unread recompute keeps incrementUnreadCount=false messages excluded" do
+    assert {:ok, _message} =
+             Store.send_message("alice", %{
+               "receiver" => "bob",
+               "receiverType" => "user",
+               "data" => %{
+                 "text" => "system-style message",
+                 "metadata" => %{"incrementUnreadCount" => false}
+               },
+               "metadata" => %{"incrementUnreadCount" => false}
+             })
+
+    conv_id = "user_alice_bob"
+
+    :sys.replace_state(Store, fn state ->
+      update_in(state, ["unread_counts"], fn rows ->
+        rows = rows || %{}
+        Map.put(rows, "bob", Map.put(rows["bob"] || %{}, conv_id, 1))
+      end)
+    end)
+
+    assert {:ok, []} = Store.unread_counts("bob", %{"receiverType" => "user"})
+  end
+
   test "message validation, deterministic pagination, cursor filters, and hidden deletes" do
     assert {:error, %{"code" => "MISSING_PARAMETERS"}} =
              Store.send_message("alice", %{"receiverType" => "user"})

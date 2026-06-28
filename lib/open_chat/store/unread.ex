@@ -1,6 +1,7 @@
 defmodule OpenChat.Store.Unread do
   @moduledoc false
 
+  alias OpenChat.Config
   alias OpenChat.Store.Indexes
 
   def rebuild(state) do
@@ -14,7 +15,29 @@ defmodule OpenChat.Store.Unread do
   end
 
   def sync(state, uid, conv_id) do
-    put_count(state, uid, conv_id, count_after(state, uid, conv_id, read_id(state, uid, conv_id)))
+    cond do
+      oversized_group_conversation?(state, conv_id) ->
+        put_count(state, uid, conv_id, 0)
+
+      conversation_messages_loaded?(state, conv_id) ->
+        put_count(
+          state,
+          uid,
+          conv_id,
+          count_after(state, uid, conv_id, read_id(state, uid, conv_id))
+        )
+
+      true ->
+        sync_read_cursor(state, uid, conv_id)
+    end
+  end
+
+  def sync_read_cursor(state, uid, conv_id) do
+    cond do
+      oversized_group_conversation?(state, conv_id) -> put_count(state, uid, conv_id, 0)
+      read_through_latest?(state, uid, conv_id) -> put_count(state, uid, conv_id, 0)
+      true -> state
+    end
   end
 
   def count(state, uid, conv_id) do
@@ -70,15 +93,49 @@ defmodule OpenChat.Store.Unread do
   def count_after(state, uid, conv_id, message_id) do
     read_id = to_int(message_id)
     uid = to_s(uid)
+    conv_id = to_s(conv_id)
 
-    state
-    |> get_in(["conversation_messages", to_s(conv_id)])
-    |> List.wrap()
-    |> Enum.map(&get_in(state, ["messages", to_s(&1)]))
-    |> Enum.reject(&is_nil/1)
-    |> Enum.reject(fn message -> to_s(message["sender"]) == uid end)
-    |> Enum.reject(fn message -> not blank?(message["deletedAt"]) end)
-    |> Enum.count(fn message -> to_int(message["id"]) > read_id end)
+    if oversized_group_conversation?(state, conv_id) do
+      0
+    else
+      state
+      |> get_in(["conversation_messages", conv_id])
+      |> List.wrap()
+      |> Enum.map(&get_in(state, ["messages", to_s(&1)]))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.reject(fn message -> not countable?(message) end)
+      |> Enum.reject(fn message -> to_s(message["sender"]) == uid end)
+      |> Enum.reject(fn message -> not blank?(message["deletedAt"]) end)
+      |> Enum.count(fn message -> to_int(message["id"]) > read_id end)
+    end
+  end
+
+  defp oversized_group_conversation?(state, "group_" <> guid) do
+    map_size(get_in(state, ["members", guid]) || %{}) > Config.group_unread_fanout_limit()
+  end
+
+  defp oversized_group_conversation?(_state, _conv_id), do: false
+
+  defp conversation_messages_loaded?(state, conv_id) do
+    is_list(get_in(state, ["conversation_messages", to_s(conv_id)]))
+  end
+
+  defp read_through_latest?(state, uid, conv_id) do
+    latest_id = latest_message_id(state, conv_id)
+    latest_id > 0 and read_id(state, uid, conv_id) >= latest_id
+  end
+
+  defp latest_message_id(state, conv_id) do
+    case get_in(state, ["conversation_latest", to_s(conv_id)]) do
+      id when is_integer(id) or is_binary(id) ->
+        to_int(id)
+
+      message when is_map(message) ->
+        to_int(message["id"])
+
+      _other ->
+        0
+    end
   end
 
   defp unread_for?(state, uid, message) do

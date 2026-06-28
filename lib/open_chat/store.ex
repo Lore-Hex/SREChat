@@ -1243,6 +1243,7 @@ defmodule OpenChat.Store do
   def handle_call({:unread_counts, uid, params}, _from, state) do
     params = stringify_keys(params)
     receiver_type = params["receiverType"]
+    state = sync_unread_for_user(state, uid, [], unread_sync_mode())
 
     counts =
       ConversationView.ids_for_user(state, uid)
@@ -1271,6 +1272,7 @@ defmodule OpenChat.Store do
   def handle_call({:conversations, uid, params}, _from, state) do
     params = stringify_keys(params)
     type = params["conversationType"] || params["type"]
+    state = sync_unread_for_user(state, uid, [], unread_sync_mode())
 
     convs =
       ConversationView.ids_for_user(state, uid)
@@ -1287,6 +1289,7 @@ defmodule OpenChat.Store do
     case Access.conversation(state, uid, receiver_type, receiver_id) do
       :ok ->
         conv_id = conversation_id_for(uid, receiver_type, receiver_id)
+        state = sync_unread_for_user(state, uid, [conv_id])
         {:reply, {:ok, ConversationView.build(state, uid, conv_id)}, state}
 
       {:error, error} ->
@@ -1426,6 +1429,40 @@ defmodule OpenChat.Store do
       RequestPlan.followup_refresh(request, state)
     )
   end
+
+  defp sync_unread_for_user(state, uid, extra_conv_ids),
+    do: sync_unread_for_user(state, uid, extra_conv_ids, :full)
+
+  defp sync_unread_for_user(state, uid, extra_conv_ids, mode) do
+    uid = to_s(uid)
+
+    conv_ids =
+      state
+      |> get_in(["unread_counts", uid])
+      |> case do
+        counts when is_map(counts) -> Map.keys(counts)
+        _other -> []
+      end
+      |> Kernel.++(ConversationView.ids_for_user(state, uid))
+      |> Kernel.++(List.wrap(extra_conv_ids))
+      |> Enum.map(&to_s/1)
+      |> Enum.reject(&blank?/1)
+      |> Enum.uniq()
+
+    Enum.reduce(conv_ids, state, fn conv_id, acc ->
+      sync_unread_conversation(acc, uid, conv_id, mode)
+    end)
+  end
+
+  defp unread_sync_mode do
+    if RedisPersistence.enabled?(), do: :read_cursor, else: :full
+  end
+
+  defp sync_unread_conversation(state, uid, conv_id, :read_cursor),
+    do: Unread.sync_read_cursor(state, uid, conv_id)
+
+  defp sync_unread_conversation(state, uid, conv_id, _mode),
+    do: Unread.sync(state, uid, conv_id)
 
   defp take_counter(state, counter) do
     fallback = max(to_int(state[counter]), 1)
