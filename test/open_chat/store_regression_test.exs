@@ -548,21 +548,20 @@ defmodule OpenChat.StoreRegressionTest do
                "data" => %{"text" => "second"}
              })
 
-    # Bob reads the first message but not the second.
+    # The web/mobile DM-open path marks the first fetched history item even
+    # though the SDK returns that page oldest-first; for DMs this advances
+    # through the latest message in the conversation.
     assert {:ok, _} = Store.mark_read("bob", "user", "alice", read_msg["id"])
+
+    assert {:ok, []} = Store.unread_counts("bob", %{"receiverType" => "user"})
+
+    # Deleting the already-read message adds one unseen delete-action message.
+    assert {:ok, %{"category" => "action"}} = Store.delete_message("alice", read_msg["id"])
 
     assert {:ok, [%{"entityId" => "alice", "count" => 1}]} =
              Store.unread_counts("bob", %{"receiverType" => "user"})
 
-    # Deleting the already-read message keeps the count at 1 plus the new
-    # delete-action message (which the recipient also has not seen).
-    assert {:ok, %{"category" => "action"}} = Store.delete_message("alice", read_msg["id"])
-
-    assert {:ok, [%{"entityId" => "alice", "count" => 2}]} =
-             Store.unread_counts("bob", %{"receiverType" => "user"})
-
-    # Deleting the still-unread message decrements the original unread; only
-    # the two action messages remain on Bob's unread ledger.
+    # Deleting the second read message adds another unseen delete-action message.
     assert {:ok, %{"category" => "action"}} = Store.delete_message("alice", unread_msg["id"])
 
     assert {:ok, [%{"entityId" => "alice", "count" => 2}]} =
@@ -601,6 +600,37 @@ defmodule OpenChat.StoreRegressionTest do
 
     assert read_id == to_string(second["id"])
     refute read_id == to_string(first["id"])
+  end
+
+  test "DM read receipts advance older fetched messages through the latest DM" do
+    assert {:ok, first} =
+             Store.send_message("alice", %{
+               "receiver" => "bob",
+               "receiverType" => "user",
+               "data" => %{"text" => "oldest fetched"}
+             })
+
+    assert {:ok, _middle} =
+             Store.send_message("alice", %{
+               "receiver" => "bob",
+               "receiverType" => "user",
+               "data" => %{"text" => "middle fetched"}
+             })
+
+    assert {:ok, latest} =
+             Store.send_message("alice", %{
+               "receiver" => "bob",
+               "receiverType" => "user",
+               "data" => %{"text" => "latest fetched"}
+             })
+
+    assert {:ok, _read} = Store.mark_read("bob", "user", "alice", first["id"])
+    assert {:ok, []} = Store.unread_counts("bob", %{"receiverType" => "user"})
+
+    assert {:ok, [%{"unreadMessageCount" => 0, "lastReadMessageId" => read_id}]} =
+             Store.conversations("bob", %{"conversationType" => "user"})
+
+    assert read_id == to_string(latest["id"])
   end
 
   test "unread recompute keeps incrementUnreadCount=false messages excluded" do

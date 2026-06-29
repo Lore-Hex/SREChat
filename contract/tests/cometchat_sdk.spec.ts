@@ -1241,3 +1241,74 @@ test('snowy markAsRead(message) accepts a message object and clears unread', asy
   expect(result.targetFound).toBe(true);
   expect(Number(result.unreadAfter)).toBe(0);
 });
+
+test('snowy DM open flow marks the first fetched history item read after many unread messages', async ({ browser, request }) => {
+  test.skip(!ADMIN_API_KEY, 'Requires an OpenChat admin API key.');
+
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const aliceUid = `dm-open-alice-${suffix}`;
+  const bobUid = `dm-open-bob-${suffix}`;
+
+  await adminPost(request, '/users', { uid: aliceUid, name: 'DM Open Alice' });
+  await adminPost(request, '/users', { uid: bobUid, name: 'DM Open Bob' });
+  const aliceAuth = await adminPost(request, `/users/${aliceUid}/auth_tokens`);
+  const bobAuth = await adminPost(request, `/users/${bobUid}/auth_tokens`);
+
+  const alice = await browser.newPage();
+  await loadSdk(alice, false);
+  const sentIds = await alice.evaluate(async ({ token, bobUid }) => {
+    const { CometChat } = window as any;
+    await CometChat.login(token);
+
+    const ids = [];
+    for (let i = 0; i < 17; i += 1) {
+      const sent = await CometChat.sendMessage(
+        new CometChat.TextMessage(bobUid, `dm-open-unread-${i}-${Date.now()}`, 'user'),
+      );
+      ids.push(String(sent.getId()));
+    }
+
+    return ids;
+  }, { token: aliceAuth.authToken, bobUid });
+
+  const bob = await browser.newPage();
+  await loadSdk(bob, true);
+  const result = await bob.evaluate(async ({ token, aliceUid }) => {
+    const { CometChat } = window as any;
+    await CometChat.login(token);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const before = await CometChat.getUnreadMessageCountForAllUsers(true);
+    const beforeCount = (before as any)[aliceUid] ?? (before as any).users?.[aliceUid] ?? 0;
+
+    const req = new CometChat.MessagesRequestBuilder()
+      .setUID(aliceUid)
+      .setLimit(30)
+      .setTimestamp(Date.now())
+      .build();
+    const messages = await req.fetchPrevious();
+    const fetchedIds = messages.map((m: any) => String(m.getId()));
+
+    await CometChat.markAsRead(messages[0]);
+
+    let unreadAfter = 0;
+    for (let i = 0; i < 20; i += 1) {
+      const unread = await CometChat.getUnreadMessageCountForAllUsers(true);
+      unreadAfter = (unread as any)[aliceUid] ?? (unread as any).users?.[aliceUid] ?? 0;
+      if (Number(unreadAfter) === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    return {
+      beforeCount,
+      firstFetchedId: fetchedIds[0],
+      fetchedIds,
+      unreadAfter,
+    };
+  }, { token: bobAuth.authToken, aliceUid });
+
+  expect(Number(result.beforeCount)).toBe(17);
+  expect(result.firstFetchedId).toBe(sentIds[0]);
+  expect(result.fetchedIds).toContain(sentIds[sentIds.length - 1]);
+  expect(Number(result.unreadAfter)).toBe(0);
+});

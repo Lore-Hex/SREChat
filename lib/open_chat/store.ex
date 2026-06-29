@@ -2049,17 +2049,28 @@ defmodule OpenChat.Store do
   end
 
   defp read_cursor_or_latest(state, uid, receiver_type, receiver_id, message_id) do
-    case to_s(message_id) do
-      value when value in ["", "0"] ->
-        state
-        |> Conversations.latest_message(conversation_id_for(uid, receiver_type, receiver_id))
-        |> case do
-          %{"id" => latest_id} -> latest_id
-          _other -> message_id
-        end
+    conversation_id = conversation_id_for(uid, receiver_type, receiver_id)
+    receiver_type = receiver_type |> to_s() |> String.downcase()
+
+    case {receiver_type, to_s(message_id)} do
+      {"user", value} when value not in ["", "0"] ->
+        latest_id = latest_message_id(state, conversation_id)
+        if to_int(latest_id) > to_int(value), do: latest_id, else: message_id
+
+      {_receiver_type, value} when value in ["", "0"] ->
+        latest_message_id(state, conversation_id) || message_id
 
       _other ->
         message_id
+    end
+  end
+
+  defp latest_message_id(state, conversation_id) do
+    state
+    |> Conversations.latest_message(conversation_id)
+    |> case do
+      %{"id" => latest_id} -> latest_id
+      _other -> nil
     end
   end
 
