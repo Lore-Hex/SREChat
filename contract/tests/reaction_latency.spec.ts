@@ -11,6 +11,7 @@ const ADMIN_API_KEY =
 const MESSAGE_COUNT = Number(process.env.OPENCHAT_LATENCY_MESSAGES || 30);
 const MAX_MESSAGE_LATENCY_MS = Number(process.env.OPENCHAT_MAX_MESSAGE_LATENCY_MS || 5000);
 const MAX_REACTION_LATENCY_MS = Number(process.env.OPENCHAT_MAX_REACTION_LATENCY_MS || 5000);
+const MAX_BOT_MESSAGE_LATENCY_MS = Number(process.env.OPENCHAT_MAX_BOT_MESSAGE_LATENCY_MS || 2500);
 
 async function loadSdk(page: any) {
   await page.goto(`https://${TARGET_HOST}/settings`);
@@ -34,6 +35,20 @@ async function loadSdk(page: any) {
 async function adminPost(request: any, path: string, data: any = {}) {
   const response = await request.post(`https://${TARGET_HOST}${path}`, {
     headers: { apiKey: ADMIN_API_KEY },
+    data,
+  });
+  expect(response.ok(), `${path} failed: ${response.status()} ${await response.text()}`).toBeTruthy();
+  return (await response.json()).data;
+}
+
+async function userPost(request: any, token: string, path: string, data: any = {}) {
+  const response = await request.post(`https://${TARGET_HOST}${path}`, {
+    headers: {
+      authtoken: token,
+      origin: 'https://tt.live',
+      referer: 'https://tt.live/',
+      sdk: 'javascript@3.0.10',
+    },
     data,
   });
   expect(response.ok(), `${path} failed: ${response.status()} ${await response.text()}`).toBeTruthy();
@@ -264,6 +279,187 @@ test('staging SDK room messages and reactions arrive quickly across two browser 
   expect(aliceState.disconnects).toEqual([]);
   expect(Math.max(...messageLatencies)).toBeLessThan(MAX_MESSAGE_LATENCY_MS);
   expect(Math.max(...reactionLatencies)).toBeLessThan(MAX_REACTION_LATENCY_MS);
+
+  await alice.close();
+  await bob.close();
+});
+
+test('bot-style REST group replies arrive quickly on live SDK clients', async ({ browser, request }) => {
+  test.skip(!ADMIN_API_KEY, 'Requires OPENCHAT_ADMIN_API_KEY for staging user/group setup.');
+  test.setTimeout(Math.max(90_000, MESSAGE_COUNT * 10_000));
+
+  const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+  const botUid = `latency-bot-${suffix}`;
+  const aliceUid = `latency-bot-alice-${suffix}`;
+  const bobUid = `latency-bot-bob-${suffix}`;
+  const room = `latency-bot-room-${suffix}`;
+
+  await adminPost(request, '/users', { uid: botUid, name: 'Latency Bot' });
+  await adminPost(request, '/users', { uid: aliceUid, name: 'Latency Bot Alice' });
+  await adminPost(request, '/users', { uid: bobUid, name: 'Latency Bot Bob' });
+  const botAuth = await adminPost(request, `/users/${botUid}/auth_tokens`);
+  const aliceAuth = await adminPost(request, `/users/${aliceUid}/auth_tokens`);
+  const bobAuth = await adminPost(request, `/users/${bobUid}/auth_tokens`);
+  await adminPost(request, '/groups', { guid: room, type: 'public' });
+
+  await userPost(request, botAuth.authToken, `/groups/${room}/members`, {
+    participants: [botUid],
+    participantType: 'user',
+  });
+
+  const alice = await browser.newPage();
+  const bob = await browser.newPage();
+  const pages = [
+    { page: alice, token: aliceAuth.authToken, listenerId: 'BOT_REST_ALICE' },
+    { page: bob, token: bobAuth.authToken, listenerId: 'BOT_REST_BOB' },
+  ];
+
+  for (const { page, token, listenerId } of pages) {
+    await loadSdk(page);
+    await page.evaluate(
+      async ({ token, room, listenerId }) => {
+        const { CometChat } = window as any;
+        await CometChat.login(token);
+        try {
+          await CometChat.joinGroup(room);
+        } catch (e: any) {
+          if (e?.code !== 'ERR_ALREADY_JOINED') throw e;
+        }
+
+        (window as any).__botRestEvents = [];
+        (window as any).__connectionEvents = [];
+
+        CometChat.addConnectionListener(
+          `${listenerId}_CONNECTION`,
+          new CometChat.ConnectionListener({
+            onConnected: () => (window as any).__connectionEvents.push({ type: 'connected', at: Date.now() }),
+            onDisconnected: () =>
+              (window as any).__connectionEvents.push({ type: 'disconnected', at: Date.now() }),
+          }),
+        );
+
+        CometChat.addMessageListener(
+          `${listenerId}_MESSAGES`,
+          new CometChat.MessageListener({
+            onTextMessageReceived: (m: any) => {
+              const data = m.getData?.() || m.data || {};
+              (window as any).__botRestEvents.push({
+                id: String(m.getId?.() || m.id || ''),
+                text: data.text,
+                chatMessage: data.metadata?.chatMessage,
+                sender: m.getSender?.()?.getUid?.() || m.sender?.uid || '',
+                at: Date.now(),
+              });
+            },
+          }),
+        );
+      },
+      { token, room, listenerId },
+    );
+  }
+
+  await bob.waitForTimeout(1500);
+
+  const sendResults: Array<{
+    text: string;
+    startedAt: number;
+    responseAt: number;
+    aliceLatency: number;
+    bobLatency: number;
+  }> = [];
+
+  for (let i = 0; i < MESSAGE_COUNT; i += 1) {
+    const startedAt = Date.now();
+    const text = `!status bot-rest-reply-${i}-${startedAt}`;
+
+    await userPost(request, botAuth.authToken, '/messages', {
+      receiver: room,
+      receiverType: 'group',
+      category: 'message',
+      type: 'text',
+      data: {
+        text,
+        metadata: {
+          chatMessage: {
+            message: text,
+            avatarId: 'bot-01',
+            userName: 'Latency Bot',
+            color: '#ff9900',
+            mentions: [],
+            userUuid: botUid,
+            badges: ['VERIFIED', 'STAFF'],
+            id: `bot-rest-${i}-${startedAt}`,
+          },
+        },
+      },
+    });
+    const responseAt = Date.now();
+
+    for (const { page } of pages) {
+      await page.waitForFunction(
+        ({ text }) => ((window as any).__botRestEvents || []).some((e: any) => e.text === text),
+        { text },
+        { timeout: 15_000 },
+      );
+    }
+
+    const [aliceAt, bobAt] = await Promise.all(
+      pages.map(({ page }) =>
+        page.evaluate((text) => {
+          const event = ((window as any).__botRestEvents || []).find((e: any) => e.text === text);
+          return event?.at;
+        }, text),
+      ),
+    );
+
+    sendResults.push({
+      text,
+      startedAt,
+      responseAt,
+      aliceLatency: aliceAt - startedAt,
+      bobLatency: bobAt - startedAt,
+    });
+  }
+
+  const aliceState = await alice.evaluate(() => ({
+    disconnects: ((window as any).__connectionEvents || []).filter((e: any) => e.type === 'disconnected'),
+    events: (window as any).__botRestEvents || [],
+  }));
+  const bobState = await bob.evaluate(() => ({
+    disconnects: ((window as any).__connectionEvents || []).filter((e: any) => e.type === 'disconnected'),
+    events: (window as any).__botRestEvents || [],
+  }));
+
+  const latencies = sendResults.flatMap((result) => [result.aliceLatency, result.bobLatency]);
+  const responseLatencies = sendResults.map((result) => result.responseAt - result.startedAt);
+  const summary = {
+    target: TARGET_HOST,
+    messages: sendResults.length,
+    responseLatencyMs: {
+      max: Math.max(...responseLatencies),
+      p50: percentile(responseLatencies, 0.5),
+      p95: percentile(responseLatencies, 0.95),
+      all: responseLatencies,
+    },
+    botRestDeliveryLatencyMs: {
+      max: Math.max(...latencies),
+      p50: percentile(latencies, 0.5),
+      p95: percentile(latencies, 0.95),
+      all: latencies,
+    },
+    aliceDisconnects: aliceState.disconnects.length,
+    bobDisconnects: bobState.disconnects.length,
+    aliceEvents: aliceState.events.length,
+    bobEvents: bobState.events.length,
+  };
+
+  console.log(JSON.stringify(summary, null, 2));
+
+  expect(aliceState.disconnects).toEqual([]);
+  expect(bobState.disconnects).toEqual([]);
+  expect(aliceState.events.map((e: any) => e.text)).toEqual(expect.arrayContaining(sendResults.map((r) => r.text)));
+  expect(bobState.events.map((e: any) => e.text)).toEqual(expect.arrayContaining(sendResults.map((r) => r.text)));
+  expect(Math.max(...latencies)).toBeLessThan(MAX_BOT_MESSAGE_LATENCY_MS);
 
   await alice.close();
   await bob.close();

@@ -18,7 +18,7 @@ defmodule OpenChat.RedisMockTest do
         &{&1, Application.get_env(:open_chat, &1)}
       )
 
-    stop_name(OpenChat.Redis)
+    stop_redis_clients()
     stop_name(OpenChat.RedisPubSub)
     stop_name(OpenChat.RedisBusPublisher)
 
@@ -37,7 +37,7 @@ defmodule OpenChat.RedisMockTest do
         {key, value} -> Application.put_env(:open_chat, key, value)
       end)
 
-      stop_name(OpenChat.Redis)
+      stop_redis_clients()
       stop_name(OpenChat.RedisPubSub)
       stop_name(OpenChat.RedisBusPublisher)
       restart_redis_bus()
@@ -191,7 +191,7 @@ defmodule OpenChat.RedisMockTest do
     seed = fn -> put_in(default, ["users", "fallback"], %{"uid" => "fallback"}) end
 
     Application.put_env(:open_chat, :redis_url, nil)
-    stop_name(OpenChat.Redis)
+    stop_redis_clients()
 
     assert RedisPersistence.load_or_seed(default, seed) == seed.()
     assert RedisPersistence.refresh(default, seed.()) == seed.()
@@ -210,36 +210,36 @@ defmodule OpenChat.RedisMockTest do
 
     Application.put_env(:open_chat, :redis_url, "mock://redis")
     Application.put_env(:open_chat, :redis_client, MockRedis.FailingClient)
-    stop_name(OpenChat.Redis)
+    stop_redis_clients()
 
     assert RedisPersistence.load_or_seed(default, seed) == seed.()
     assert MockRedis.FailingClient.command(nil, []) == {:error, :mock_connection_down}
     assert MockRedis.FailingClient.pipeline(nil, []) == {:error, :mock_connection_down}
 
     Application.put_env(:open_chat, :redis_client, MockRedis.AlreadyStartedClient)
-    stop_name(OpenChat.Redis)
+    stop_redis_clients()
     assert RedisPersistence.load_or_seed(default, seed) == seed.()
 
     Application.put_env(:open_chat, :redis_client, MockRedis)
-    stop_name(OpenChat.Redis)
+    stop_redis_clients()
     start_mock_redis()
 
     assert RedisPersistence.refresh(default, seed.()) == seed.()
     MockRedis.put_string("mock:test:meta:revision", "0")
     assert RedisPersistence.refresh(default, seed.()) == seed.()
 
-    stop_name(OpenChat.Redis)
+    stop_redis_clients()
     start_mock_redis()
     MockRedis.force_command({:error, :meta_down})
     assert RedisPersistence.load_or_seed(default, seed) == seed.()
 
-    stop_name(OpenChat.Redis)
+    stop_redis_clients()
     start_mock_redis()
     MockRedis.force_command({:ok, nil})
     MockRedis.force_command({:error, :snapshot_down})
     assert RedisPersistence.load_or_seed(default, seed) == seed.()
 
-    stop_name(OpenChat.Redis)
+    stop_redis_clients()
     start_mock_redis()
     MockRedis.put_string("mock:test:legacy_snapshot", "not-json")
     assert RedisPersistence.load_or_seed(default, seed) == seed.()
@@ -357,7 +357,7 @@ defmodule OpenChat.RedisMockTest do
     assert RedisPersistence.refresh_keys(default, stale_state, [{:bucket, "users"}])["users"] ==
              %{}
 
-    stop_name(OpenChat.Redis)
+    stop_redis_clients()
     start_mock_redis()
     MockRedis.put_string("mock:test:lock:held", "lock-value")
     assert RedisPersistence.replace_all(default) == :ok
@@ -654,6 +654,11 @@ defmodule OpenChat.RedisMockTest do
       {:error, :running} -> :ok
       {:error, :restarting} -> :ok
     end
+  end
+
+  defp stop_redis_clients do
+    stop_name(OpenChat.Redis)
+    stop_name(OpenChat.RedisWriter)
   end
 
   defp stop_name(name) do

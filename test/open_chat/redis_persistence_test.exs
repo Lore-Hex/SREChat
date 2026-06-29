@@ -45,6 +45,77 @@ defmodule OpenChat.RedisPersistenceTest do
     end
   end
 
+  test "real Redis uses a separate writer connection for mutating commands", context do
+    with_redis(context, fn ->
+      assert reader = Process.whereis(OpenChat.Redis)
+      assert writer = Process.whereis(OpenChat.RedisWriter)
+      assert reader != writer
+
+      assert {:ok, message} =
+               Store.send_message("writer-split-a", %{
+                 "receiver" => "writer-split-b",
+                 "receiverType" => "user",
+                 "data" => %{"text" => "writer split"}
+               })
+
+      assert redis_json(context, "messages", message["id"])["data"]["text"] == "writer split"
+    end)
+  end
+
+  test "mutation refreshes do not queue behind the normal read connection", context do
+    with_redis(context, fn ->
+      assert Process.whereis(OpenChat.Redis)
+      assert Process.whereis(OpenChat.RedisWriter)
+
+      blocking_key = "#{context.prefix}:blocked-reader"
+
+      blocked_reader =
+        Task.async(fn ->
+          OpenChat.RedisClient.command(OpenChat.Redis, ["BLPOP", blocking_key, "1"])
+        end)
+
+      Process.sleep(100)
+      assert Task.yield(blocked_reader, 0) == nil
+
+      started_at = System.monotonic_time()
+
+      assert %{} =
+               RedisPersistence.refresh_keys_for_mutation(
+                 OpenChat.Store.State.default(),
+                 OpenChat.Store.State.default(),
+                 [{"users", "writer-refresh-user"}]
+               )
+
+      duration_ms =
+        System.convert_time_unit(System.monotonic_time() - started_at, :native, :millisecond)
+
+      assert duration_ms < 500
+      assert {:ok, nil} = Task.await(blocked_reader, 2_000)
+    end)
+  end
+
+  test "Redis conversation reads preserve accumulated unread counts without full history",
+       context do
+    with_redis(context, fn ->
+      sent =
+        Enum.map(1..3, fn i ->
+          assert {:ok, message} =
+                   Store.send_message("redis-unread-a", %{
+                     "receiver" => "redis-unread-b",
+                     "receiverType" => "user",
+                     "type" => "text",
+                     "data" => %{"text" => "redis unread #{i}"}
+                   })
+
+          message
+        end)
+
+      assert {:ok, conversation} = Store.conversation("redis-unread-b", "user", "redis-unread-a")
+      assert conversation["latestMessageId"] == to_string(List.last(sent)["id"])
+      assert conversation["unreadMessageCount"] == 3
+    end)
+  end
+
   test "persists records under per-entity Redis keys instead of a whole-state snapshot",
        context do
     with_redis(context, fn ->
@@ -1728,16 +1799,21 @@ defmodule OpenChat.RedisPersistenceTest do
       :ok = Supervisor.terminate_child(OpenChat.Supervisor, OpenChat.Store)
     end
 
-    if pid = Process.whereis(OpenChat.Redis) do
-      Process.exit(pid, :kill)
-      wait_until_stopped(OpenChat.Redis)
-    end
+    stop_redis_client(OpenChat.Redis)
+    stop_redis_client(OpenChat.RedisWriter)
 
     case Supervisor.restart_child(OpenChat.Supervisor, OpenChat.Store) do
       {:ok, _pid} -> :ok
       {:ok, _pid, _info} -> :ok
       {:error, {:already_started, _pid}} -> :ok
       other -> flunk("failed to restart OpenChat.Store: #{inspect(other)}")
+    end
+  end
+
+  defp stop_redis_client(name) do
+    if pid = Process.whereis(name) do
+      Process.exit(pid, :kill)
+      wait_until_stopped(name)
     end
   end
 

@@ -262,7 +262,7 @@ defmodule OpenChat.Store do
     request
     |> handle_call(
       from,
-      refresh_request_state(request, state, refresh)
+      refresh_mutation_request_state(request, state, refresh)
     )
   end
 
@@ -1289,7 +1289,7 @@ defmodule OpenChat.Store do
     case Access.conversation(state, uid, receiver_type, receiver_id) do
       :ok ->
         conv_id = conversation_id_for(uid, receiver_type, receiver_id)
-        state = sync_unread_for_user(state, uid, [conv_id])
+        state = sync_unread_for_user(state, uid, [conv_id], unread_sync_mode())
         {:reply, {:ok, ConversationView.build(state, uid, conv_id)}, state}
 
       {:error, error} ->
@@ -1430,8 +1430,15 @@ defmodule OpenChat.Store do
     )
   end
 
-  defp sync_unread_for_user(state, uid, extra_conv_ids),
-    do: sync_unread_for_user(state, uid, extra_conv_ids, :full)
+  defp refresh_mutation_request_state(request, state, refresh) do
+    state = RedisPersistence.refresh_keys_for_mutation(State.default(), state, refresh)
+
+    RedisPersistence.refresh_keys_for_mutation(
+      State.default(),
+      state,
+      RequestPlan.followup_refresh(request, state)
+    )
+  end
 
   defp sync_unread_for_user(state, uid, extra_conv_ids, mode) do
     uid = to_s(uid)

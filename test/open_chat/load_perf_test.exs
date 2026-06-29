@@ -1256,16 +1256,21 @@ defmodule OpenChat.LoadPerfTest do
       :ok = Supervisor.terminate_child(OpenChat.Supervisor, OpenChat.Store)
     end
 
-    if pid = Process.whereis(OpenChat.Redis) do
-      Process.exit(pid, :kill)
-      wait_until_stopped(OpenChat.Redis)
-    end
+    stop_redis_client(OpenChat.Redis)
+    stop_redis_client(OpenChat.RedisWriter)
 
     case Supervisor.restart_child(OpenChat.Supervisor, OpenChat.Store) do
       {:ok, _pid} -> :ok
       {:ok, _pid, _info} -> :ok
       {:error, {:already_started, _pid}} -> :ok
       other -> flunk("failed to restart OpenChat.Store: #{inspect(other)}")
+    end
+  end
+
+  defp stop_redis_client(name) do
+    if pid = Process.whereis(name) do
+      Process.exit(pid, :kill)
+      wait_until_stopped(name)
     end
   end
 
