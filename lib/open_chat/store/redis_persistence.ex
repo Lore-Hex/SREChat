@@ -33,6 +33,15 @@ defmodule OpenChat.Store.RedisPersistence do
   @lock_attempts 100
   @reader_name OpenChat.Redis
   @writer_name OpenChat.RedisWriter
+  @mutation_reader_name OpenChat.RedisMutationReader
+  @counter_name OpenChat.RedisCounter
+  @lock_names [
+    OpenChat.RedisLock0,
+    OpenChat.RedisLock1,
+    OpenChat.RedisLock2,
+    OpenChat.RedisLock3
+  ]
+  @auxiliary_names [@writer_name, @mutation_reader_name, @counter_name | @lock_names]
   @read_conn_key :open_chat_redis_read_conn
   @atomic_write_script """
   local prefix = ARGV[1]
@@ -121,7 +130,7 @@ defmodule OpenChat.Store.RedisPersistence do
   end
 
   def refresh_keys_for_mutation(default_state, fallback_state, keys) do
-    with_read_conn(write_conn(), fn ->
+    with_read_conn(mutation_read_conn(), fn ->
       refresh_keys(default_state, fallback_state, keys)
     end)
   end
@@ -181,7 +190,7 @@ defmodule OpenChat.Store.RedisPersistence do
         return current
         """
 
-        case write_command([
+        case counter_command([
                "EVAL",
                script,
                "3",
@@ -311,7 +320,12 @@ defmodule OpenChat.Store.RedisPersistence do
 
   defp start_writer_redis(url) do
     if separate_writer?() do
-      start_named_redis(url, @writer_name)
+      Enum.reduce_while(@auxiliary_names, {:ok, Process.whereis(@reader_name)}, fn name, _acc ->
+        case start_named_redis(url, name) do
+          {:ok, pid} -> {:cont, {:ok, pid}}
+          error -> {:halt, error}
+        end
+      end)
     else
       {:ok, Process.whereis(@reader_name)}
     end
@@ -1043,7 +1057,7 @@ defmodule OpenChat.Store.RedisPersistence do
   defp acquire_lock(_scope, _lock_value, 0), do: {:error, :timeout}
 
   defp acquire_lock(scope, lock_value, attempts) do
-    case write_command(["SET", lock_key(scope), lock_value, "NX", "PX", to_s(@lock_ttl_ms)]) do
+    case lock_command(["SET", lock_key(scope), lock_value, "NX", "PX", to_s(@lock_ttl_ms)]) do
       {:ok, "OK"} ->
         :ok
 
@@ -1070,7 +1084,7 @@ defmodule OpenChat.Store.RedisPersistence do
     end
     """
 
-    write_command(["EVAL", script, "1", lock_key(scope), lock_value])
+    lock_command(["EVAL", script, "1", lock_key(scope), lock_value])
     :ok
   end
 
@@ -1186,6 +1200,8 @@ defmodule OpenChat.Store.RedisPersistence do
   defp command(args), do: RedisClient.command(read_conn(), args)
   defp read_pipeline(commands), do: RedisClient.pipeline(read_conn(), commands)
   defp write_command(args), do: RedisClient.command(write_conn(), args)
+  defp counter_command(args), do: RedisClient.command(counter_conn(), args)
+  defp lock_command(args), do: RedisClient.command(lock_conn(), args)
 
   defp with_read_conn(conn, fun) do
     previous = Process.get(@read_conn_key, :unset)
@@ -1203,11 +1219,39 @@ defmodule OpenChat.Store.RedisPersistence do
 
   defp read_conn, do: Process.get(@read_conn_key, @reader_name)
 
+  defp mutation_read_conn do
+    named_conn(@mutation_reader_name, write_conn())
+  end
+
   defp write_conn do
-    if separate_writer?() and Process.whereis(@writer_name) do
-      @writer_name
+    named_conn(@writer_name, @reader_name)
+  end
+
+  defp counter_conn do
+    named_conn(@counter_name, write_conn())
+  end
+
+  defp lock_conn do
+    if separate_writer?() do
+      pooled_conn(@lock_names, write_conn())
     else
-      @reader_name
+      write_conn()
+    end
+  end
+
+  defp named_conn(name, fallback) do
+    if separate_writer?() and Process.whereis(name), do: name, else: fallback
+  end
+
+  defp pooled_conn(names, fallback) do
+    available = Enum.filter(names, &Process.whereis/1)
+
+    case available do
+      [] ->
+        fallback
+
+      _ ->
+        Enum.at(available, rem(:erlang.unique_integer([:positive]), length(available)))
     end
   end
 

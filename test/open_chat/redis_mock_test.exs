@@ -657,8 +657,17 @@ defmodule OpenChat.RedisMockTest do
   end
 
   defp stop_redis_clients do
-    stop_name(OpenChat.Redis)
-    stop_name(OpenChat.RedisWriter)
+    [
+      OpenChat.Redis,
+      OpenChat.RedisWriter,
+      OpenChat.RedisMutationReader,
+      OpenChat.RedisCounter,
+      OpenChat.RedisLock0,
+      OpenChat.RedisLock1,
+      OpenChat.RedisLock2,
+      OpenChat.RedisLock3
+    ]
+    |> Enum.each(&stop_name/1)
   end
 
   defp stop_name(name) do

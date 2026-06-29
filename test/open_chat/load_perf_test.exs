@@ -1256,8 +1256,7 @@ defmodule OpenChat.LoadPerfTest do
       :ok = Supervisor.terminate_child(OpenChat.Supervisor, OpenChat.Store)
     end
 
-    stop_redis_client(OpenChat.Redis)
-    stop_redis_client(OpenChat.RedisWriter)
+    stop_redis_clients()
 
     case Supervisor.restart_child(OpenChat.Supervisor, OpenChat.Store) do
       {:ok, _pid} -> :ok
@@ -1272,6 +1271,20 @@ defmodule OpenChat.LoadPerfTest do
       Process.exit(pid, :kill)
       wait_until_stopped(name)
     end
+  end
+
+  defp stop_redis_clients do
+    [
+      OpenChat.Redis,
+      OpenChat.RedisWriter,
+      OpenChat.RedisMutationReader,
+      OpenChat.RedisCounter,
+      OpenChat.RedisLock0,
+      OpenChat.RedisLock1,
+      OpenChat.RedisLock2,
+      OpenChat.RedisLock3
+    ]
+    |> Enum.each(&stop_redis_client/1)
   end
 
   defp wait_until_stopped(name, attempts \\ 20)

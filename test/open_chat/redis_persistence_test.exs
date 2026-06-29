@@ -50,6 +50,9 @@ defmodule OpenChat.RedisPersistenceTest do
       assert reader = Process.whereis(OpenChat.Redis)
       assert writer = Process.whereis(OpenChat.RedisWriter)
       assert reader != writer
+      assert Process.whereis(OpenChat.RedisMutationReader)
+      assert Process.whereis(OpenChat.RedisCounter)
+      assert Enum.all?(redis_lock_names(), &Process.whereis/1)
 
       assert {:ok, message} =
                Store.send_message("writer-split-a", %{
@@ -66,6 +69,7 @@ defmodule OpenChat.RedisPersistenceTest do
     with_redis(context, fn ->
       assert Process.whereis(OpenChat.Redis)
       assert Process.whereis(OpenChat.RedisWriter)
+      assert Process.whereis(OpenChat.RedisMutationReader)
 
       blocking_key = "#{context.prefix}:blocked-reader"
 
@@ -1799,8 +1803,7 @@ defmodule OpenChat.RedisPersistenceTest do
       :ok = Supervisor.terminate_child(OpenChat.Supervisor, OpenChat.Store)
     end
 
-    stop_redis_client(OpenChat.Redis)
-    stop_redis_client(OpenChat.RedisWriter)
+    stop_redis_clients()
 
     case Supervisor.restart_child(OpenChat.Supervisor, OpenChat.Store) do
       {:ok, _pid} -> :ok
@@ -1815,6 +1818,24 @@ defmodule OpenChat.RedisPersistenceTest do
       Process.exit(pid, :kill)
       wait_until_stopped(name)
     end
+  end
+
+  defp stop_redis_clients do
+    Enum.each(redis_connection_names(), &stop_redis_client/1)
+  end
+
+  defp redis_connection_names do
+    [OpenChat.Redis, OpenChat.RedisWriter, OpenChat.RedisMutationReader, OpenChat.RedisCounter] ++
+      redis_lock_names()
+  end
+
+  defp redis_lock_names do
+    [
+      OpenChat.RedisLock0,
+      OpenChat.RedisLock1,
+      OpenChat.RedisLock2,
+      OpenChat.RedisLock3
+    ]
   end
 
   defp wait_until_stopped(name, attempts \\ 20)
