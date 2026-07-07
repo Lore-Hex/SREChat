@@ -558,7 +558,9 @@ defmodule OpenChat.Store.RequestPlan do
   end
 
   defp user_record_keys(value), do: if(blank?(value), do: [], else: [{"users", value}])
-  defp group_keys(guid), do: [{"groups", guid}, {"members", guid}, {"banned", guid}]
+
+  defp group_keys(guid),
+    do: [{"groups", guid}, {"members", guid}, {"banned", guid}, {"presence", guid}]
 
   defp uids_from_scope_map(scope_map) do
     scope_map = stringify_keys(scope_map || %{})

@@ -16,6 +16,7 @@ defmodule OpenChat.Store.CacheKeysTest do
              {"groups", "room"},
              {"members", "room"},
              {"banned", "room"},
+             {"presence", "room"},
              {"conversation_messages", "group_room"},
              {"conversation_latest", "group_room"},
              {"conversation_users", "group_room"}
@@ -61,6 +62,7 @@ defmodule OpenChat.Store.CacheKeysTest do
              {"groups", "room"},
              {"members", "room"},
              {"banned", "room"},
+             {"presence", "room"},
              {"conversation_messages", "group_room"},
              {"conversation_latest", "group_room"},
              {"conversation_users", "group_room"},

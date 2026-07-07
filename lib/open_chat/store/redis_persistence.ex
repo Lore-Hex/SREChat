@@ -24,7 +24,8 @@ defmodule OpenChat.Store.RedisPersistence do
     "user_conversations",
     "conversation_users",
     "user_groups",
-    "unread_counts"
+    "unread_counts",
+    "presence"
   ]
 
   @counters ["next_id", "next_reaction_id"]

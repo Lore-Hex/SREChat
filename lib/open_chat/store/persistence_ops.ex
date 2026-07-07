@@ -69,6 +69,15 @@ defmodule OpenChat.Store.PersistenceOps do
     end)
   end
 
+  def presence(state, guid),
+    do: [
+      RedisPersistence.put_or_delete(
+        "presence",
+        guid,
+        get_in(state, ["presence", to_s(guid)])
+      )
+    ]
+
   def user_conversations(state, uids) do
     uids
     |> List.wrap()
