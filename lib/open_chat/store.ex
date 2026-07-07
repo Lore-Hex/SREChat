@@ -575,7 +575,7 @@ defmodule OpenChat.Store do
               |> Map.put("transient", true)
               |> GroupState.with_members_count(state)
 
-            persist_ops(PersistenceOps.user(state, [uid]))
+            persist_ops(PersistenceOps.user(state, [uid]) ++ PersistenceOps.presence(state, guid))
             {:reply, {:ok, group}, state}
 
           GroupState.member_limit_reached?(state, guid, uid) ->

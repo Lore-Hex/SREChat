@@ -71,6 +71,7 @@ defmodule OpenChat.Store.CacheKeys do
         {"groups", guid},
         {"members", guid},
         {"banned", guid},
+        {"presence", guid},
         {"conversation_messages", conv_id},
         {"conversation_latest", conv_id},
         {"conversation_users", conv_id}

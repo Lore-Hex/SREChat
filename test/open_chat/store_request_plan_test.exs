@@ -55,6 +55,7 @@ defmodule OpenChat.StoreRequestPlanTest do
              {"groups", "plan-room"},
              {"members", "plan-room"},
              {"banned", "plan-room"},
+             {"presence", "plan-room"},
              {"users", "plan-user"},
              {"user_groups", "plan-user"},
              {"unread_counts", "plan-user"},
@@ -67,6 +68,7 @@ defmodule OpenChat.StoreRequestPlanTest do
              {"groups", "plan-room"},
              {"members", "plan-room"},
              {"banned", "plan-room"},
+             {"presence", "plan-room"},
              {"user_groups", "plan-user"},
              {"unread_counts", "plan-user"},
              {:counter, "next_id"}
@@ -149,7 +151,8 @@ defmodule OpenChat.StoreRequestPlanTest do
              {"unread_counts", "moderator"},
              {"groups", "room"},
              {"members", "room"},
-             {"banned", "room"}
+             {"banned", "room"},
+             {"presence", "room"}
            ]
   end
 
@@ -184,6 +187,7 @@ defmodule OpenChat.StoreRequestPlanTest do
              {"groups", "room"},
              {"members", "room"},
              {"banned", "room"},
+             {"presence", "room"},
              {"messages", "77"},
              {"delivered", "alice"}
            ]
@@ -277,6 +281,7 @@ defmodule OpenChat.StoreRequestPlanTest do
              {"groups", "room"},
              {"members", "room"},
              {"banned", "room"},
+             {"presence", "room"},
              {:conversation_all, "group_room"},
              {"conversation_latest", "group_room"},
              {"conversation_users", "group_room"}

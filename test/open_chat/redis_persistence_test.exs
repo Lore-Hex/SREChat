@@ -1605,6 +1605,60 @@ defmodule OpenChat.RedisPersistenceTest do
     end)
   end
 
+  test "transient public-room presence fans out across peer Store processes", context do
+    with_redis(context, fn ->
+      peer = start_peer_store!()
+      guid = "redis-presence-room"
+
+      try do
+        assert {:ok, _group} = Store.upsert_group(%{"guid" => guid, "type" => "public"})
+        assert {:ok, _members} = Store.add_group_members(guid, ["presence-sender"], "participant")
+
+        assert {:ok, joined} =
+                 Store.join_group(guid, "presence-viewer", %{"transient" => true})
+
+        assert joined["transient"] == true
+
+        assert redis_json(context, "presence", guid)["presence-viewer"]["uid"] ==
+                 "presence-viewer"
+
+        assert redis_get_raw(context, redis_key(context, "user_groups", "presence-viewer")) == nil
+
+        {:ok, _subscription} = OpenChat.PubSub.subscribe({:user, "presence-viewer"})
+
+        assert {:ok, message} =
+                 Store.call_on(
+                   peer,
+                   {:send_message, "presence-sender",
+                    %{
+                      "receiver" => guid,
+                      "receiverType" => "group",
+                      "type" => "text",
+                      "data" => %{"text" => "cross peer realtime"}
+                    }, [], []}
+                 )
+
+        assert_receive {:comet_event,
+                        %{
+                          "type" => "message",
+                          "body" => %{
+                            "id" => message_id,
+                            "data" => %{"text" => "cross peer realtime"}
+                          }
+                        }},
+                       250
+
+        assert message_id == message["id"]
+
+        assert get_in(:sys.get_state(peer), ["presence", guid, "presence-viewer", "uid"]) ==
+                 "presence-viewer"
+      after
+        OpenChat.PubSub.unsubscribe({:user, "presence-viewer"})
+        stop_peer_store(peer)
+      end
+    end)
+  end
+
   test "concurrent peer Store writes keep Redis IDs, indexes, and unread counts consistent",
        context do
     with_redis(context, fn ->
