@@ -13,6 +13,22 @@ defmodule OpenChat.Store.CacheKeys do
     end)
   end
 
+  def for_pubsub_keys(keys, %{"type" => "message", "body" => %{} = message}) do
+    keys
+    |> List.wrap()
+    |> Enum.flat_map(&message_pubsub_key(&1, message))
+  end
+
+  def for_pubsub_keys(_keys, %{"type" => "reaction"}), do: []
+
+  def for_pubsub_keys(keys, %{"type" => "receipts"} = event) do
+    keys
+    |> List.wrap()
+    |> Enum.flat_map(&receipt_pubsub_key(&1, event))
+  end
+
+  def for_pubsub_keys(keys, _event), do: for_pubsub_keys(keys)
+
   def for_event(%{"type" => "message", "body" => %{} = message}) do
     message(message) ++ action_subject_message(message)
   end
@@ -104,8 +120,27 @@ defmodule OpenChat.Store.CacheKeys do
       ] ++
       message_record(parent_id) ++
       if(blank?(parent_id), do: [], else: [{"thread_messages", parent_id}]) ++
-      user(message["sender"]) ++ receiver(message)
+      user_record(message["sender"]) ++ receiver(message)
   end
+
+  defp message_pubsub_key({:user, uid}, %{"receiverType" => "group"}) do
+    unread_count(uid)
+  end
+
+  defp message_pubsub_key({:group, guid}, %{"receiverType" => "group"}) do
+    shallow_group(guid)
+  end
+
+  defp message_pubsub_key({:user, uid}, _message) do
+    user_record(uid) ++ [{"user_conversations", to_s(uid)}, {"unread_counts", to_s(uid)}]
+  end
+
+  defp message_pubsub_key({:group, guid}, _message), do: shallow_group(guid)
+  defp message_pubsub_key(_key, _message), do: []
+
+  defp receipt_pubsub_key({:group, guid}, _event), do: shallow_group(guid)
+  defp receipt_pubsub_key({:user, uid}, _event), do: user_record(uid) ++ unread_count(uid)
+  defp receipt_pubsub_key(_key, _event), do: []
 
   defp action_subject_message(message) do
     case get_in(message, ["data", "entities", "on", "entity"]) do
@@ -115,9 +150,34 @@ defmodule OpenChat.Store.CacheKeys do
     end
   end
 
-  defp receiver(%{"receiverType" => "group", "receiver" => guid}), do: group(guid)
-  defp receiver(%{"receiver" => uid}), do: user(uid)
+  defp receiver(%{"receiverType" => "group", "receiver" => guid}), do: shallow_group(guid)
+  defp receiver(%{"receiver" => uid}), do: user_record(uid)
   defp receiver(_message), do: []
+
+  defp user_record(uid) do
+    uid = to_s(uid)
+    if blank?(uid), do: [], else: [{:record_only, "users", uid}]
+  end
+
+  defp unread_count(uid) do
+    uid = to_s(uid)
+    if blank?(uid), do: [], else: [{:record_only, "unread_counts", uid}]
+  end
+
+  defp shallow_group(guid) do
+    guid = to_s(guid)
+
+    if blank?(guid) do
+      []
+    else
+      [
+        {:record_only, "groups", guid},
+        {:record_only, "members", guid},
+        {:record_only, "banned", guid},
+        {:record_only, "presence", guid}
+      ]
+    end
+  end
 
   defp blank?(value), do: value in [nil, "", false]
   defp to_s(nil), do: ""

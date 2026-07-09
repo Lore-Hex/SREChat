@@ -51,23 +51,39 @@ defmodule OpenChat.Store.CacheKeysTest do
              {"message_muids", "client-1"},
              {"messages", "9"},
              {"thread_messages", "9"},
-             {"users", "alice"},
-             {"user_groups", "alice"},
-             {"user_conversations", "alice"},
-             {"unread_counts", "alice"},
-             {"reads", "alice"},
-             {"delivered", "alice"},
-             {"hidden_conversations", "alice"},
-             {"blocks", "alice"},
-             {"groups", "room"},
-             {"members", "room"},
-             {"banned", "room"},
-             {"presence", "room"},
-             {"conversation_messages", "group_room"},
-             {"conversation_latest", "group_room"},
-             {"conversation_users", "group_room"},
+             {:record_only, "users", "alice"},
+             {:record_only, "groups", "room"},
+             {:record_only, "members", "room"},
+             {:record_only, "banned", "room"},
+             {:record_only, "presence", "room"},
              {"messages", "8"},
              {"reactions", "8"}
+           ]
+  end
+
+  test "message pubsub refresh avoids full member graph hydration" do
+    group_event = %{
+      "type" => "message",
+      "body" => %{"receiverType" => "group", "receiver" => "room"}
+    }
+
+    assert CacheKeys.for_pubsub_keys([{:user, "alice"}, {:group, "room"}], group_event) == [
+             {:record_only, "unread_counts", "alice"},
+             {:record_only, "groups", "room"},
+             {:record_only, "members", "room"},
+             {:record_only, "banned", "room"},
+             {:record_only, "presence", "room"}
+           ]
+
+    direct_event = %{
+      "type" => "message",
+      "body" => %{"receiverType" => "user", "receiver" => "bob"}
+    }
+
+    assert CacheKeys.for_pubsub_keys([{:user, "alice"}], direct_event) == [
+             {:record_only, "users", "alice"},
+             {"user_conversations", "alice"},
+             {"unread_counts", "alice"}
            ]
   end
 

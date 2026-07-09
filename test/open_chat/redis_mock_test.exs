@@ -186,6 +186,28 @@ defmodule OpenChat.RedisMockTest do
     assert state["next_id"] == 50
   end
 
+  test "record-only refresh avoids related member graph hydration" do
+    start_mock_redis()
+
+    assert :ok =
+             RedisPersistence.write([
+               RedisPersistence.put("users", "alice", %{"uid" => "alice"}),
+               RedisPersistence.put("members", "room", %{
+                 "alice" => %{"uid" => "alice", "scope" => "participant"}
+               }),
+               RedisPersistence.put("user_groups", "alice", ["room"])
+             ])
+
+    state =
+      RedisPersistence.refresh_keys(State.default(), State.default(), [
+        {:record_only, "members", "room"}
+      ])
+
+    assert get_in(state, ["members", "room", "alice", "scope"]) == "participant"
+    assert get_in(state, ["users", "alice"]) == nil
+    assert get_in(state, ["user_groups", "alice"]) == nil
+  end
+
   test "Redis fallback and error branches return safe values" do
     default = State.default()
     seed = fn -> put_in(default, ["users", "fallback"], %{"uid" => "fallback"}) end
@@ -539,6 +561,40 @@ defmodule OpenChat.RedisMockTest do
 
     assert elapsed_ms < 100
     Process.sleep(180)
+  end
+
+  test "RedisBus skips store refresh when a remote event has no local subscribers" do
+    start_mock_redis()
+    terminate_redis_bus()
+    restart_redis_bus()
+
+    MockRedis.force_pipeline({:sleep, 150, {:ok, []}})
+
+    remote_payload =
+      Jason.encode!(%{
+        "origin" => "remote",
+        "keys" => [["user", "not-local"]],
+        "event" => %{"text" => "no local websocket"},
+        "system" => false
+      })
+
+    started = System.monotonic_time()
+
+    send(Process.whereis(RedisBus), {
+      :redix_pubsub,
+      self(),
+      make_ref(),
+      :message,
+      %{channel: "mock:test:events", payload: remote_payload}
+    })
+
+    Process.sleep(20)
+
+    elapsed_ms =
+      System.convert_time_unit(System.monotonic_time() - started, :native, :millisecond)
+
+    assert elapsed_ms < 100
+    refute_receive {:comet_event, %{"text" => "no local websocket"}}, 20
   end
 
   test "PubSub locally delivers even when Redis publish fails" do

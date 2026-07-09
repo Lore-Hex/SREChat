@@ -50,6 +50,13 @@ defmodule OpenChat.PubSub do
     :ok
   end
 
+  def local_subscribed_keys(keys) do
+    keys
+    |> List.wrap()
+    |> Enum.uniq()
+    |> Enum.filter(&(Registry.lookup(__MODULE__, &1) != []))
+  end
+
   defp warn_publish_enqueue_failure(:ok), do: :ok
 
   defp warn_publish_enqueue_failure({:error, reason}) do

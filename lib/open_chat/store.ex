@@ -276,7 +276,7 @@ defmodule OpenChat.Store do
 
   def handle_call({:refresh_from_pubsub, keys, event}, _from, state) do
     refresh =
-      CacheKeys.for_pubsub_keys(keys)
+      CacheKeys.for_pubsub_keys(keys, event)
       |> Kernel.++(CacheKeys.for_event(event))
       |> Enum.uniq()
 
