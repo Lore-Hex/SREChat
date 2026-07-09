@@ -149,10 +149,10 @@ defmodule OpenChat.StoreRequestPlanTest do
              {"conversation_latest", "group_room"},
              {"conversation_users", "group_room"},
              {"unread_counts", "moderator"},
-             {"groups", "room"},
-             {"members", "room"},
-             {"banned", "room"},
-             {"presence", "room"}
+             {:record_only, "groups", "room"},
+             {:record_only, "members", "room"},
+             {:record_only, "banned", "room"},
+             {:record_only, "presence", "room"}
            ]
   end
 
@@ -184,10 +184,10 @@ defmodule OpenChat.StoreRequestPlanTest do
     assert RequestPlan.build({:mark_delivered, "alice", "group", "room", "77"}).refresh == [
              {"conversation_messages", "group_room"},
              {"conversation_latest", "group_room"},
-             {"groups", "room"},
-             {"members", "room"},
-             {"banned", "room"},
-             {"presence", "room"},
+             {:record_only, "groups", "room"},
+             {:record_only, "members", "room"},
+             {:record_only, "banned", "room"},
+             {:record_only, "presence", "room"},
              {"messages", "77"},
              {"delivered", "alice"}
            ]

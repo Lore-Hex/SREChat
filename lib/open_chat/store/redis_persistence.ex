@@ -446,28 +446,34 @@ defmodule OpenChat.Store.RedisPersistence do
   end
 
   defp refresh_records(default_state, state, keys) do
-    {record_keys, counter_keys, bucket_keys, conversation_pages, conversation_all} =
-      Enum.reduce(keys, {[], [], [], [], []}, fn
-        {:record, bucket, id}, {records, counters, buckets, pages, all} ->
-          {[{bucket, id} | records], counters, buckets, pages, all}
+    {record_keys, record_only_keys, counter_keys, bucket_keys, conversation_pages,
+     conversation_all} =
+      Enum.reduce(keys, {[], [], [], [], [], []}, fn
+        {:record, bucket, id}, {records, record_only, counters, buckets, pages, all} ->
+          {[{bucket, id} | records], record_only, counters, buckets, pages, all}
 
-        {:counter, counter}, {records, counters, buckets, pages, all} ->
-          {records, [counter | counters], buckets, pages, all}
+        {:record_only, bucket, id}, {records, record_only, counters, buckets, pages, all} ->
+          {records, [{bucket, id} | record_only], counters, buckets, pages, all}
 
-        {:bucket, bucket}, {records, counters, buckets, pages, all} ->
-          {records, counters, [bucket | buckets], pages, all}
+        {:counter, counter}, {records, record_only, counters, buckets, pages, all} ->
+          {records, record_only, [counter | counters], buckets, pages, all}
 
-        {:conversation_page, conv_id, params}, {records, counters, buckets, pages, all} ->
-          {records, counters, buckets, [{conv_id, params} | pages], all}
+        {:bucket, bucket}, {records, record_only, counters, buckets, pages, all} ->
+          {records, record_only, counters, [bucket | buckets], pages, all}
 
-        {:conversation_all, conv_id}, {records, counters, buckets, pages, all} ->
-          {records, counters, buckets, pages, [conv_id | all]}
+        {:conversation_page, conv_id, params},
+        {records, record_only, counters, buckets, pages, all} ->
+          {records, record_only, counters, buckets, [{conv_id, params} | pages], all}
+
+        {:conversation_all, conv_id}, {records, record_only, counters, buckets, pages, all} ->
+          {records, record_only, counters, buckets, pages, [conv_id | all]}
 
         _other, acc ->
           acc
       end)
 
     record_keys = Enum.uniq(record_keys)
+    record_only_keys = Enum.uniq(record_only_keys)
     bucket_keys = Enum.uniq(bucket_keys)
     conversation_pages = Enum.uniq(conversation_pages)
 
@@ -476,7 +482,7 @@ defmodule OpenChat.Store.RedisPersistence do
 
     state =
       state
-      |> read_records(record_keys)
+      |> read_records(Enum.uniq(record_keys ++ record_only_keys))
       |> read_buckets(bucket_keys)
 
     {state, all_message_keys} = read_full_conversations(state, conversation_all)
@@ -1127,6 +1133,9 @@ defmodule OpenChat.Store.RedisPersistence do
       {:record, bucket, id} ->
         normalize_record_key(bucket, id)
 
+      {:record_only, bucket, id} ->
+        normalize_record_only_key(bucket, id)
+
       {:conversation_page, conv_id, params} ->
         normalize_conversation_page_key(conv_id, params)
 
@@ -1148,6 +1157,17 @@ defmodule OpenChat.Store.RedisPersistence do
 
     if bucket in @buckets and id != "" do
       [{:record, bucket, id}]
+    else
+      []
+    end
+  end
+
+  defp normalize_record_only_key(bucket, id) do
+    bucket = to_s(bucket)
+    id = to_s(id)
+
+    if bucket in @buckets and id != "" do
+      [{:record_only, bucket, id}]
     else
       []
     end

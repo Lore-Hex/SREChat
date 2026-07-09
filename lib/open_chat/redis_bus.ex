@@ -138,7 +138,9 @@ defmodule OpenChat.RedisBus do
         OpenChat.PubSub.local_broadcast(keys, event)
       end
 
-      refresh_store_async(keys, event)
+      keys
+      |> OpenChat.PubSub.local_subscribed_keys()
+      |> refresh_store_async(event)
     end
 
     {:noreply, state}
@@ -151,6 +153,8 @@ defmodule OpenChat.RedisBus do
   catch
     :exit, reason -> Logger.warning("Redis event store refresh failed: #{inspect(reason)}")
   end
+
+  defp refresh_store_async([], _event), do: :ok
 
   defp refresh_store_async(keys, event) do
     Task.start(fn -> refresh_store(keys, event) end)

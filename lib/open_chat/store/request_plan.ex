@@ -195,7 +195,7 @@ defmodule OpenChat.Store.RequestPlan do
       ] ++
         conversation_record_keys(uid, receiver_type, receiver_id) ++
         if(receiver_type == "group",
-          do: group_keys(receiver_id),
+          do: shallow_group_keys(receiver_id),
           else: user_record_keys(receiver_id)
         )
 
@@ -261,7 +261,7 @@ defmodule OpenChat.Store.RequestPlan do
 
       uid ->
         user_record_keys(uid) ++
-          group_keys(guid) ++
+          shallow_group_keys(guid) ++
           [{:conversation_page, Conversations.group_conversation_id(guid), params}]
     end
   end
@@ -314,7 +314,10 @@ defmodule OpenChat.Store.RequestPlan do
         unread_count_keys(sender_uid, receiver_type, receiver) ++
         auto_delivery_keys(receiver_type, receiver) ++
         parent_message_keys(params) ++
-        if(receiver_type == "group", do: group_keys(receiver), else: user_record_keys(receiver))
+        if(receiver_type == "group",
+          do: shallow_group_keys(receiver),
+          else: user_record_keys(receiver)
+        )
 
     mutate(conversation_scope(sender_uid, receiver_type, receiver), refresh)
   end
@@ -346,7 +349,7 @@ defmodule OpenChat.Store.RequestPlan do
   defp receipt_refresh_keys(uid, receiver_type, receiver_id, message_id) do
     conversation_record_keys(uid, receiver_type, receiver_id) ++
       if(receiver_type == "group",
-        do: group_keys(receiver_id),
+        do: shallow_group_keys(receiver_id),
         else: user_record_keys(receiver_id)
       ) ++
       message_record_keys(message_id)
@@ -482,7 +485,7 @@ defmodule OpenChat.Store.RequestPlan do
       conversation_index_keys(message["conversationId"]) ++
       unread_count_keys(uid, message["receiverType"], message["receiver"], state) ++
       case message["receiverType"] do
-        "group" -> group_keys(message["receiver"])
+        "group" -> shallow_group_keys(message["receiver"])
         "user" -> user_record_keys(message["receiver"])
         _other -> []
       end
@@ -561,6 +564,14 @@ defmodule OpenChat.Store.RequestPlan do
 
   defp group_keys(guid),
     do: [{"groups", guid}, {"members", guid}, {"banned", guid}, {"presence", guid}]
+
+  defp shallow_group_keys(guid),
+    do: [
+      {:record_only, "groups", guid},
+      {:record_only, "members", guid},
+      {:record_only, "banned", guid},
+      {:record_only, "presence", guid}
+    ]
 
   defp uids_from_scope_map(scope_map) do
     scope_map = stringify_keys(scope_map || %{})
