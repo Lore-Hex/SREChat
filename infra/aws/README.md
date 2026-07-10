@@ -40,6 +40,20 @@ PUBLIC_MEDIA_BASE_URL=https://chat.example.com
 
 Uploaded media expires through the S3 lifecycle policy configured in the CloudFormation stack. The default retention is 30 days.
 
+## Staged rollout
+
+The deployment script accepts `OPENCHAT_DEPLOY_TARGET=staging`, `production`, or
+`all` (the default). Use separate runs to gate production on staging contract tests:
+
+```bash
+OPENCHAT_DEPLOY_TARGET=staging ./infra/aws/deploy-openchat.sh
+# Run the SDK and browser smoke suites.
+OPENCHAT_DEPLOY_TARGET=production ./infra/aws/deploy-openchat.sh
+```
+
+Each targeted run verifies the expected AWS account before it builds, pushes, or
+updates infrastructure in that account.
+
 ## Health checks
 
 Use `GET /v3.0/settings` as a simple health check. It does not require auth.

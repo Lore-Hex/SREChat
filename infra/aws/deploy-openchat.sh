@@ -12,6 +12,7 @@ TASK_MEMORY="${OPENCHAT_TASK_MEMORY:-4096}"
 REDIS_NODE_TYPE="${OPENCHAT_REDIS_NODE_TYPE:-cache.t4g.medium}"
 WEBSOCKET_HEARTBEAT_MS="${OPENCHAT_WEBSOCKET_HEARTBEAT_MS:-25000}"
 REDIS_PUBLISHER_LANES="${OPENCHAT_REDIS_PUBLISHER_LANES:-4}"
+DEPLOY_TARGET="${OPENCHAT_DEPLOY_TARGET:-all}"
 
 STAGING_PROFILE="${OPENCHAT_STAGING_PROFILE:-tt-staging}"
 PRODUCTION_PROFILE="${OPENCHAT_PRODUCTION_PROFILE:-awsproduction-ttfm}"
@@ -98,27 +99,54 @@ ecr_auth() {
 }
 
 build_and_push() {
+  local target="$1"
   local staging_registry="$STAGING_ACCOUNT.dkr.ecr.$REGION.amazonaws.com"
   local production_registry="$PRODUCTION_ACCOUNT.dkr.ecr.$REGION.amazonaws.com"
   local staging_auth production_auth auth_config
 
-  ensure_ecr_repo "$STAGING_PROFILE"
-  ensure_ecr_repo "$PRODUCTION_PROFILE"
+  case "$target" in
+    staging)
+      ensure_ecr_repo "$STAGING_PROFILE"
+      staging_auth="$(ecr_auth "$STAGING_PROFILE")"
+      auth_config="$(jq -n --arg registry "$staging_registry" --arg auth "$staging_auth" \
+        '{auths:{($registry):{auth:$auth}}}')"
 
-  staging_auth="$(ecr_auth "$STAGING_PROFILE")"
-  production_auth="$(ecr_auth "$PRODUCTION_PROFILE")"
+      DOCKER_AUTH_CONFIG="$auth_config" docker buildx build --platform linux/arm64 \
+        -t "$staging_registry/openchat:$TAG" \
+        -t "$staging_registry/openchat:latest" \
+        --push .
+      ;;
 
-  auth_config="$(jq -n \
-    --arg sr "$staging_registry" --arg sa "$staging_auth" \
-    --arg pr "$production_registry" --arg pa "$production_auth" \
-    '{auths:{($sr):{auth:$sa},($pr):{auth:$pa}}}')"
+    production)
+      ensure_ecr_repo "$PRODUCTION_PROFILE"
+      production_auth="$(ecr_auth "$PRODUCTION_PROFILE")"
+      auth_config="$(jq -n --arg registry "$production_registry" --arg auth "$production_auth" \
+        '{auths:{($registry):{auth:$auth}}}')"
 
-  DOCKER_AUTH_CONFIG="$auth_config" docker buildx build --platform linux/arm64 \
-    -t "$staging_registry/openchat:$TAG" \
-    -t "$staging_registry/openchat:latest" \
-    -t "$production_registry/openchat:$TAG" \
-    -t "$production_registry/openchat:latest" \
-    --push .
+      DOCKER_AUTH_CONFIG="$auth_config" docker buildx build --platform linux/arm64 \
+        -t "$production_registry/openchat:$TAG" \
+        -t "$production_registry/openchat:latest" \
+        --push .
+      ;;
+
+    all)
+      ensure_ecr_repo "$STAGING_PROFILE"
+      ensure_ecr_repo "$PRODUCTION_PROFILE"
+      staging_auth="$(ecr_auth "$STAGING_PROFILE")"
+      production_auth="$(ecr_auth "$PRODUCTION_PROFILE")"
+      auth_config="$(jq -n \
+        --arg sr "$staging_registry" --arg sa "$staging_auth" \
+        --arg pr "$production_registry" --arg pa "$production_auth" \
+        '{auths:{($sr):{auth:$sa},($pr):{auth:$pa}}}')"
+
+      DOCKER_AUTH_CONFIG="$auth_config" docker buildx build --platform linux/arm64 \
+        -t "$staging_registry/openchat:$TAG" \
+        -t "$staging_registry/openchat:latest" \
+        -t "$production_registry/openchat:$TAG" \
+        -t "$production_registry/openchat:latest" \
+        --push .
+      ;;
+  esac
 }
 
 admin_key() {
@@ -361,37 +389,60 @@ verify_env() {
 }
 
 main() {
-  check_account "$STAGING_PROFILE" "$STAGING_ACCOUNT"
-  check_account "$PRODUCTION_PROFILE" "$PRODUCTION_ACCOUNT"
+  case "$DEPLOY_TARGET" in
+    staging)
+      check_account "$STAGING_PROFILE" "$STAGING_ACCOUNT"
+      ;;
 
-  echo "Building and pushing OpenChat image tag $TAG"
-  build_and_push
+    production)
+      check_account "$PRODUCTION_PROFILE" "$PRODUCTION_ACCOUNT"
+      ;;
+
+    all)
+      check_account "$STAGING_PROFILE" "$STAGING_ACCOUNT"
+      check_account "$PRODUCTION_PROFILE" "$PRODUCTION_ACCOUNT"
+      ;;
+
+    *)
+      echo "Invalid OPENCHAT_DEPLOY_TARGET=$DEPLOY_TARGET; expected staging, production, or all." >&2
+      exit 1
+      ;;
+  esac
+
+  echo "Building and pushing OpenChat image tag $TAG for $DEPLOY_TARGET"
+  build_and_push "$DEPLOY_TARGET"
 
   local staging_key production_key
-  staging_key="$(admin_key staging "$STAGING_PROFILE" "$STAGING_ADMIN_API_KEY_PARAMETER_NAME" OPENCHAT_STAGING_ADMIN_API_KEY OPENCHAT_STAGING_ADMIN_API_KEY_FILE /tmp/openchat-staging-admin-key)"
-  production_key="$(admin_key production "$PRODUCTION_PROFILE" "$PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME" OPENCHAT_PRODUCTION_ADMIN_API_KEY OPENCHAT_PRODUCTION_ADMIN_API_KEY_FILE /tmp/openchat-prod-admin-key)"
 
-  store_admin_key_parameter "$STAGING_PROFILE" staging "$STAGING_ADMIN_API_KEY_PARAMETER_NAME" "$staging_key"
-  store_admin_key_parameter "$PRODUCTION_PROFILE" production "$PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME" "$production_key"
-  unset staging_key production_key
+  if [ "$DEPLOY_TARGET" != "production" ]; then
+    staging_key="$(admin_key staging "$STAGING_PROFILE" "$STAGING_ADMIN_API_KEY_PARAMETER_NAME" OPENCHAT_STAGING_ADMIN_API_KEY OPENCHAT_STAGING_ADMIN_API_KEY_FILE /tmp/openchat-staging-admin-key)"
+    store_admin_key_parameter "$STAGING_PROFILE" staging "$STAGING_ADMIN_API_KEY_PARAMETER_NAME" "$staging_key"
+    unset staging_key
 
-  echo "Deploying staging"
-  deploy_env staging "$STAGING_PROFILE" "$STAGING_ACCOUNT" "$STAGING_DOMAIN" "$STAGING_HOSTED_ZONE_ID" \
-    "$STAGING_VPC_ID" "$STAGING_SUBNET_1" "$STAGING_SUBNET_2" "$STAGING_ADMIN_API_KEY_PARAMETER_NAME" \
-    "$STAGING_CORS_ALLOWED_ORIGINS" "$STAGING_EXTENSION_DOMAIN" "$STAGING_EXTENSION_CERTIFICATE_ARN"
+    echo "Deploying staging"
+    deploy_env staging "$STAGING_PROFILE" "$STAGING_ACCOUNT" "$STAGING_DOMAIN" "$STAGING_HOSTED_ZONE_ID" \
+      "$STAGING_VPC_ID" "$STAGING_SUBNET_1" "$STAGING_SUBNET_2" "$STAGING_ADMIN_API_KEY_PARAMETER_NAME" \
+      "$STAGING_CORS_ALLOWED_ORIGINS" "$STAGING_EXTENSION_DOMAIN" "$STAGING_EXTENSION_CERTIFICATE_ARN"
 
-  echo "Deploying production"
-  deploy_env production "$PRODUCTION_PROFILE" "$PRODUCTION_ACCOUNT" "$PRODUCTION_DOMAIN" "$PRODUCTION_HOSTED_ZONE_ID" \
-    "$PRODUCTION_VPC_ID" "$PRODUCTION_SUBNET_1" "$PRODUCTION_SUBNET_2" "$PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME" \
-    "$PRODUCTION_CORS_ALLOWED_ORIGINS" "$PRODUCTION_EXTENSION_DOMAIN" "$PRODUCTION_EXTENSION_CERTIFICATE_ARN"
+    echo "Verifying staging"
+    verify_env "$STAGING_PROFILE" openchat-staging openchat-staging "$STAGING_DOMAIN" "$STAGING_ACCOUNT"
+  fi
 
-  echo "Verifying staging"
-  verify_env "$STAGING_PROFILE" openchat-staging openchat-staging "$STAGING_DOMAIN" "$STAGING_ACCOUNT"
+  if [ "$DEPLOY_TARGET" != "staging" ]; then
+    production_key="$(admin_key production "$PRODUCTION_PROFILE" "$PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME" OPENCHAT_PRODUCTION_ADMIN_API_KEY OPENCHAT_PRODUCTION_ADMIN_API_KEY_FILE /tmp/openchat-prod-admin-key)"
+    store_admin_key_parameter "$PRODUCTION_PROFILE" production "$PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME" "$production_key"
+    unset production_key
 
-  echo "Verifying production"
-  verify_env "$PRODUCTION_PROFILE" openchat-production openchat-production "$PRODUCTION_DOMAIN" "$PRODUCTION_ACCOUNT"
+    echo "Deploying production"
+    deploy_env production "$PRODUCTION_PROFILE" "$PRODUCTION_ACCOUNT" "$PRODUCTION_DOMAIN" "$PRODUCTION_HOSTED_ZONE_ID" \
+      "$PRODUCTION_VPC_ID" "$PRODUCTION_SUBNET_1" "$PRODUCTION_SUBNET_2" "$PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME" \
+      "$PRODUCTION_CORS_ALLOWED_ORIGINS" "$PRODUCTION_EXTENSION_DOMAIN" "$PRODUCTION_EXTENSION_CERTIFICATE_ARN"
 
-  echo "OpenChat $TAG deployed to staging and production."
+    echo "Verifying production"
+    verify_env "$PRODUCTION_PROFILE" openchat-production openchat-production "$PRODUCTION_DOMAIN" "$PRODUCTION_ACCOUNT"
+  fi
+
+  echo "OpenChat $TAG deployed to $DEPLOY_TARGET."
 }
 
 main "$@"
