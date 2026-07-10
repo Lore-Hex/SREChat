@@ -12,6 +12,7 @@ default_group_message_retention_days = 30
 default_group_unread_fanout_limit = 1_000
 default_group_presence_ttl_seconds = 1_800
 default_group_max_presence = 5_000
+default_redis_publisher_lanes = 4
 default_media_storage = if config_env() == :prod, do: "s3", else: "local"
 default_upload_dir = if config_env() == :prod, do: nil, else: "priv/static/uploads"
 
@@ -42,6 +43,7 @@ config :open_chat,
   group_unread_fanout_limit: default_group_unread_fanout_limit,
   group_presence_ttl_seconds: default_group_presence_ttl_seconds,
   group_max_presence: default_group_max_presence,
+  redis_publisher_lanes: default_redis_publisher_lanes,
   dm_history_connect_grace_ms: 0,
   public_group_reads_enabled: true,
   public_group_joins_as_visits: false,
