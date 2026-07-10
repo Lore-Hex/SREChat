@@ -49,6 +49,11 @@ Parameters:
   RedisNodeType:
     Type: String
     Default: cache.t4g.medium
+  RedisPublisherLanes:
+    Type: Number
+    Default: 4
+    MinValue: 1
+    MaxValue: 16
   UploadRetentionDays:
     Type: Number
     Default: 30
@@ -375,6 +380,8 @@ Resources:
               Value: lazy
             - Name: REDIS_CONVERSATION_REFRESH_LIMIT
               Value: "150"
+            - Name: REDIS_PUBLISHER_LANES
+              Value: !Ref RedisPublisherLanes
             - Name: MEDIA_STORAGE
               Value: s3
             - Name: S3_BUCKET

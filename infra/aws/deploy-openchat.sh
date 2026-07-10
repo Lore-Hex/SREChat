@@ -11,6 +11,7 @@ MAX_CAPACITY="${OPENCHAT_MAX_CAPACITY:-16}"
 TASK_MEMORY="${OPENCHAT_TASK_MEMORY:-4096}"
 REDIS_NODE_TYPE="${OPENCHAT_REDIS_NODE_TYPE:-cache.t4g.medium}"
 WEBSOCKET_HEARTBEAT_MS="${OPENCHAT_WEBSOCKET_HEARTBEAT_MS:-25000}"
+REDIS_PUBLISHER_LANES="${OPENCHAT_REDIS_PUBLISHER_LANES:-4}"
 
 STAGING_PROFILE="${OPENCHAT_STAGING_PROFILE:-tt-staging}"
 PRODUCTION_PROFILE="${OPENCHAT_PRODUCTION_PROFILE:-awsproduction-ttfm}"
@@ -247,6 +248,7 @@ deploy_env() {
       MaxCapacity="$MAX_CAPACITY" \
       TaskMemory="$TASK_MEMORY" \
       RedisNodeType="$REDIS_NODE_TYPE" \
+      RedisPublisherLanes="$REDIS_PUBLISHER_LANES" \
       WebsocketHeartbeatMs="$WEBSOCKET_HEARTBEAT_MS"
 
   ensure_extension_routing "$profile" "$env_name" "$hosted_zone_id" "$extension_domain" "$extension_certificate_arn"
