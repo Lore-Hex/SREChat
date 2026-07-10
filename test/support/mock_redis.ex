@@ -78,8 +78,15 @@ defmodule OpenChat.MockRedis do
 
   defp maybe_forced(queue_key, command, state, fallback) do
     case pop_forced(queue_key, state) do
-      {{:value, response}, state} -> {response, state}
-      {:empty, state} -> fallback.(command, state)
+      {{:value, {:sleep_apply, ms}}, state} when is_integer(ms) and ms >= 0 ->
+        Process.sleep(ms)
+        fallback.(command, state)
+
+      {{:value, response}, state} ->
+        {response, state}
+
+      {:empty, state} ->
+        fallback.(command, state)
     end
   end
 

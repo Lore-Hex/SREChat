@@ -10,6 +10,7 @@ defmodule OpenChat.Config do
   @default_group_presence_ttl_seconds 1_800
   @default_group_max_presence 5_000
   @default_redis_conversation_refresh_limit 150
+  @default_redis_publisher_lanes 4
   @default_dm_history_connect_grace_ms 0
   @default_websocket_heartbeat_ms 25_000
   @default_upload_allowed_mime_types ~w(
@@ -112,6 +113,13 @@ defmodule OpenChat.Config do
 
   def redis_conversation_refresh_limit,
     do: integer_env(:redis_conversation_refresh_limit, @default_redis_conversation_refresh_limit)
+
+  def redis_publisher_lanes do
+    :redis_publisher_lanes
+    |> integer_env(@default_redis_publisher_lanes)
+    |> max(1)
+    |> min(16)
+  end
 
   def dm_history_connect_grace_ms,
     do:
