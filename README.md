@@ -119,6 +119,7 @@ Runtime environment variables are read from `config/runtime.exs`, so container a
 | `REDIS_URL` | unset | Optional Redis URL for durable per-record storage |
 | `REDIS_KEY_PREFIX` | `open_chat` | Redis namespace prefix for record keys, indexes, and counters |
 | `REDIS_SNAPSHOT_KEY` | `open_chat:snapshot:v1` | Legacy import key for older single-snapshot deployments |
+| `REDIS_PUBLISHER_LANES` | `4` | Ordered Redis Pub/Sub publisher lanes. Conversations are deterministically sharded so one slow publish cannot delay unrelated rooms or DMs. Clamped to 1-16. |
 | `SEED_USERS_JSON` | built-in Alice/Bob/Carol without auth tokens | Initial users. List or map. Users may include `authToken`. |
 | `SEED_GROUPS_JSON` | built-in public `lobby` | Initial groups. List or map. |
 | `ACCEPT_UID_TOKENS` | `false` outside tests | Accept `uid:<uid>` developer tokens. Enable only for local contract tests. |
@@ -132,6 +133,21 @@ Runtime environment variables are read from `config/runtime.exs`, so container a
 | `UPLOAD_ALLOWED_MIME_TYPES` | image/audio/video/pdf/text allowlist | Comma-separated allowlist for stored uploads |
 | `DM_HISTORY_CONNECT_GRACE_MS` | `600` outside tests, `0` in tests | Compatibility delay on direct-message history responses so the CometChat JS SDK WebSocket state is connected before immediate `markAsRead()` calls. Set `0` to disable. |
 | `PUBLIC_MEDIA_BASE_URL` | unset | Absolute stable media URL base; otherwise `/media/<file>`. With private S3, keep this pointed at OpenChat for stored fallback URLs while outbound payloads are rewritten to presigned S3 URLs. |
+
+## Observability
+
+`GET /observability` requires the configured admin API key in the `apiKey`/`apikey`
+header. It returns per-process counters, gauges, and latency histograms without message
+contents or auth tokens. Cross-instance delivery exposes these metrics:
+
+- `redis.publish.queue_ms`: time an event waited before its publisher lane ran;
+- `redis.publish.duration_ms`: Redis `PUBLISH` command time;
+- `redis.publish.queue_length`: queued events remaining on each lane;
+- `redis.pubsub.delivery_ms`: publish enqueue to receipt on a peer OpenChat instance;
+- `redis.pubsub.received`: peer events received, tagged by event type.
+
+OpenChat logs a warning when an individual Redis publish takes at least 250 ms. These
+signals separate HTTP/store latency from cross-instance fanout latency during an incident.
 
 ## Admin moderation
 
@@ -192,7 +208,7 @@ When Redis is enabled, Store behaves as a local read-through/write-through cache
 
 This keeps Redis as a high-scale write-through/read-through record store for the current API surface, while each BEAM node keeps a local Store cache. Horizontal task scaling is supported by Redis-scoped locks/counters, targeted read-through refreshes, and Redis Pub/Sub-triggered cache refresh on peer nodes before websocket fanout. Message writes are serialized by conversation or room, reaction writes by message, and membership writes by group. For a larger production deployment, the next architecture step is PostgreSQL as the source of truth for users, groups, messages, receipts, moderation logs, and searchable audit history, with Redis kept for Pub/Sub, hot counters, ephemeral presence, rate limits, and short-lived caches.
 
-WebSocket events are also fanned out through Redis Pub/Sub so instances behind a load balancer can notify each other's connected clients.
+WebSocket events are also fanned out through Redis Pub/Sub so instances behind a load balancer can notify each other's connected clients. Publishers are conversation-sharded across ordered lanes: messages, edits, deletes, receipts, and reactions in one room or DM preserve order, while a delayed Redis command for one conversation does not block unrelated conversations on the same OpenChat instance.
 
 ## AWS deployment sketch
 

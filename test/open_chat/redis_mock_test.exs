@@ -1,7 +1,7 @@
 defmodule OpenChat.RedisMockTest do
   use ExUnit.Case, async: false
 
-  alias OpenChat.{MockRedis, RedisBus, Store}
+  alias OpenChat.{MockRedis, Observability, RedisBus, Store}
   alias OpenChat.Store.{RedisPersistence, RequestPlan, State}
 
   setup do
@@ -12,6 +12,7 @@ defmodule OpenChat.RedisMockTest do
           :redis_key_prefix,
           :redis_snapshot_key,
           :redis_boot_mode,
+          :redis_publisher_lanes,
           :redis_client,
           :redis_pubsub_client
         ],
@@ -20,7 +21,7 @@ defmodule OpenChat.RedisMockTest do
 
     stop_redis_clients()
     stop_name(OpenChat.RedisPubSub)
-    stop_name(OpenChat.RedisBusPublisher)
+    stop_redis_publishers()
 
     Application.put_env(:open_chat, :redis_url, "mock://redis")
     Application.put_env(:open_chat, :redis_key_prefix, "mock:test")
@@ -39,7 +40,7 @@ defmodule OpenChat.RedisMockTest do
 
       stop_redis_clients()
       stop_name(OpenChat.RedisPubSub)
-      stop_name(OpenChat.RedisBusPublisher)
+      stop_redis_publishers()
       restart_redis_bus()
     end)
 
@@ -431,6 +432,7 @@ defmodule OpenChat.RedisMockTest do
   end
 
   test "RedisBus publishes to mock Redis and consumes remote pubsub events" do
+    Observability.reset!()
     start_mock_redis()
     terminate_redis_bus()
     restart_redis_bus()
@@ -438,17 +440,21 @@ defmodule OpenChat.RedisMockTest do
     RedisBus.publish([{:user, "alice"}, {:raw, "ignored"}], %{"text" => "hi"})
     RedisBus.publish_system({:group, "room"}, %{"type" => "membership_changed"})
 
-    [first_publish, second_publish] = wait_for_published(2, OpenChat.RedisBusPublisher)
-    assert {channel, payload} = first_publish
-    assert channel == "mock:test:events"
+    published = wait_for_total_published(2)
 
-    decoded = Jason.decode!(payload)
-    assert decoded["keys"] == [["user", "alice"], ["raw", "ignored"]]
-    assert decoded["event"] == %{"text" => "hi"}
-    assert decoded["system"] == false
+    decoded =
+      published
+      |> Enum.map(fn {channel, payload} ->
+        assert channel == "mock:test:events"
+        Jason.decode!(payload)
+      end)
 
-    assert {_channel, system_payload} = second_publish
-    assert Jason.decode!(system_payload)["system"] == true
+    assert Enum.any?(decoded, fn event ->
+             event["keys"] == [["user", "alice"], ["raw", "ignored"]] and
+               event["event"] == %{"text" => "hi"} and event["system"] == false
+           end)
+
+    assert Enum.any?(decoded, &(&1["system"] == true))
 
     {:ok, _} = OpenChat.PubSub.subscribe({:user, "alice"})
     {:ok, _} = OpenChat.PubSub.subscribe({:group, "room"})
@@ -457,7 +463,8 @@ defmodule OpenChat.RedisMockTest do
       Jason.encode!(%{
         "origin" => "remote",
         "keys" => [["user", "alice"], ["group", "room"], ["raw", "ignored"], ["bad"]],
-        "event" => %{"text" => "remote"},
+        "event" => %{"text" => "remote", "type" => "message"},
+        "publishedAtMs" => System.system_time(:millisecond) - 25,
         "system" => false
       })
 
@@ -469,8 +476,13 @@ defmodule OpenChat.RedisMockTest do
       %{channel: "mock:test:events", payload: remote_payload}
     })
 
-    assert_receive {:comet_event, %{"text" => "remote"}}
-    assert_receive {:comet_event, %{"text" => "remote"}}
+    assert_receive {:comet_event, %{"text" => "remote", "type" => "message"}}
+    assert_receive {:comet_event, %{"text" => "remote", "type" => "message"}}
+
+    Process.sleep(20)
+    snapshot = Observability.snapshot()
+    assert snapshot["counters"]["redis.pubsub.received|type=message"] == 1
+    assert snapshot["histograms"]["redis.pubsub.delivery_ms|type=message"]["min"] >= 25
 
     system_payload =
       Jason.encode!(%{
@@ -604,12 +616,15 @@ defmodule OpenChat.RedisMockTest do
 
     {:ok, _} = OpenChat.PubSub.subscribe({:user, "ordered"})
 
-    assert :ok = OpenChat.PubSub.broadcast({:user, "ordered"}, %{"text" => "first"})
+    first_event = %{"text" => "first"}
+    connection = publisher_connection([{:user, "ordered"}], first_event)
+
+    assert :ok = OpenChat.PubSub.broadcast({:user, "ordered"}, first_event)
     assert_receive {:comet_event, %{"text" => "first"}}
-    assert [{_channel, payload}] = wait_for_published(1, OpenChat.RedisBusPublisher)
+    assert [{_channel, payload}] = wait_for_published(1, connection)
     assert Jason.decode!(payload)["event"] == %{"text" => "first"}
 
-    MockRedis.force_command({:sleep, 150, {:error, :publish_down}}, OpenChat.RedisBusPublisher)
+    MockRedis.force_command({:sleep, 150, {:error, :publish_down}}, connection)
 
     started_at = System.monotonic_time(:millisecond)
     assert :ok = OpenChat.PubSub.broadcast({:user, "ordered"}, %{"text" => "local-only"})
@@ -619,6 +634,76 @@ defmodule OpenChat.RedisMockTest do
 
     assert_receive {:comet_event, %{"text" => "local-only"}}
     :sys.get_state(RedisBus)
+  end
+
+  test "publisher lanes prevent one slow room from delaying unrelated rooms" do
+    Observability.reset!()
+    Application.put_env(:open_chat, :redis_publisher_lanes, 4)
+    start_mock_redis()
+    terminate_redis_bus()
+    restart_redis_bus()
+
+    connections = RedisBus.publisher_connections()
+    assert length(connections) == 4
+
+    {slow_room, fast_room} = rooms_on_different_lanes(length(connections))
+    slow_event = group_message_event(slow_room, "slow")
+    fast_event = group_message_event(fast_room, "fast")
+    slow_connection = publisher_connection([{:group, slow_room}], slow_event)
+    fast_connection = publisher_connection([{:group, fast_room}], fast_event)
+    slow_lane = RedisBus.publisher_lane_index([{:group, slow_room}], slow_event, 4)
+    fast_lane = RedisBus.publisher_lane_index([{:group, fast_room}], fast_event, 4)
+
+    refute slow_connection == fast_connection
+    MockRedis.force_command({:sleep_apply, 200}, slow_connection)
+
+    started_at = System.monotonic_time(:millisecond)
+    assert :ok = OpenChat.PubSub.broadcast({:group, slow_room}, slow_event)
+    assert :ok = OpenChat.PubSub.broadcast({:group, fast_room}, fast_event)
+
+    assert [{_channel, fast_payload}] = wait_for_published(1, fast_connection)
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+
+    assert elapsed_ms < 100
+    assert Jason.decode!(fast_payload)["event"]["body"]["data"]["text"] == "fast"
+    assert [{_channel, slow_payload}] = wait_for_published(1, slow_connection)
+    assert Jason.decode!(slow_payload)["event"]["body"]["data"]["text"] == "slow"
+
+    Process.sleep(20)
+    snapshot = Observability.snapshot()
+
+    assert snapshot["histograms"][
+             "redis.publish.duration_ms|lane=#{slow_lane},outcome=ok"
+           ]["max"] >= 200
+
+    assert snapshot["histograms"][
+             "redis.publish.duration_ms|lane=#{fast_lane},outcome=ok"
+           ]["max"] < 100
+  end
+
+  test "publisher lane routing preserves conversation ordering" do
+    lane_count = 4
+    group_message = group_message_event("ordered-room", "message")
+    group_reaction = Map.put(group_message, "type", "reaction")
+
+    assert RedisBus.publisher_lane_index([{:group, "ordered-room"}], group_message, lane_count) ==
+             RedisBus.publisher_lane_index(
+               [{:user, "alice"}, {:group, "ordered-room"}],
+               group_reaction,
+               lane_count
+             )
+
+    alice_to_bob = %{
+      "type" => "message",
+      "sender" => "alice",
+      "receiver" => "bob",
+      "receiverType" => "user"
+    }
+
+    bob_to_alice = %{alice_to_bob | "sender" => "bob", "receiver" => "alice"}
+
+    assert RedisBus.publisher_lane_index([{:user, "bob"}], alice_to_bob, lane_count) ==
+             RedisBus.publisher_lane_index([{:user, "alice"}], bob_to_alice, lane_count)
   end
 
   test "Redis-backed history reads bypass the Store mailbox" do
@@ -695,6 +780,61 @@ defmodule OpenChat.RedisMockTest do
     end
   end
 
+  defp wait_for_total_published(count, attempts \\ 50)
+  defp wait_for_total_published(_count, 0), do: flunk("timed out waiting for mock publishes")
+
+  defp wait_for_total_published(count, attempts) do
+    published =
+      RedisBus.publisher_connections()
+      |> Enum.flat_map(&MockRedis.published/1)
+
+    if length(published) >= count do
+      Enum.take(published, count)
+    else
+      Process.sleep(10)
+      wait_for_total_published(count, attempts - 1)
+    end
+  end
+
+  defp publisher_connection(keys, event) do
+    connections = RedisBus.publisher_connections()
+    Enum.at(connections, RedisBus.publisher_lane_index(keys, event, length(connections)))
+  end
+
+  defp rooms_on_different_lanes(lane_count) do
+    rooms = Enum.map(1..100, &"publisher-lane-room-#{&1}")
+    slow_room = hd(rooms)
+
+    slow_lane =
+      RedisBus.publisher_lane_index(
+        [{:group, slow_room}],
+        group_message_event(slow_room, "slow"),
+        lane_count
+      )
+
+    fast_room =
+      Enum.find(tl(rooms), fn room ->
+        RedisBus.publisher_lane_index(
+          [{:group, room}],
+          group_message_event(room, "fast"),
+          lane_count
+        ) !=
+          slow_lane
+      end)
+
+    {slow_room, fast_room}
+  end
+
+  defp group_message_event(room, text) do
+    %{
+      "type" => "message",
+      "sender" => "publisher-test-user",
+      "receiver" => room,
+      "receiverType" => "group",
+      "body" => %{"data" => %{"text" => text}}
+    }
+  end
+
   defp terminate_redis_bus do
     case Process.whereis(RedisBus) do
       nil -> :ok
@@ -723,6 +863,11 @@ defmodule OpenChat.RedisMockTest do
       OpenChat.RedisLock2,
       OpenChat.RedisLock3
     ]
+    |> Enum.each(&stop_name/1)
+  end
+
+  defp stop_redis_publishers do
+    RedisBus.configured_publisher_names()
     |> Enum.each(&stop_name/1)
   end
 

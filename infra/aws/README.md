@@ -30,6 +30,7 @@ REQUEST_BODY_LIMIT=12000000
 UPLOAD_MAX_BYTES=10000000
 REDIS_URL=redis://<elasticache-primary-endpoint>:6379/0
 REDIS_KEY_PREFIX=open_chat
+REDIS_PUBLISHER_LANES=4
 MEDIA_STORAGE=s3
 S3_BUCKET=<private-upload-bucket>
 S3_REGION=<aws-region>
