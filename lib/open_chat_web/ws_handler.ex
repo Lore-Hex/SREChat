@@ -197,7 +197,7 @@ defmodule OpenChatWeb.WSHandler do
       {:ok, user} ->
         uid = user["uid"]
         Observability.record_auth_attempt("websocket", "ok", present?(token))
-        Observability.record_ws("auth_success")
+        Observability.record_ws("auth_success", %{"credential" => credential_kind(token)})
         cancel_auth_timeout(state)
         state = replace_user_subscription(state, uid)
         state = sync_group_subscriptions(%{state | uid: uid})
@@ -224,7 +224,10 @@ defmodule OpenChatWeb.WSHandler do
           present?(token)
         )
 
-        Observability.record_ws("auth_failure", %{"code" => error["code"] || "401"})
+        Observability.record_ws("auth_failure", %{
+          "code" => error["code"] || "401",
+          "credential" => credential_kind(token)
+        })
 
         reply = %{
           "appId" => event["appId"] || Config.app_id(),
@@ -356,6 +359,10 @@ defmodule OpenChatWeb.WSHandler do
   defp to_s(value), do: to_string(value)
 
   defp present?(value), do: to_s(value) != ""
+
+  defp credential_kind("local." <> _rest), do: "sdk_jwt"
+  defp credential_kind(value) when value in [nil, "", false], do: "missing"
+  defp credential_kind(_value), do: "opaque"
 
   defp close_reason({:remote, code, _text}), do: "remote_#{code}"
   defp close_reason({:error, reason}), do: "error_#{to_s(reason)}"

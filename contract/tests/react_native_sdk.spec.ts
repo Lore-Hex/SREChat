@@ -39,6 +39,11 @@ function installReactNativeNodeShims() {
   if (!globalAny.__openChatFetchPatched) {
     const nativeFetch = globalAny.fetch.bind(globalAny);
     globalAny.fetch = async (...args: any[]) => {
+      // Production resolves the SDK's reactions-us.<extension-domain> host.
+      // Route its localhost equivalent through the same Caddy TLS proxy.
+      if (typeof args[0] === 'string') {
+        args[0] = args[0].replace('https://reactions-us.localhost/', 'https://localhost/');
+      }
       if (args[1]?.referrer === 'no-referrer') {
         args[1] = { ...args[1] };
         delete args[1].referrer;
