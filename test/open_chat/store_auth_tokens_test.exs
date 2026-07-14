@@ -33,7 +33,7 @@ defmodule OpenChat.Store.AuthTokensTest do
     assert AuthTokens.lookup_tokens(token) == []
   end
 
-  test "local JWT lookup rejects expired malformed and tampered local tokens" do
+  test "local JWT lookup keeps signed SDK credentials valid until token revocation" do
     assert {:ok, "string-exp"} =
              AuthTokens.local_jwt_token(
                local_token(%{
@@ -51,7 +51,7 @@ defmodule OpenChat.Store.AuthTokensTest do
     assert :error =
              AuthTokens.local_jwt_token(local_token(%{"token" => "", "exp" => Time.now() + 60}))
 
-    assert :error =
+    assert {:ok, "old"} =
              AuthTokens.local_jwt_token(local_token(%{"token" => "old", "exp" => Time.now() - 1}))
 
     token = local_token(%{"token" => "auth", "exp" => Time.now() + 60})

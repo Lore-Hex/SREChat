@@ -6,6 +6,7 @@ defmodule OpenChatWeb.WSHandlerTest do
 
   setup do
     Store.reset!()
+    OpenChat.Observability.reset!()
     :ok
   end
 
@@ -50,7 +51,37 @@ defmodule OpenChatWeb.WSHandlerTest do
     assert reply["body"] == %{"status" => "OK", "code" => "200"}
   end
 
-  test "auth event rejects expired local JWTs after signing-secret rotation" do
+  test "auth event accepts cached SDK credentials past their advisory expiry" do
+    assert {:ok, payload} = Store.create_auth_token("cached-mobile-user")
+
+    cached_jwt =
+      OpenChat.Store.AuthTokens.local_jwt(
+        "cached-mobile-user",
+        payload["authToken"],
+        OpenChat.Time.now() - 90_000
+      )
+
+    {:reply, {:text, json}, state} =
+      WSHandler.websocket_handle(
+        {:text,
+         Jason.encode!(%{
+           "type" => "auth",
+           "body" => %{"auth" => cached_jwt}
+         })},
+        %{uid: nil, token: nil, device_id: nil}
+      )
+
+    assert state.uid == "cached-mobile-user"
+    assert get_in(Jason.decode!(json), ["body", "status"]) == "OK"
+
+    Process.sleep(10)
+
+    assert OpenChat.Observability.snapshot()["counters"][
+             "ws.events|credential=sdk_jwt,event=auth_success"
+           ] == 1
+  end
+
+  test "auth event rejects cached local credentials after signing-secret rotation" do
     previous_secret = Application.get_env(:open_chat, :local_jwt_secret)
 
     on_exit(fn ->
