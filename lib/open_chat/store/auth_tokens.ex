@@ -3,7 +3,7 @@ defmodule OpenChat.Store.AuthTokens do
 
   alias OpenChat.{Config, Time}
 
-  @local_jwt_ttl_seconds 24 * 60 * 60
+  @sdk_jwt_advisory_ttl_seconds 24 * 60 * 60
 
   def local_jwt(uid, auth_token, now \\ Time.now()) do
     payload =
@@ -11,7 +11,7 @@ defmodule OpenChat.Store.AuthTokens do
         "uid" => to_s(uid),
         "token" => to_s(auth_token),
         "iat" => now,
-        "exp" => now + @local_jwt_ttl_seconds
+        "exp" => now + @sdk_jwt_advisory_ttl_seconds
       }
       |> Jason.encode!()
       |> Base.url_encode64(padding: false)
@@ -37,7 +37,7 @@ defmodule OpenChat.Store.AuthTokens do
          true <- valid_signature?(payload, token_signature),
          {:ok, json} <- Base.url_decode64(payload, padding: false),
          {:ok, %{"token" => auth_token} = payload_map} <- Jason.decode(json),
-         true <- token_not_expired?(payload_map),
+         true <- valid_expiry_claim?(payload_map),
          auth_token <- to_s(auth_token),
          false <- blank?(auth_token) do
       {:ok, auth_token}
@@ -67,8 +67,10 @@ defmodule OpenChat.Store.AuthTokens do
 
   defp secure_compare(_left, _right), do: false
 
-  defp token_not_expired?(%{"exp" => exp}), do: to_int(exp) > Time.now()
-  defp token_not_expired?(_payload), do: false
+  # CometChat SDKs persist this websocket credential and do not reliably
+  # refresh it. Revocation of the underlying opaque token is authoritative.
+  defp valid_expiry_claim?(%{"exp" => exp}), do: to_int(exp) > 0
+  defp valid_expiry_claim?(_payload), do: false
 
   defp blank?(value), do: value in [nil, "", false]
 

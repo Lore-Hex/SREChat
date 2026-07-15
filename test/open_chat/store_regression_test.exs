@@ -55,7 +55,7 @@ defmodule OpenChat.StoreRegressionTest do
     assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.me(tampered)
 
     expired = AuthTokens.local_jwt("alice", token, Time.now() - 90_000)
-    assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.me(expired)
+    assert {:ok, %{"uid" => "alice"}} = Store.me(expired)
 
     assert {:ok, %{"success" => true}} = Store.revoke_auth_token(token)
     assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.authenticate(token)
