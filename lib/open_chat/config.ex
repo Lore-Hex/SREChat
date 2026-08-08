@@ -30,6 +30,35 @@ defmodule OpenChat.Config do
 
   def app_id, do: Application.fetch_env!(:open_chat, :app_id)
   def api_key, do: Application.fetch_env!(:open_chat, :api_key)
+
+  @doc """
+  How message/action/reaction ids are allocated.
+
+  `:global` — the legacy shared Redis counter; single-master, kept as the
+  default for OpenChat parity. `:region` — coordination-free
+  `OpenChat.RegionId` allocation; required for multi-master.
+  """
+  def id_allocator do
+    case Application.get_env(:open_chat, :id_allocator, "global") do
+      value when value in [:region, "region"] -> :region
+      _other -> :global
+    end
+  end
+
+  @doc "This deployment's region index (0..7). Distinct from the SDK's region string."
+  def region_index do
+    value = Application.get_env(:open_chat, :region_index, 0)
+
+    case value do
+      int when is_integer(int) and int in 0..7 ->
+        int
+
+      other ->
+        raise ArgumentError,
+              "REGION_INDEX must be an integer between 0 and 7, got: #{inspect(other)}"
+    end
+  end
+
   def version, do: Application.get_env(:open_chat, :version, "dev")
   def reject_weak_admin_api_key?, do: boolean_env(:reject_weak_admin_api_key, false)
 

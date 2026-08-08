@@ -1813,6 +1813,59 @@ defmodule OpenChat.RedisPersistenceTest do
     end)
   end
 
+  test "region allocation over shared Redis: two stores in one region never collide", context do
+    with_redis(context, fn ->
+      with_open_chat_env(%{id_allocator: "region", region_index: 5}, fn ->
+        peer = start_peer_store!()
+
+        try do
+          ids =
+            for i <- 1..40 do
+              server = if rem(i, 2) == 0, do: OpenChat.Store, else: peer
+
+              {:ok, msg} =
+                Store.call_on(
+                  server,
+                  {:send_message, "region-a",
+                   %{
+                     "receiver" => "region-b",
+                     "receiverType" => "user",
+                     "data" => %{"text" => "burst #{i}"}
+                   }, [], []}
+                )
+
+              msg["id"]
+            end
+
+          # Both stores drew sequence slots from the same per-millisecond
+          # Redis key: 40 rapid sends from 2 processes, zero collisions.
+          assert length(Enum.uniq(ids)) == 40
+
+          for id <- ids do
+            {_ms, region, _seq} = OpenChat.RegionId.decompose(id)
+            assert region == 5
+            assert id <= 9_007_199_254_740_991
+          end
+        after
+          stop_peer_store(peer)
+        end
+      end)
+    end)
+  end
+
+  test "region sequence slots are 0-based, increasing, and expire", context do
+    with_redis(context, fn ->
+      ms = 12_345_678
+      assert RedisPersistence.take_region_seq(ms) == 0
+      assert RedisPersistence.take_region_seq(ms) == 1
+      assert RedisPersistence.take_region_seq(ms + 1) == 0
+
+      prefix = Application.fetch_env!(:open_chat, :redis_key_prefix)
+      {:ok, ttl} = Redix.command(context.redis, ["PTTL", "#{prefix}:counter:region_seq:#{ms}"])
+      assert ttl > 0 and ttl <= 10_000
+    end)
+  end
+
   defp with_redis(%{skip_redis?: reason}, _fun) do
     IO.puts("Skipping Redis persistence test; Redis unavailable: #{inspect(reason)}")
     :ok
