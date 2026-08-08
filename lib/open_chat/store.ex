@@ -10,7 +10,7 @@ defmodule OpenChat.Store do
   use GenServer
   require Logger
 
-  alias OpenChat.{Config, Errors, Observability, Time}
+  alias OpenChat.{Config, Errors, Observability, RegionId, Time}
 
   alias OpenChat.Store.{
     Access,
@@ -1472,10 +1472,39 @@ defmodule OpenChat.Store do
     do: Unread.sync(state, uid, conv_id)
 
   defp take_counter(state, counter) do
+    case Config.id_allocator() do
+      :region -> take_region_id(state)
+      :global -> take_global_counter(state, counter)
+    end
+  end
+
+  defp take_global_counter(state, counter) do
     fallback = max(to_int(state[counter]), 1)
     value = RedisPersistence.take_counter(counter, fallback)
     value = if value < 1, do: fallback, else: value
     {value, Map.put(state, counter, max(fallback, value + 1))}
+  end
+
+  # Region allocation ignores which logical counter was asked for: message,
+  # action, and reaction ids share one time-ordered space, so one allocator
+  # covers every caller and cross-kind uniqueness is free.
+  defp take_region_id(state) do
+    alloc = state["region_id_alloc"] || %{}
+    region = Config.region_index()
+    now_ms = System.system_time(:millisecond)
+
+    {id, alloc} =
+      if RedisPersistence.enabled?() do
+        # Sequence slots come from this region's Redis, shared by every node
+        # in the region. Configured-but-unreachable Redis raises inside the
+        # claim, failing the mutation the same way persist_ops would.
+        RegionId.next_shared(alloc, region, now_ms, &RedisPersistence.take_region_seq/1)
+      else
+        # No Redis (dev/test): a single Store process is the only allocator.
+        RegionId.next_local(alloc, region, now_ms)
+      end
+
+    {id, Map.put(state, "region_id_alloc", alloc)}
   end
 
   defp seed_state do
