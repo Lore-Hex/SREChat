@@ -45,6 +45,14 @@ defmodule OpenChat.Config do
     end
   end
 
+  @doc "Cross-region replication: :off (default) or :multi_master."
+  def replication_mode do
+    case Application.get_env(:open_chat, :replication_mode, "off") do
+      value when value in [:multi_master, "multi_master"] -> :multi_master
+      _other -> :off
+    end
+  end
+
   @doc "This deployment's region index (0..7). Distinct from the SDK's region string."
   def region_index do
     value = Application.get_env(:open_chat, :region_index, 0)
