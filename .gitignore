@@ -12,3 +12,4 @@ priv/static/uploads/*
 
 .DS_Store
 *.log
+erl_crash.dump
