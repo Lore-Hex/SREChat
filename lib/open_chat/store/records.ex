@@ -188,7 +188,9 @@ defmodule OpenChat.Store.Records do
   alias OpenChat.Time
   alias __MODULE__.{Ban, Group, Member, Message, Presence, Reaction, User}
 
-  @type record ::
+  # Named stored_record: `record/0` is an Erlang built-in type and defining
+  # a type of that name is a compile warning on Elixir 1.20.
+  @type stored_record ::
           User.t()
           | Group.t()
           | Member.t()
@@ -323,7 +325,7 @@ defmodule OpenChat.Store.Records do
   @spec reaction(map()) :: map()
   def reaction(attrs), do: attrs |> new_reaction() |> to_map()
 
-  @spec to_map(record()) :: map()
+  @spec to_map(stored_record()) :: map()
   def to_map(%User{} = user) do
     %{
       "uid" => user.uid,
@@ -446,8 +448,9 @@ defmodule OpenChat.Store.Records do
     end
   end
 
+  # No nil clause: every caller supplies `attrs[...] || %{}`, so nil cannot
+  # arrive (and Elixir 1.20's type checker proves it).
   defp normalise_data(value) when is_map(value), do: stringify_keys(value)
-  defp normalise_data(nil), do: %{}
   defp normalise_data(other), do: other
 
   defp stringify_keys(%{__struct__: _} = struct), do: struct

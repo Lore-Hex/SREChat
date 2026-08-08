@@ -1,0 +1,20 @@
+# Advisory IDs tools/audit.sh accepts, one per line, each with a rationale.
+# An entry here is a documented decision, not a mute button: the script fails
+# on any advisory NOT listed here, and on entries that are no longer reported.
+
+# cowlib cookie ENCODER injection (cow_cookie:cookie/1). LOW. No fixed cowlib
+# release exists as of 2026-08-08 (2.19.0 is the newest upstream tag and is
+# affected). This app never builds cookie headers: no cow_cookie,
+# put_resp_cookie, or fetch_cookies call sites (auth is bearer-token).
+# Remove when cowlib ships a fix and deps.update picks it up.
+EEF-CVE-2026-43969
+GHSA-g2wm-735q-3f56
+
+# cowlib structured-header ENCODER response splitting
+# (cow_http_struct_hd:escape_string/2). MEDIUM. Same situation: 2.19.0 is the
+# newest upstream release and is affected. The app emits only fixed CORS and
+# security headers plus a media path whose filename is sanitized to
+# [A-Za-z0-9._-]; no user-controlled bytes reach structured-header
+# serialization, and Plug.Conn rejects control characters in header values.
+EEF-CVE-2026-43966
+GHSA-w4f7-4cxr-rv3c

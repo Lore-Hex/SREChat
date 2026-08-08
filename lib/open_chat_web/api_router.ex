@@ -792,10 +792,11 @@ defmodule OpenChatWeb.ApiRouter do
       true ->
         case Media.fetch(filename) do
           {:ok, %{path: path, content_type: content_type}} ->
+            # Local fetches always carry a content type (MIME.from_path has
+            # its own octet-stream fallback), so no || chain here. The S3
+            # clause below keeps its fallback: S3 metadata can be absent.
             conn
-            |> put_resp_content_type(
-              content_type || MIME.from_path(path) || "application/octet-stream"
-            )
+            |> put_resp_content_type(content_type)
             |> send_file(200, path)
 
           {:ok, %{body: body, content_type: content_type}} ->
