@@ -9,9 +9,12 @@ defmodule OpenChat.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
-      preferred_cli_env: [test: :test, "test.load": :test],
       elixirc_paths: elixirc_paths(Mix.env())
     ]
+  end
+
+  def cli do
+    [preferred_envs: [test: :test, "test.load": :test]]
   end
 
   def application do

@@ -150,13 +150,10 @@ defmodule OpenChatWeb.WSHandler do
   end
 
   defp is_native_app_origin(origin) when is_binary(origin) do
-    case URI.parse(origin) do
-      %URI{scheme: scheme, host: host} ->
-        scheme in ["capacitor", "ionic", "file"] or local_origin?(scheme, host)
-
-      _other ->
-        false
-    end
+    # URI.parse/1 always returns a %URI{}; malformed input surfaces as nil
+    # fields (handled below) or raises (handled by the rescue).
+    %URI{scheme: scheme, host: host} = URI.parse(origin)
+    scheme in ["capacitor", "ionic", "file"] or local_origin?(scheme, host)
   rescue
     _error -> false
   end

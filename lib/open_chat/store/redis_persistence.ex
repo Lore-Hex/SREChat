@@ -1032,8 +1032,8 @@ defmodule OpenChat.Store.RedisPersistence do
     end
   end
 
-  defp run_pipeline([]), do: {:ok, []}
-
+  # Callers only reach this with a non-empty command list (the type checker
+  # proves it), so there is no empty-list clause.
   defp run_pipeline(commands) do
     case RedisClient.pipeline(write_conn(), commands) do
       {:ok, results} ->

@@ -275,7 +275,8 @@ defmodule OpenChat.Media do
       path = Path.join(Config.upload_dir(), stored_name)
 
       if File.exists?(path) do
-        {:ok, %{path: path, content_type: MIME.from_path(path) || "application/octet-stream"}}
+        # MIME.from_path/1 already falls back to "application/octet-stream".
+        {:ok, %{path: path, content_type: MIME.from_path(path)}}
       else
         {:error, :not_found}
       end
@@ -321,7 +322,9 @@ defmodule OpenChat.Media do
     |> String.trim()
     |> String.downcase()
     |> case do
-      "" -> MIME.from_path(filename) || "application/octet-stream"
+      # MIME.from_path/1 itself falls back to "application/octet-stream",
+      # so an extra || arm is dead code (and a type warning on Elixir 1.20).
+      "" -> MIME.from_path(filename)
       type -> type
     end
   end
