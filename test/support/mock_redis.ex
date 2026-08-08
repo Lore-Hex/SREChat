@@ -9,6 +9,7 @@ defmodule OpenChat.MockRedis do
         %{
           strings: %{},
           sets: %{},
+          streams: %{},
           command_responses: :queue.new(),
           pipeline_responses: :queue.new(),
           published: []
@@ -178,6 +179,25 @@ defmodule OpenChat.MockRedis do
 
   defp apply_command(["PUBLISH", channel, payload], state) do
     {{:ok, 0}, update_in(state, [:published], &[{channel, payload} | &1])}
+  end
+
+  # The atomic-write script grew two trailing args for multi-master oplog
+  # emission: the encoded entry and its stream key ("" when replication is
+  # off). Same record semantics, plus a stream append when present.
+  defp apply_command(
+         ["EVAL", script, "0", prefix, version, encoded_ops, oplog_entry, oplog_stream],
+         state
+       ) do
+    {reply, state} = apply_command(["EVAL", script, "0", prefix, version, encoded_ops], state)
+
+    state =
+      if oplog_entry != "" and oplog_stream != "" do
+        update_in(state, [:streams, oplog_stream], &[oplog_entry | &1 || []])
+      else
+        state
+      end
+
+    {reply, state}
   end
 
   defp apply_command(["EVAL", _script, "0", prefix, version, encoded_ops], state) do

@@ -48,6 +48,8 @@ defmodule OpenChat.Store.RedisPersistence do
   local prefix = ARGV[1]
   local version = ARGV[2]
   local ops = cjson.decode(ARGV[3])
+  local oplog_entry = ARGV[4]
+  local oplog_stream = ARGV[5]
 
   local function key(...)
     local parts = {prefix, ...}
@@ -74,6 +76,14 @@ defmodule OpenChat.Store.RedisPersistence do
     else
       error("unknown Redis write op: " .. tostring(op["op"]))
     end
+  end
+
+  -- Multi-master: the oplog entry commits in the SAME script as the
+  -- records it describes. A crash cannot commit a mutation that peers
+  -- will never see, or announce one that never landed. MAXLEN bounds the
+  -- stream; the tailer detects trim-induced gaps rather than skipping.
+  if oplog_entry ~= "" and oplog_stream ~= "" then
+    redis.call("XADD", oplog_stream, "MAXLEN", "~", "1000000", "*", "entry", oplog_entry)
   end
 
   redis.call("SET", key("meta", "version"), version)
@@ -263,10 +273,12 @@ defmodule OpenChat.Store.RedisPersistence do
   def write(ops) do
     cond do
       enabled?() ->
+        entry = OpenChat.Replication.entry_for(ops)
+
         ops
         |> List.wrap()
         |> Enum.flat_map(&atomic_op/1)
-        |> atomic_write()
+        |> atomic_write(entry)
 
       configured?() ->
         {:error, :redis_unavailable}
@@ -1014,16 +1026,20 @@ defmodule OpenChat.Store.RedisPersistence do
 
   defp atomic_op(_op), do: []
 
-  defp atomic_write([]), do: :ok
+  # entry_for filters from the same ops list, so empty commands with a
+  # non-nil entry cannot happen; the guard stays on ops alone.
+  defp atomic_write([], _entry), do: :ok
 
-  defp atomic_write(ops) do
+  defp atomic_write(ops, entry) do
     case write_command([
            "EVAL",
            @atomic_write_script,
            "0",
            Config.redis_key_prefix(),
            @version,
-           Jason.encode!(ops)
+           Jason.encode!(ops),
+           entry || "",
+           if(entry, do: oplog_stream_key(), else: "")
          ]) do
       {:ok, revision} ->
         remember_full_revision(revision)
@@ -1033,6 +1049,12 @@ defmodule OpenChat.Store.RedisPersistence do
         Logger.warning("Redis atomic persist failed: #{inspect(reason)}")
         {:error, reason}
     end
+  end
+
+  @doc "This region's oplog stream key, fully namespaced."
+  def oplog_stream_key(region_index \\ nil) do
+    region = region_index || Config.region_index()
+    key(OpenChat.Replication.stream_suffix(region))
   end
 
   defp state_commands(state) do
