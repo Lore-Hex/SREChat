@@ -7,6 +7,7 @@ defmodule OpenChat.Application do
   def start(_type, _args) do
     ensure_security_config!()
     ensure_media_storage!()
+    OpenChat.Replication.ensure_valid_config!()
 
     port = Application.fetch_env!(:open_chat, :port)
 

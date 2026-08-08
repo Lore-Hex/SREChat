@@ -1866,6 +1866,160 @@ defmodule OpenChat.RedisPersistenceTest do
     end)
   end
 
+  describe "oplog emission" do
+    test "a send commits its oplog entry atomically with its records", context do
+      with_redis(context, fn ->
+        with_open_chat_env(
+          %{id_allocator: "region", region_index: 2, replication_mode: "multi_master"},
+          fn ->
+            {:ok, msg} =
+              Store.send_message("op-a", %{
+                "receiver" => "op-b",
+                "receiverType" => "user",
+                "data" => %{"text" => "replicate me"}
+              })
+
+            entries = oplog_entries(context)
+            assert [%{origin: 2, ts: ts, ops: ops}] = entries
+            assert is_integer(ts)
+
+            buckets = ops |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+
+            # Source-of-truth records travel...
+            assert {:put, "messages", message_key, _value} =
+                     Enum.find(ops, fn {_a, bucket, _k, _v} -> bucket == "messages" end)
+
+            assert message_key == to_string(msg["id"])
+            assert "users" in buckets
+
+            # ...derived structures and counters never do. The receiver
+            # recomputes them; shipping them would replicate lost updates.
+            for derived <- ~w(conversation_messages conversation_latest unread_counts
+                              user_conversations conversation_users user_groups
+                              thread_messages) do
+              refute derived in buckets, "derived bucket #{derived} leaked into the oplog"
+            end
+
+            # The record itself is readable — entry and records committed
+            # in one script.
+            assert redis_json(context, "messages", to_string(msg["id"]))["data"]["text"] ==
+                     "replicate me"
+          end
+        )
+      end)
+    end
+
+    test "read receipts and membership changes emit their buckets", context do
+      with_redis(context, fn ->
+        with_open_chat_env(
+          %{id_allocator: "region", region_index: 1, replication_mode: "multi_master"},
+          fn ->
+            {:ok, msg} =
+              Store.send_message("op-c", %{
+                "receiver" => "op-d",
+                "receiverType" => "user",
+                "data" => %{"text" => "receipt run"}
+              })
+
+            {:ok, _} = Store.mark_read("op-d", "user", "op-c", to_string(msg["id"]))
+            {:ok, _} = Store.upsert_group(%{"guid" => "op-room", "name" => "Ops"})
+            {:ok, _} = Store.add_group_members("op-room", ["op-c"], "participant")
+
+            buckets_per_entry =
+              context
+              |> oplog_entries()
+              |> Enum.map(fn %{ops: ops} ->
+                ops |> Enum.map(&elem(&1, 1)) |> Enum.uniq() |> Enum.sort()
+              end)
+
+            assert Enum.any?(buckets_per_entry, &("reads" in &1))
+            assert Enum.any?(buckets_per_entry, &("groups" in &1))
+            assert Enum.any?(buckets_per_entry, &("members" in &1))
+          end
+        )
+      end)
+    end
+
+    test "applying peer ops never re-emits (no echo)", context do
+      with_redis(context, fn ->
+        with_open_chat_env(
+          %{id_allocator: "region", region_index: 1, replication_mode: "multi_master"},
+          fn ->
+            # The applying flag is process-local and write/1 runs wherever
+            # it is called — the ingest handler runs it inside the Store.
+            # Exercise the seam directly: same process, flag on.
+            peer_message = %{"id" => 999_000_111, "sender" => "peer", "data" => %{}}
+
+            OpenChat.Replication.while_applying(fn ->
+              :ok =
+                RedisPersistence.write([
+                  RedisPersistence.put("messages", "999000111", peer_message)
+                ])
+            end)
+
+            assert oplog_entries(context) == []
+
+            # And the same write WITHOUT the flag emits — proving the empty
+            # oplog above is suppression, not a broken emission path.
+            :ok =
+              RedisPersistence.write([
+                RedisPersistence.put("messages", "999000111", peer_message)
+              ])
+
+            assert [%{ops: [{:put, "messages", "999000111", _}]}] = oplog_entries(context)
+          end
+        )
+      end)
+    end
+
+    test "replication off emits nothing", context do
+      with_redis(context, fn ->
+        with_open_chat_env(%{id_allocator: "region", region_index: 1}, fn ->
+          {:ok, _} =
+            Store.send_message("quiet-a", %{
+              "receiver" => "quiet-b",
+              "receiverType" => "user",
+              "data" => %{"text" => "single region"}
+            })
+
+          assert oplog_entries(context) == []
+        end)
+      end)
+    end
+
+    test "multi_master without region ids refuses to boot" do
+      previous_mode = Application.get_env(:open_chat, :replication_mode)
+      previous_allocator = Application.get_env(:open_chat, :id_allocator)
+
+      on_exit(fn ->
+        Application.put_env(:open_chat, :replication_mode, previous_mode || "off")
+        Application.put_env(:open_chat, :id_allocator, previous_allocator || "global")
+      end)
+
+      Application.put_env(:open_chat, :replication_mode, "multi_master")
+      Application.put_env(:open_chat, :id_allocator, "global")
+
+      # Validated once at application boot — a per-write raise would
+      # crash-loop the Store instead of failing the deploy.
+      assert_raise ArgumentError, ~r/requires ID_ALLOCATOR=region/, fn ->
+        OpenChat.Replication.ensure_valid_config!()
+      end
+
+      Application.put_env(:open_chat, :id_allocator, "region")
+      assert OpenChat.Replication.ensure_valid_config!() == :ok
+    end
+  end
+
+  defp oplog_entries(context) do
+    stream = RedisPersistence.oplog_stream_key()
+    {:ok, raw} = Redix.command(context.redis, ["XRANGE", stream, "-", "+"])
+
+    Enum.map(raw, fn [_id, ["entry", json]] ->
+      {:ok, entry} = OpenChat.Replication.decode_entry(json)
+      entry
+    end)
+  end
+
   defp with_redis(%{skip_redis?: reason}, _fun) do
     IO.puts("Skipping Redis persistence test; Redis unavailable: #{inspect(reason)}")
     :ok
