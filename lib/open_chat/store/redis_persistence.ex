@@ -216,6 +216,48 @@ defmodule OpenChat.Store.RedisPersistence do
     end
   end
 
+  @doc """
+  Claim a 0-based sequence slot for one region-id millisecond. The key is
+  scoped to this region's Redis, so claiming needs no cross-region
+  coordination — it is exactly as available as writes already are. Callers
+  must check `enabled?()` first; without Redis (single-node dev/test) the
+  Store allocates from its own state instead.
+
+  The key expires after 10 seconds: slots are only ever claimed for the
+  current (or clock-floored) millisecond, so entries are garbage within
+  moments and must not accumulate.
+  """
+  def take_region_seq(ms) do
+    cond do
+      enabled?() ->
+        script = """
+        local n = redis.call("INCR", KEYS[1])
+        redis.call("PEXPIRE", KEYS[1], 10000)
+        return n
+        """
+
+        case counter_command(["EVAL", script, "1", counter_key("region_seq:#{ms}")]) do
+          {:ok, value} ->
+            # INCR is 1-based; sequence slots are 0-based.
+            to_int(value) - 1
+
+          {:error, reason} ->
+            raise "Redis region sequence allocation failed for ms=#{ms}: #{inspect(reason)}"
+        end
+
+      configured?() ->
+        raise "Redis region sequence allocation failed for ms=#{ms}: Redis is configured but unavailable"
+
+      true ->
+        # The Store only calls this when enabled?() held, and configuration
+        # is static env — so this branch is unreachable. Raising (rather
+        # than returning a sentinel) keeps RegionId's borrow loop, which
+        # retries non-integers on the NEXT millisecond, from spinning
+        # forever on a value that will never become an integer.
+        raise "Redis region sequence requested without Redis; single-node deployments allocate locally"
+    end
+  end
+
   def write([]), do: :ok
 
   def write(ops) do
