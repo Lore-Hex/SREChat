@@ -10,7 +10,7 @@ defmodule OpenChat.Store do
   use GenServer
   require Logger
 
-  alias OpenChat.{Config, Errors, Observability, RegionId, Time}
+  alias OpenChat.{Config, Errors, Observability, RegionId, Replication, Time}
 
   alias OpenChat.Store.{
     Access,
@@ -185,6 +185,14 @@ defmodule OpenChat.Store do
 
   def call_on(server, request), do: call(server, request)
 
+  @doc """
+  Apply a peer region's oplog ops. Flows the normal mutation path — entity
+  locks and Redis refresh come from the request plan — so the applier
+  serializes with local writers on exactly the records it touches.
+  """
+  def ingest_replicated(ops, origin, ts, stream_id),
+    do: call({:ingest_replicated, ops, origin, ts, stream_id})
+
   def refresh_from_pubsub(keys, event), do: refresh_from_pubsub(__MODULE__, keys, event)
 
   def refresh_from_pubsub(server, keys, event) do
@@ -281,6 +289,20 @@ defmodule OpenChat.Store do
       |> Enum.uniq()
 
     {:reply, :ok, RedisPersistence.refresh_keys(State.default(), state, refresh)}
+  end
+
+  def handle_call({:ingest_replicated, ops, origin, ts, stream_id}, _from, state) do
+    OpenChat.Replication.while_applying(fn ->
+      # Version-gate INSIDE the entity locks (the plan machinery acquired
+      # them around this call): a local writer cannot slip a newer value
+      # in between the gate read and the apply.
+      survivors = Replication.Applier.version_gate(ops, origin, ts, stream_id)
+      {state, persist, fanouts} = Replication.Ingest.apply_ops(state, survivors, origin, ts)
+      persist_ops(persist)
+      Replication.Applier.stamp_versions(survivors, origin, ts, stream_id)
+      run_ingest_fanouts(state, fanouts)
+      {:reply, {:ok, length(survivors)}, state}
+    end)
   end
 
   def handle_call(:reset, _from, _state) do
@@ -1811,6 +1833,16 @@ defmodule OpenChat.Store do
     |> Enum.map(&elem(&1, 1))
     |> Enum.uniq()
     |> PubSubFanout.membership_changed()
+  end
+
+  # Websocket events for replicated mutations, re-derived locally: fanout
+  # here reaches only this region's registry and bus (no oplog hook on
+  # that path), so nothing echoes back to the origin.
+  defp run_ingest_fanouts(state, fanouts) do
+    Enum.each(fanouts, fn
+      {:message, message} -> PubSubFanout.message(state, message)
+      {:membership_changed, uids} -> PubSubFanout.membership_changed(uids)
+    end)
   end
 
   defp broadcast_auto_delivery(state, %{uid: uid, peer_uid: peer_uid, payload: payload}) do

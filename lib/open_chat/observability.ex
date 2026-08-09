@@ -100,6 +100,16 @@ defmodule OpenChat.Observability do
     increment("ws.events", Map.put(stringify_tags(tags), "event", to_s(event)))
   end
 
+  def record_replication(peer_index, event, tags \\ %{}) do
+    increment(
+      "replication.events",
+      tags
+      |> stringify_tags()
+      |> Map.put("peer", to_s(peer_index))
+      |> Map.put("event", to_s(event))
+    )
+  end
+
   @impl true
   def init(_opts), do: {:ok, initial_state()}
 
