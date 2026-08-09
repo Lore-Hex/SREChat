@@ -42,12 +42,14 @@ sudo systemctl enable wg-quick@wg0 >/dev/null 2>&1 || true
 sudo wg-quick down wg0 >/dev/null 2>&1 || true
 sudo wg-quick up wg0
 
-echo "== fetching RoachChat =="
-if [ ! -d "$HOME/RoachChat/.git" ]; then
+# Code is expected to already be present at $HOME/RoachChat (rsync'd up, so
+# no git credentials live on the VM — the repo is private). SKIP_FETCH=1
+# is the default path; set it empty to git-pull a public mirror instead.
+echo "== using RoachChat tree =="
+if [ "${SKIP_FETCH:-1}" != "1" ] && [ ! -d "$HOME/RoachChat/.git" ]; then
   git clone --depth 1 https://github.com/Lore-Hex/RoachChat.git "$HOME/RoachChat"
-else
-  git -C "$HOME/RoachChat" fetch --depth 1 origin main && git -C "$HOME/RoachChat" reset --hard origin/main
 fi
+test -f "$HOME/RoachChat/deploy/provision.sh" || { echo "RoachChat tree missing at \$HOME/RoachChat"; exit 1; }
 cd "$HOME/RoachChat"
 
 echo "== writing region config =="
