@@ -39,4 +39,17 @@ defmodule OpenChat.IosLoginContractTest do
       assert Map.has_key?(settings, key), "missing #{key}"
     end
   end
+
+  test "login response does not carry wsChannel" do
+    # The second of the two iOS login force-unwraps: the SDK traps on our
+    # wsChannel value while decoding the login response. Nothing of ours reads
+    # the field — the JS SDK ignores it and the socket channel is assigned
+    # server-side at WS auth — and clean-device bisection proved absence is the
+    # safe shape (present = dead before the login callback, absent = LOGIN OK).
+    {:ok, _} = OpenChat.Store.upsert_user(%{"uid" => "contract-ios", "name" => "Contract"})
+    {:ok, me} = OpenChat.Store.me("uid:contract-ios")
+
+    refute Map.has_key?(me, "wsChannel"),
+           "wsChannel is back in the login response — this crashes iOS login on a clean device"
+  end
 end
