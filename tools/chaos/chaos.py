@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Three-region partition chaos test — the test that earns the name.
 
-Topology: three FULL CockroachChat regions as separate OS processes, each
+Topology: three FULL RoachChat regions as separate OS processes, each
 with its own redis-server, all multi-master. Replication links run through
 kill-able TCP proxies:
 
@@ -39,7 +39,7 @@ REGIONS = [0, 1, 2]
 API = {0: 4610, 1: 4611, 2: 4612}
 REDIS = {0: 6391, 1: 6392, 2: 6393}
 PREFIX = "chaos"
-LOG_DIR = os.path.join(tempfile.gettempdir(), "cockroach-chaos")
+LOG_DIR = os.path.join(tempfile.gettempdir(), "roach-chaos")
 
 procs = {}
 proxies = {}
