@@ -28,18 +28,20 @@ Every region sets, in addition to its normal env:
 | `REGION_INDEX` | unique per region, `0..7` |
 | `REPLICATION_MODE` | `multi_master` |
 | `PEER_REGIONS` | `1=rediss://…,2=rediss://…` — each peer's **Redis**, not its API |
-
-> **Azure capacity:** most regions/SKUs return `SkuNotAvailable` or
-> `QuotaExceeded` on a fresh subscription even when quota is non-zero. Query
-> `Microsoft.Compute/skus` for entries with an empty `restrictions` list and
-> cross-check the family's quota in `locations/<loc>/usages`, then preflight a
-> deployment per candidate — `austriaeast` / `Standard_DS1_v2` is what worked
-> here. Also: azure-cli 2.88 on Python 3.14 crashes in `az vm create`; drive
-> ARM over REST with a token from `az account get-access-token`.
 | `REDIS_KEY_PREFIX` | identical across regions (default `open_chat`) |
 
 Misconfiguration (multi_master without region ids, own index in
 `PEER_REGIONS`, duplicate indexes) refuses to boot, loudly.
+
+> **Finding Azure capacity.** A fresh subscription reports quota yet refuses
+> most SKUs: every region/size first tried returned `SkuNotAvailable` or
+> `QuotaExceeded`. What works is to query `Microsoft.Compute/skus` for entries
+> with an EMPTY `restrictions` list, cross-check that family's quota in
+> `locations/<loc>/usages` (both must hold), then preflight a deployment per
+> candidate. `austriaeast` / `Standard_DS1_v2` is what deployed here. Also:
+> azure-cli 2.88 on Python 3.14 crashes inside `az vm create` ("content for
+> this response was already consumed") — drive ARM over REST with a token
+> from `az account get-access-token`.
 
 `PEER_REGIONS` URLs are the partition boundary: the peer's Redis being
 unreachable IS the partition, and the region keeps serving from local
