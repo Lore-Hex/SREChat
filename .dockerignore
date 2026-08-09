@@ -9,3 +9,6 @@ contract/blob-report
 
 .DS_Store
 *.log
+
+.roach-*
+*.pem
