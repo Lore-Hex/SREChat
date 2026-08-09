@@ -82,8 +82,18 @@ defmodule OpenChat.Store.RedisPersistence do
   -- records it describes. A crash cannot commit a mutation that peers
   -- will never see, or announce one that never landed. MAXLEN bounds the
   -- stream; the tailer detects trim-induced gaps rather than skipping.
+  -- Each replicated record also gets a version stamp (ts + origin) so
+  -- receivers can last-writer-wins gate against local writes.
   if oplog_entry ~= "" and oplog_stream ~= "" then
     redis.call("XADD", oplog_stream, "MAXLEN", "~", "1000000", "*", "entry", oplog_entry)
+
+    local entry = cjson.decode(oplog_entry)
+    local stamp = cjson.encode({ts = entry["ts"], origin = entry["origin"]})
+    for i = 1, #entry["ops"] do
+      local rop = entry["ops"][i]
+      -- rop = [action, bucket, id, value?]
+      redis.call("SET", key("repl_versions", rop[2] .. ":" .. rop[3]), stamp, "EX", 2592000)
+    end
   end
 
   redis.call("SET", key("meta", "version"), version)
@@ -1055,6 +1065,107 @@ defmodule OpenChat.Store.RedisPersistence do
   def oplog_stream_key(region_index \\ nil) do
     region = region_index || Config.region_index()
     key(OpenChat.Replication.stream_suffix(region))
+  end
+
+  # Replication version registry: "bucket:id" -> %{"ts" => ms, "origin" => r}
+  # for last-writer-wins gating. Locally-originated writes are stamped by
+  # the atomic Lua script; applied peer ops are stamped by the Applier.
+  # Keys expire after 30 days — a version is only needed while concurrent
+  # cross-region updates to the same record are plausible.
+
+  @repl_version_ttl_seconds 30 * 24 * 60 * 60
+
+  def get_repl_versions([]), do: %{}
+
+  def get_repl_versions(keys) do
+    if enabled?() do
+      redis_keys = Enum.map(keys, &repl_version_key/1)
+
+      case RedisClient.command(read_conn(), ["MGET" | redis_keys]) do
+        {:ok, values} ->
+          keys
+          |> Enum.zip(values)
+          |> Enum.reduce(%{}, fn
+            {_key, nil}, acc ->
+              acc
+
+            {key, json}, acc ->
+              case Jason.decode(json) do
+                {:ok, decoded} -> Map.put(acc, key, decoded)
+                _error -> acc
+              end
+          end)
+
+        {:error, reason} ->
+          raise "Redis replication version read failed: #{inspect(reason)}"
+      end
+    else
+      %{}
+    end
+  end
+
+  def put_repl_versions(stamps) when map_size(stamps) == 0, do: :ok
+
+  def put_repl_versions(stamps) do
+    if enabled?() do
+      commands =
+        Enum.map(stamps, fn {key, value} ->
+          ["SET", repl_version_key(key), Jason.encode!(value), "EX", @repl_version_ttl_seconds]
+        end)
+
+      case RedisClient.pipeline(write_conn(), commands) do
+        {:ok, _results} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp repl_version_key(bucket_and_id), do: key(["repl_versions", bucket_and_id])
+
+  # Replication cursors: last-applied stream id per peer, in LOCAL Redis.
+
+  def get_replication_cursor(peer_index) do
+    case command(["GET", replication_cursor_key(peer_index)]) do
+      {:ok, value} -> {:ok, value}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def put_replication_cursor(peer_index, stream_id) do
+    case write_command(["SET", replication_cursor_key(peer_index), to_s(stream_id)]) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp replication_cursor_key(peer_index), do: key(["repl_cursor", to_s(peer_index)])
+
+  @doc """
+  Single-holder lease election in local Redis: acquires when free, renews
+  when this token already holds it. Returns :acquired, :held_elsewhere,
+  or an error.
+  """
+  def acquire_or_renew_lease(name, token, ttl_ms) do
+    script = """
+    local current = redis.call("GET", KEYS[1])
+    if current == false then
+      redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[2])
+      return 1
+    elseif current == ARGV[1] then
+      redis.call("PEXPIRE", KEYS[1], ARGV[2])
+      return 1
+    else
+      return 0
+    end
+    """
+
+    case lock_command(["EVAL", script, "1", key(["lease", name]), token, to_s(ttl_ms)]) do
+      {:ok, 1} -> :acquired
+      {:ok, 0} -> :held_elsewhere
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp state_commands(state) do

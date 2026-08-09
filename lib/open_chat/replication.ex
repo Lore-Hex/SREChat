@@ -111,7 +111,17 @@ defmodule OpenChat.Replication do
 
     if enabled?() do
       # Fails fast on an out-of-range REGION_INDEX too.
-      _ = Config.region_index()
+      self_index = Config.region_index()
+      peers = Config.peer_regions()
+      indexes = Enum.map(peers, & &1.index)
+
+      if self_index in indexes do
+        raise ArgumentError, "PEER_REGIONS must not include this region's own index"
+      end
+
+      if length(Enum.uniq(indexes)) != length(indexes) do
+        raise ArgumentError, "PEER_REGIONS contains duplicate region indexes"
+      end
     end
 
     :ok
