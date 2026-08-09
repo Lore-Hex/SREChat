@@ -236,7 +236,22 @@ defmodule OpenChat.Config do
       "POLLING_ENABLED" => false,
       "DENY_FALLBACK_TO_POLLING" => false,
       "EXTENSION_DOMAIN" => extension_domain(),
-      "extensions" => [%{"id" => "reactions", "name" => "reactions"}],
+      # `enabled` is NOT optional to clients. The CometChat iOS SDK force
+      # unwraps it while decoding the login response, so an entry without it
+      # crashes the app (SIGTRAP in loginCallToServerWith) before the login
+      # callback can fire — every iOS login died here, looking like a hang.
+      # The JS SDK tolerates its absence, which is why the web client worked
+      # and hid this for so long. `version` and `configuration` are included
+      # because the SDK reads them too; only `enabled` is load-bearing today.
+      "extensions" => [
+        %{
+          "id" => "reactions",
+          "name" => "reactions",
+          "enabled" => true,
+          "version" => "1.0",
+          "configuration" => %{}
+        }
+      ],
       "SECURED_MEDIA_HOST" => nil,
       "settingsHash" => "open-chat-0.1.0",
       "settingsHashReceivedAt" => OpenChat.Time.now()
