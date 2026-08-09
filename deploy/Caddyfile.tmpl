@@ -2,6 +2,14 @@
 # Real cert (not `tls internal`) so the iOS CometChat SDK — which pins HTTPS
 # for overridden hosts and will not accept a self-signed cert — connects.
 PUBLIC_HOST_PLACEHOLDER {
+  # Static web client, served by this region. Everything else proxies to the
+  # app. Listed first so /app doesn't fall through to the catch-all.
+  handle /app* {
+    root * /srv/web
+    try_files {path} /index.html
+    file_server
+  }
+
   reverse_proxy /v3/* 127.0.0.1:4000
   reverse_proxy /v3.0/* 127.0.0.1:4000
   reverse_proxy /v1/* 127.0.0.1:4000
