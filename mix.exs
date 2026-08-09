@@ -9,8 +9,13 @@ defmodule OpenChat.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
-      elixirc_paths: elixirc_paths(Mix.env())
+      elixirc_paths: elixirc_paths(Mix.env()),
+      releases: releases()
     ]
+  end
+
+  defp releases do
+    [open_chat: [include_executables_for: [:unix], applications: [open_chat: :permanent]]]
   end
 
   def cli do

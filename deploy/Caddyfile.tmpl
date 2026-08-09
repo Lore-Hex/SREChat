@@ -1,0 +1,14 @@
+# Per-region reverse proxy with automatic Let's Encrypt for PUBLIC_HOST.
+# Real cert (not `tls internal`) so the iOS CometChat SDK — which pins HTTPS
+# for overridden hosts and will not accept a self-signed cert — connects.
+PUBLIC_HOST_PLACEHOLDER {
+  reverse_proxy /v3/* 127.0.0.1:4000
+  reverse_proxy /v3.0/* 127.0.0.1:4000
+  reverse_proxy /v1/* 127.0.0.1:4000
+  reverse_proxy /extensions/* 127.0.0.1:4000
+  reverse_proxy /media/* 127.0.0.1:4000
+  reverse_proxy /ws 127.0.0.1:4000
+  reverse_proxy /socket 127.0.0.1:4000
+  reverse_proxy /health 127.0.0.1:4000
+  reverse_proxy / 127.0.0.1:4000
+}
