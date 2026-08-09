@@ -52,6 +52,7 @@ services:
     network_mode: host
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../priv/web:/srv/web:ro
       - caddy-data:/data
       - caddy-config:/config
 
