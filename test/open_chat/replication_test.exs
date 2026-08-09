@@ -28,7 +28,7 @@ defmodule OpenChat.ReplicationTest do
     if reason = context[:redis_unavailable] do
       {:ok, skip_redis?: reason}
     else
-      prefix = "cockroach:test:#{System.unique_integer([:positive])}"
+      prefix = "roach:test:#{System.unique_integer([:positive])}"
 
       previous =
         Map.new(

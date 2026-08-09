@@ -1,6 +1,6 @@
 # Runbook — Multi-master regions
 
-The single source of truth for running CockroachChat as one logical chat
+The single source of truth for running RoachChat as one logical chat
 service across independent regions (one per cloud), each fully usable
 during a network partition, converging on heal.
 
@@ -91,4 +91,4 @@ python3 tools/chaos/chaos.py
 
 boots the whole topology (3 redis, 3 regions, 6 proxy links) on
 localhost, runs the partition scenario, and tears everything down.
-Region logs land in `$TMPDIR/cockroach-chaos/`.
+Region logs land in `$TMPDIR/roach-chaos/`.
