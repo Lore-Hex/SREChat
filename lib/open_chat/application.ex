@@ -11,14 +11,15 @@ defmodule OpenChat.Application do
 
     port = Application.fetch_env!(:open_chat, :port)
 
-    children = [
-      OpenChat.Observability,
-      {Registry, keys: :duplicate, name: OpenChat.PubSub},
-      OpenChat.Store,
-      OpenChat.RedisBus,
-      {Plug.Cowboy,
-       scheme: :http, plug: OpenChatWeb.Endpoint, options: [port: port, dispatch: dispatch()]}
-    ]
+    children =
+      [
+        OpenChat.Observability,
+        {Registry, keys: :duplicate, name: OpenChat.PubSub},
+        OpenChat.Store,
+        OpenChat.RedisBus,
+        {Plug.Cowboy,
+         scheme: :http, plug: OpenChatWeb.Endpoint, options: [port: port, dispatch: dispatch()]}
+      ] ++ replication_children()
 
     case Supervisor.start_link(children, strategy: :one_for_one, name: OpenChat.Supervisor) do
       {:ok, _pid} = result ->
@@ -73,6 +74,14 @@ defmodule OpenChat.Application do
   defp weak_secret?(value) do
     value = value |> to_string() |> String.trim()
     String.downcase(value) in ["none", "null", "undefined"] or String.length(value) < 32
+  end
+
+  defp replication_children do
+    if OpenChat.Replication.enabled?() and OpenChat.Config.peer_regions() != [] do
+      [OpenChat.Replication.Supervisor]
+    else
+      []
+    end
   end
 
   defp dispatch do

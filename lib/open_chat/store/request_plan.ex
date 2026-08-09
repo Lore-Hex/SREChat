@@ -8,6 +8,13 @@ defmodule OpenChat.Store.RequestPlan do
 
   def build(:reset), do: mutate([:global], [])
 
+  # Replication ingest takes the same entity locks the equivalent local
+  # mutations would, so cross-node writers in this region and the applier
+  # serialize on the records they actually touch.
+  def build({:ingest_replicated, ops, _origin, _ts, _stream_id}) do
+    mutate(ingest_scopes(ops), OpenChat.Replication.Ingest.refresh_keys(ops))
+  end
+
   def build({:get_user, uid}), do: read([{"users", uid}])
 
   def build({:get_user_for, viewer_uid, uid}) do
@@ -425,6 +432,44 @@ defmodule OpenChat.Store.RequestPlan do
       :error -> token_scope(token)
     end
   end
+
+  defp ingest_scopes(ops) do
+    ops
+    |> Enum.flat_map(fn op ->
+      bucket = elem(op, 1)
+      id = elem(op, 2)
+
+      case bucket do
+        "messages" ->
+          ingest_message_scopes(op)
+
+        "tokens" ->
+          token_scope(id)
+
+        bucket when bucket in ~w(groups members banned) ->
+          group_scope(id)
+
+        bucket when bucket in ~w(reactions message_muids) ->
+          message_scope(id)
+
+        bucket when bucket in ~w(users reads delivered hidden_conversations blocks presence) ->
+          user_scope(id)
+
+        _unknown ->
+          [:global]
+      end
+    end)
+    |> Enum.uniq()
+  end
+
+  defp ingest_message_scopes({:put, "messages", id, message}) do
+    conv_id = to_s(message["conversationId"] || "")
+
+    message_scope(id) ++
+      if(blank?(conv_id), do: [], else: [{:conversation, conv_id}])
+  end
+
+  defp ingest_message_scopes({:delete, "messages", id}), do: message_scope(id)
 
   defp user_scope(value), do: if(blank?(value), do: [:global], else: [{:user, value}])
   defp token_scope(value), do: if(blank?(value), do: [:global], else: [{:token, value}])

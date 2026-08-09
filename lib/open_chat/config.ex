@@ -53,6 +53,34 @@ defmodule OpenChat.Config do
     end
   end
 
+  @doc """
+  Peer regions to replicate from: `[%{index: 1, url: "rediss://..."}]`.
+
+  Parsed from `PEER_REGIONS="1=rediss://host:port/db,2=rediss://..."`. The
+  URL is the PEER region's Redis (its oplog lives there); reachability of
+  that Redis defines the partition boundary. Cross-cloud links must be
+  TLS (`rediss://`) or ride a private tunnel.
+  """
+  def peer_regions do
+    :open_chat
+    |> Application.get_env(:peer_regions, "")
+    |> to_s()
+    |> String.split(",", trim: true)
+    |> Enum.map(fn pair ->
+      case String.split(String.trim(pair), "=", parts: 2) do
+        [index, url] when url != "" ->
+          case Integer.parse(String.trim(index)) do
+            {int, ""} when int in 0..7 -> %{index: int, url: String.trim(url)}
+            _other -> raise ArgumentError, "PEER_REGIONS entry has a bad index: #{inspect(pair)}"
+          end
+
+        _other ->
+          raise ArgumentError,
+                "PEER_REGIONS entries must be <index>=<redis url>, got: #{inspect(pair)}"
+      end
+    end)
+  end
+
   @doc "This deployment's region index (0..7). Distinct from the SDK's region string."
   def region_index do
     value = Application.get_env(:open_chat, :region_index, 0)
