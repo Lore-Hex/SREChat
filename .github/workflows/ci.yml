@@ -41,3 +41,26 @@ jobs:
         env:
           MIX_ENV: test
       - run: mix test
+
+  chaos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.18"
+          otp-version: "27"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-chaos-${{ runner.os }}-${{ hashFiles('mix.lock') }}
+          restore-keys: mix-chaos-${{ runner.os }}-
+      - run: sudo apt-get update && sudo apt-get install -y redis-server
+      - run: mix deps.get
+      - run: mix compile
+      # Three full regions, three redis servers, a real partition, a real
+      # heal, and a convergence assertion. The test that earns the name.
+      - run: python3 tools/chaos/chaos.py
+        timeout-minutes: 8
