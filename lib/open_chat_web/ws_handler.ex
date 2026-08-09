@@ -12,7 +12,9 @@ defmodule OpenChatWeb.WSHandler do
   def init(req, _state) do
     if websocket_origin_allowed?(req) do
       Observability.record_ws("accepted")
-      {:cowboy_websocket, req, %{uid: nil, token: nil, device_id: nil, groups: MapSet.new()}}
+
+      {:cowboy_websocket, req, %{uid: nil, token: nil, device_id: nil, groups: MapSet.new()},
+       %{idle_timeout: idle_timeout_ms()}}
     else
       Observability.record_ws("origin_rejected", origin_tags(req))
 
@@ -30,6 +32,27 @@ defmodule OpenChatWeb.WSHandler do
         )
 
       {:ok, req, %{}}
+    end
+  end
+
+  @doc """
+  Cowboy's idle_timeout, derived from the heartbeat instead of silently
+  inheriting cowboy's 60s default.
+
+  A browser tab in the background cannot send anything (JS timers are
+  throttled; only the native pong to OUR ping flows), so the connection's
+  liveness budget is entirely defined by the server heartbeat:
+
+    * heartbeat on  -> 3 missed heartbeats (min 75s) closes the socket;
+    * heartbeat off -> :infinity. The operator who disables the heartbeat
+      has moved liveness to their proxy layer; leaving cowboy's silent
+      60s default in place would kill every quiet web client — which is
+      precisely the "web client keeps disconnecting" failure mode.
+  """
+  def idle_timeout_ms do
+    case Config.websocket_heartbeat_ms() do
+      interval when is_integer(interval) and interval > 0 -> max(interval * 3, 75_000)
+      _disabled -> :infinity
     end
   end
 
