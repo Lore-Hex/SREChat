@@ -1996,11 +1996,16 @@ defmodule OpenChat.Store do
   defp me_payload(user, token) do
     user
     |> UserState.public()
+    # No "wsChannel" here, deliberately. The CometChat iOS SDK traps on our
+    # value for it while decoding this response (the second of two login
+    # force-unwraps; extensions "enabled" was the first), and no client of
+    # ours reads it — the JS SDK ignores it and the socket channel is chosen
+    # server-side at WS auth. Absence is the shape proven safe on a clean
+    # device; do not add it back without re-running that check.
     |> Map.merge(%{
       "authToken" => token,
       "jwt" => jwt_for(user, token),
       "fat" => token,
-      "wsChannel" => "user_#{user["uid"]}",
       "settings" => Config.settings()
     })
   end
