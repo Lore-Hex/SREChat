@@ -28,6 +28,14 @@ Every region sets, in addition to its normal env:
 | `REGION_INDEX` | unique per region, `0..7` |
 | `REPLICATION_MODE` | `multi_master` |
 | `PEER_REGIONS` | `1=rediss://…,2=rediss://…` — each peer's **Redis**, not its API |
+
+> **Azure capacity:** most regions/SKUs return `SkuNotAvailable` or
+> `QuotaExceeded` on a fresh subscription even when quota is non-zero. Query
+> `Microsoft.Compute/skus` for entries with an empty `restrictions` list and
+> cross-check the family's quota in `locations/<loc>/usages`, then preflight a
+> deployment per candidate — `austriaeast` / `Standard_DS1_v2` is what worked
+> here. Also: azure-cli 2.88 on Python 3.14 crashes in `az vm create`; drive
+> ARM over REST with a token from `az account get-access-token`.
 | `REDIS_KEY_PREFIX` | identical across regions (default `open_chat`) |
 
 Misconfiguration (multi_master without region ids, own index in
@@ -67,6 +75,23 @@ tailers start at cursor `0-0` and replay peers' full retained history.
 `peer_unreachable`, `apply_failed`, `gap_detected`). A tailer holds a
 lease per peer in local Redis, so multi-node regions elect exactly one
 tailing node per peer.
+
+**Replacing a region (new host, same `REGION_INDEX`):** the replacement's
+oplog is a brand-new stream, so every peer's stored cursor points at an
+id older than the new stream's earliest entry — indistinguishable from a
+trim, and the gap detector will (correctly) refuse to continue. After the
+replacement is up and meshed, on EVERY OTHER region:
+
+```bash
+docker exec <redis> redis-cli DEL <prefix>:repl_cursor:<index>
+docker compose --env-file deploy/.env -f deploy/docker-compose.prod.yml restart app
+```
+
+The cursor delete makes the tailer replay the new region's stream from
+`0-0`; the restart is required because `:degraded` is deliberately sticky
+(a tailer that has seen a gap will not resume on its own). Data already
+tailed from the OLD host is unaffected — peers keep what they consumed.
+Verify with a write in the new region readable from the others.
 
 **Gap (`gap_detected`, tailer degraded):** the region was partitioned
 longer than the peer's stream retention (MAXLEN ~1M entries). The tailer
