@@ -13,3 +13,8 @@ priv/static/uploads/*
 .DS_Store
 *.log
 erl_crash.dump
+
+# deploy secrets — never commit
+.roach-*
+*.pem
+deploy/.env

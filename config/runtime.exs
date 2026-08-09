@@ -80,11 +80,11 @@ config :open_chat,
   region: System.get_env("COMETCHAT_REGION") || "us",
   cors_allowed_origins: System.get_env("CORS_ALLOWED_ORIGINS") || default_cors_allowed_origins,
   extension_domain: System.get_env("EXTENSION_DOMAIN") || public_host,
+  # A self-hosted single-box region can serve media from a local disk (or a
+  # mounted volume); set UPLOAD_DIR to opt in even in prod.
   upload_dir:
-    if(config_env() == :prod,
-      do: nil,
-      else: System.get_env("UPLOAD_DIR") || "priv/static/uploads"
-    ),
+    System.get_env("UPLOAD_DIR") ||
+      if(config_env() == :prod, do: nil, else: "priv/static/uploads"),
   request_body_limit: integer_env.("REQUEST_BODY_LIMIT", default_request_body_limit),
   upload_max_bytes: integer_env.("UPLOAD_MAX_BYTES", default_upload_max_bytes),
   upload_allowed_mime_types:
@@ -107,7 +107,7 @@ config :open_chat,
     non_negative_integer_env.("WEBSOCKET_HEARTBEAT_MS", default_websocket_heartbeat_ms),
   public_group_reads_enabled: boolean_env.("PUBLIC_GROUP_READS_ENABLED", true),
   public_group_joins_as_visits: boolean_env.("PUBLIC_GROUP_JOINS_AS_VISITS", false),
-  allow_local_media_storage: config_env() != :prod,
+  allow_local_media_storage: boolean_env.("ALLOW_LOCAL_MEDIA_STORAGE", config_env() != :prod),
   media_storage: System.get_env("MEDIA_STORAGE") || default_media_storage,
   public_media_base_url: System.get_env("PUBLIC_MEDIA_BASE_URL"),
   s3_bucket: System.get_env("S3_BUCKET"),
