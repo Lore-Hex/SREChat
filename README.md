@@ -1,8 +1,51 @@
-# OpenChat: AGPL CometChat-compatible drop-in endpoint
+# RoachChat: multi-master chat that survives losing a cloud
 
-OpenChat is a BEAM/Elixir replacement for the covered subset of CometChat. It is designed for URL-swizzled CometChat JavaScript and React Native SDKs to call directly, without changing call sites such as `CometChat.login`, `CometChat.sendMessage`, `MessagesRequestBuilder`, `ConversationsRequestBuilder`, message listeners, and reaction calls.
+RoachChat is a BEAM/Elixir chat backend that runs as **several equal masters
+— one per cloud** — and keeps serving when the network between them breaks.
+Every region accepts writes during a partition, and the regions converge when
+it heals. It is named for the thing that is famously hard to kill.
 
-**License:** AGPL-3.0-or-later.
+It speaks a CometChat-compatible wire protocol, so the CometChat JavaScript,
+React Native, and iOS SDKs talk to it directly by overriding their host —
+`CometChat.login`, `sendMessage`, `MessagesRequestBuilder`,
+`ConversationsRequestBuilder`, listeners, and reactions all work unchanged.
+It descends from [OpenChat](https://github.com/Lore-Hex/OpenChat), which
+provides that compatibility layer; RoachChat adds the multi-master half.
+
+**License:** AGPL-3.0-or-later (inherited from OpenChat).
+
+## How the multi-master part works
+
+* **Coordination-free ids.** Message ids are `41 bits ms | 3 bits region |
+  9 bits sequence` — 53 bits exactly, because ids reach JavaScript clients as
+  JSON numbers and `2^53-1` is `Number.MAX_SAFE_INTEGER`. No shared counter,
+  so no region needs to reach another to accept a write. The layout is proven
+  JS-safe at compile time.
+* **An oplog per region.** Every mutation appends to that region's Redis
+  Stream *inside the same atomic script that commits the records*, so nothing
+  can commit unannounced or be announced without committing.
+* **Tailers with convergent merges.** Each region tails its peers. Messages
+  replay in full; receipt cursors max-merge and never regress; everything else
+  is last-writer-wins on `(timestamp, origin, stream id)`, so both sides of a
+  partition independently pick the same winner.
+* **Gaps refuse to heal silently.** If a region falls behind its peer's stream
+  retention, the tailer stops and says so rather than skipping the missing
+  middle and diverging forever.
+
+Verified continuously, not just asserted: `tools/chaos/chaos.py` boots three
+real regions with three Redis servers, cuts the links, proves both sides keep
+serving, heals, and proves byte-identical convergence. It runs in CI on every
+push.
+
+See [`docs/runbooks/multi-master.md`](docs/runbooks/multi-master.md) for
+configuration, partition semantics, region replacement, and recovery.
+
+## Security
+
+Read [SECURITY.md](SECURITY.md) before deploying. The short version:
+`COMETCHAT_API_KEY` is an admin credential and must never ship inside a
+client app; `ACCEPT_UID_TOKENS` is for development and demos only; and peer
+replication links must ride a private tunnel or `rediss://`.
 
 ## API coverage matrix
 
