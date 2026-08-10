@@ -22,14 +22,31 @@ defmodule SREChat.Store.AuthTokens do
   def lookup_tokens(token) do
     token = to_s(token)
 
-    token
-    |> local_jwt_token()
-    |> case do
-      {:ok, auth_token} -> [auth_token]
-      :error -> opaque_token_candidates(token)
+    # A uid token that fails the passcode check must not reach the stored-token
+    # lookup at all. Users created BEFORE the gate was switched on have their
+    # "uid:<name>" persisted as a real auth token, so without this an attacker
+    # who simply guesses an existing name would still be let in — the passcode
+    # would protect only names nobody had used yet. Refusing here revokes those
+    # legacy tokens the moment a passcode is configured.
+    if blocked_uid_token?(token) do
+      []
+    else
+      token
+      |> local_jwt_token()
+      |> case do
+        {:ok, auth_token} -> [auth_token]
+        :error -> opaque_token_candidates(token)
+      end
+      |> Enum.reject(&blank?/1)
+      |> Enum.uniq()
     end
-    |> Enum.reject(&blank?/1)
-    |> Enum.uniq()
+  end
+
+  @doc false
+  def blocked_uid_token?(token) do
+    token = to_s(token)
+    String.starts_with?(token, "uid:") and not is_nil(access_secret()) and
+      uid_token(token) == :error
   end
 
   def local_jwt_token(token) do
