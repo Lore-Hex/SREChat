@@ -144,6 +144,10 @@ const ALERTS_VIEW = "__alerts__";
 const WATCHED = [...AGENTS.map(a => a.uid), "sre-drill"];
 
 let me = null, peer = null, token = null;
+// Every conversation, in memory. The poll loop already fetches every watched
+// agent every 2s, so the data for any tab is always already here — switching
+// tabs is a pure local render, never a fetch. This is what makes it instant.
+const history = {};       // peer -> [{id, sender, text, at}]
 const seen = {};          // peer -> highest message id seen (any tab)
 const unread = {};        // peer -> unread count while you're elsewhere
 const alerts = [];        // aggregated 🔔 across every agent
@@ -223,9 +227,8 @@ function renderPeers() {
   document.title = unseenAlerts ? `(${unseenAlerts}) SREChat` : "SREChat";
 }
 
-async function selectPeer(uid) {
+function selectPeer(uid) {
   peer = uid;
-  el.log.innerHTML = "";
   if (uid === ALERTS_VIEW) {
     el.composer.hidden = true;
     unseenAlerts = 0;
@@ -236,27 +239,27 @@ async function selectPeer(uid) {
   el.composer.hidden = false;
   unread[uid] = 0;
   renderPeers();
-  seen[peer] = 0;
-  await loadHistory();
+  renderConversation(uid);
 }
 
-// Load existing history for every watched agent BEFORE polling starts, so past
-// alerts are visible in the feed but don't each fire a banner. Without this the
-// first poll treats all history as new and pages you for week-old incidents.
-async function primeAlerts() {
-  for (const uid of WATCHED) {
+// Fill the store for EVERY watched agent before polling starts — in parallel,
+// since sequential awaits made sign-in wait four round trips instead of one.
+// Past alerts land in the feed without firing banners; past messages land in
+// history so every tab is instant from the first tap.
+async function primeAll() {
+  await Promise.all(WATCHED.map(async (uid) => {
     try {
-      const r = await api("GET", `/users/${encodeURIComponent(uid)}/messages?per_page=30`);
+      const r = await api("GET", `/users/${encodeURIComponent(uid)}/messages?per_page=50`);
       for (const m of (r.data || [])) {
         if (m.type !== "text") continue;
         seen[uid] = Math.max(seen[uid] || 0, Number(m.id) || 0);
-        const text = (m.data && m.data.text) || "";
-        if ((text.startsWith("🔔") || text.startsWith("🧪")) && m.sender !== me) {
-          alerts.push({ text, from: m.sender, at: Number(m.sentAt) || 0 });
+        const rec = remember(uid, m);
+        if ((rec.text.startsWith("🔔") || rec.text.startsWith("🧪")) && rec.sender !== me) {
+          alerts.push({ text: rec.text, from: rec.sender, at: rec.at });
         }
       }
     } catch (e) { /* a peer with no history is fine */ }
-  }
+  }));
 }
 
 // The alert feed: every 🔔 from any agent, newest last, labelled with who saw it.
@@ -269,31 +272,25 @@ function renderAlerts() {
   for (const a of alerts.slice(-60)) bubble(a.text, a.from, "alert", a.at);
 }
 
-async function loadHistory() {
-  try {
-    const r = await api("GET", `/users/${encodeURIComponent(peer)}/messages?per_page=50`);
-    const msgs = (r.data || []).filter(m => m.type === "text");
-    for (const m of msgs) {
-      renderMessage(m, true);
-      seen[peer] = Math.max(seen[peer] || 0, Number(m.id) || 0);
-    }
-    if (!msgs.length) bubble("Say hi — try “are all three regions healthy?”", peer, "system");
-  } catch (e) {
-    if (e.status === 404) { /* no history yet */ }
-    else bubble("(couldn't load history: " + (e.message||e) + ")", "system", "system");
-  }
+function remember(uid, m) {
+  const rec = { id: Number(m.id) || 0, sender: m.sender,
+                text: (m.data && m.data.text) || "", at: Number(m.sentAt) || 0 };
+  (history[uid] = history[uid] || []).push(rec);
+  return rec;
 }
 
-function renderMessage(m, isHistory) {
-  const text = (m.data && m.data.text) || "";
-  const from = m.sender;
-  const at = Number(m.sentAt) || 0;
-  if (from === me) bubble(text, from, "mine", at);
-  else {
-    // A message from an agent that starts with 🔔 is treated as an alert.
-    const kind = text.startsWith("🔔") ? "alert" : "theirs";
-    bubble(text, from, kind, at);
-  }
+// Draw one conversation from memory. Synchronous on purpose: this runs on
+// every tab switch and must never wait on the network.
+function renderConversation(uid) {
+  el.log.innerHTML = "";
+  const msgs = history[uid] || [];
+  for (const m of msgs) renderRecord(m);
+  if (!msgs.length) bubble("Say hi — try “are all three regions healthy?”", uid, "system");
+}
+
+function renderRecord(m) {
+  if (m.sender === me) bubble(m.text, m.sender, "mine", m.at);
+  else bubble(m.text, m.sender, m.text.startsWith("🔔") ? "alert" : "theirs", m.at);
 }
 
 // Poll EVERY agent, not just the tab in view. An alert is most likely to come
@@ -311,15 +308,15 @@ async function poll() {
         .sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0));
       for (const m of fresh) {
         seen[uid] = Math.max(seen[uid] || 0, Number(m.id) || 0);
-        const text = (m.data && m.data.text) || "";
-        const isAlert = text.startsWith("🔔") || text.startsWith("🧪");
-        if (isAlert && m.sender !== me) {
-          alerts.push({ text, from: m.sender, at: Number(m.sentAt) || 0 });
-          if (peer !== ALERTS_VIEW) { unseenAlerts++; notifyAlert(text, m.sender); }
-          if (peer === ALERTS_VIEW) bubble(text, m.sender, "alert", Number(m.sentAt) || 0);
+        const rec = remember(uid, m);      // the store is fed whether or not this tab is visible
+        const isAlert = rec.text.startsWith("🔔") || rec.text.startsWith("🧪");
+        if (isAlert && rec.sender !== me) {
+          alerts.push({ text: rec.text, from: rec.sender, at: rec.at });
+          if (peer !== ALERTS_VIEW) { unseenAlerts++; notifyAlert(rec.text, rec.sender); }
+          if (peer === ALERTS_VIEW) bubble(rec.text, rec.sender, "alert", rec.at);
         }
-        if (uid === peer) renderMessage(m, false);
-        else if (m.sender !== me && !isAlert) unread[uid] = (unread[uid] || 0) + 1;
+        if (uid === peer) renderRecord(rec);
+        else if (rec.sender !== me && !isAlert) unread[uid] = (unread[uid] || 0) + 1;
       }
     } catch (e) { /* one peer failing shouldn't stop the rest */ }
   }
@@ -424,8 +421,8 @@ async function signIn(tok, name) {
     el.composer.hidden = false;
     renderPeers();
     registerDevice();                      // no-op unless the native app gave us a token
-    await primeAlerts();
-    await selectPeer(ALERTS_VIEW);
+    await primeAll();
+    selectPeer(ALERTS_VIEW);
     startPolling();
   } catch (e2) {
     try { localStorage.removeItem("sre_token"); } catch {}
@@ -451,13 +448,21 @@ el.composer.addEventListener("submit", async (e) => {
   const text = el.text.value.trim();
   if (!text || !peer) return;
   el.text.value = "";
-  bubble(text, me, "mine", Math.floor(Date.now() / 1000));   // optimistic
+  const rec = { id: 0, sender: me, text, at: Math.floor(Date.now() / 1000) };
+  (history[peer] = history[peer] || []).push(rec);           // optimistic, survives tab switches
+  renderRecord(rec);
   try {
     const sent = await api("POST", "/messages", {
       receiver: peer, receiverType: "user", category: "message",
       type: "text", data: { text },
     });
-    if (sent && sent.data && sent.data.id) seen[peer] = Math.max(seen[peer] || 0, Number(sent.data.id) || 0);
+    if (sent && sent.data && sent.data.id) {
+      // Adopt the server's identity so the poll's seen-gate skips the echo and
+      // the record sorts correctly against later messages.
+      rec.id = Number(sent.data.id) || 0;
+      rec.at = Number(sent.data.sentAt) || rec.at;
+      seen[peer] = Math.max(seen[peer] || 0, rec.id);
+    }
   } catch (e2) {
     bubble("(failed to send: " + (e2.message || e2) + ")", "system", "system");
   }
