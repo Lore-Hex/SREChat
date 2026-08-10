@@ -15,6 +15,10 @@
   .msg.mine { align-self:flex-end; background:var(--mine); color:#fff; }
   .msg .who { display:block; font-size:12px; opacity:.7; margin-bottom:2px; }
   form { display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--line); }
+  /* An author `display` rule outranks the UA `[hidden]{display:none}`, so
+     without this the composer form (marked `hidden` until login) shows on top
+     of the login form. Keep hidden actually hidden. */
+  [hidden] { display:none !important; }
   input, button { font:inherit; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
   input { flex:1; min-width:0; }
   button { cursor:pointer; }
