@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Scalable OpenChat on ECS Fargate with ALB TLS, Redis, and S3 uploads.
+Description: Scalable SREChat on ECS Fargate with ALB TLS, Redis, and S3 uploads.
 
 Parameters:
   EnvironmentName:
@@ -88,7 +88,7 @@ Resources:
   ExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub OpenChat-${EnvironmentName}-ExecutionRole
+      RoleName: !Sub SREChat-${EnvironmentName}-ExecutionRole
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -101,7 +101,7 @@ Resources:
       Policies:
         - !If
           - HasAdminApiKeyParameter
-          - PolicyName: !Sub OpenChat-${EnvironmentName}-ReadAdminApiKey
+          - PolicyName: !Sub SREChat-${EnvironmentName}-ReadAdminApiKey
             PolicyDocument:
               Version: "2012-10-17"
               Statement:
@@ -121,7 +121,7 @@ Resources:
   TaskRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub OpenChat-${EnvironmentName}-TaskRole
+      RoleName: !Sub SREChat-${EnvironmentName}-TaskRole
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -130,7 +130,7 @@ Resources:
               Service: ecs-tasks.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: !Sub OpenChat-${EnvironmentName}-S3Uploads
+        - PolicyName: !Sub SREChat-${EnvironmentName}-S3Uploads
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
@@ -143,7 +143,7 @@ Resources:
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: !Sub OpenChat ${EnvironmentName} ALB
+      GroupDescription: !Sub SREChat ${EnvironmentName} ALB
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -161,7 +161,7 @@ Resources:
   ServiceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: !Sub OpenChat ${EnvironmentName} tasks
+      GroupDescription: !Sub SREChat ${EnvironmentName} tasks
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -175,7 +175,7 @@ Resources:
   RedisSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: !Sub OpenChat ${EnvironmentName} Redis
+      GroupDescription: !Sub SREChat ${EnvironmentName} Redis
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -189,7 +189,7 @@ Resources:
   RedisSubnetGroup:
     Type: AWS::ElastiCache::SubnetGroup
     Properties:
-      Description: !Sub OpenChat ${EnvironmentName} Redis subnets
+      Description: !Sub SREChat ${EnvironmentName} Redis subnets
       SubnetIds:
         - !Ref PublicSubnet1
         - !Ref PublicSubnet2
@@ -197,7 +197,7 @@ Resources:
   Redis:
     Type: AWS::ElastiCache::ReplicationGroup
     Properties:
-      ReplicationGroupDescription: !Sub OpenChat ${EnvironmentName}
+      ReplicationGroupDescription: !Sub SREChat ${EnvironmentName}
       Engine: redis
       CacheNodeType: !Ref RedisNodeType
       NumNodeGroups: 1
@@ -347,7 +347,7 @@ Resources:
               Value: "443"
             - Name: COMETCHAT_REGION
               Value: us
-            - Name: OPENCHAT_VERSION
+            - Name: SRECHAT_VERSION
               Value: !Ref AppVersion
             - !If
               - HasAdminApiKeyParameter
@@ -375,7 +375,7 @@ Resources:
                 - redis://${Host}:6379/0
                 - Host: !GetAtt Redis.PrimaryEndPoint.Address
             - Name: REDIS_KEY_PREFIX
-              Value: !Sub open_chat:${EnvironmentName}
+              Value: !Sub sre_chat:${EnvironmentName}
             - Name: REDIS_BOOT_MODE
               Value: lazy
             - Name: REDIS_CONVERSATION_REFRESH_LIMIT

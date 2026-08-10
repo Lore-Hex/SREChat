@@ -1,9 +1,9 @@
-defmodule OpenChat.MixProject do
+defmodule SREChat.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :open_chat,
+      app: :sre_chat,
       version: "0.1.0",
       elixir: "~> 1.16",
       start_permanent: Mix.env() == :prod,
@@ -15,7 +15,7 @@ defmodule OpenChat.MixProject do
   end
 
   defp releases do
-    [open_chat: [include_executables_for: [:unix], applications: [open_chat: :permanent]]]
+    [sre_chat: [include_executables_for: [:unix], applications: [sre_chat: :permanent]]]
   end
 
   def cli do
@@ -25,7 +25,7 @@ defmodule OpenChat.MixProject do
   def application do
     [
       extra_applications: [:logger, :crypto, :public_key, :ssl, :inets, :mime],
-      mod: {OpenChat.Application, []}
+      mod: {SREChat.Application, []}
     ]
   end
 
@@ -45,7 +45,7 @@ defmodule OpenChat.MixProject do
   defp aliases do
     [
       test: ["test --trace"],
-      "test.load": ["test --include load --trace test/open_chat/load_perf_test.exs"]
+      "test.load": ["test --include load --trace test/sre_chat/load_perf_test.exs"]
     ]
   end
 end

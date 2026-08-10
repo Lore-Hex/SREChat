@@ -6,8 +6,8 @@ const require = createRequire(import.meta.url);
 const sdkPath = require.resolve('@cometchat/chat-sdk-javascript/CometChat.js');
 
 const APP_ID = process.env.COMETCHAT_APP_ID || 'local-app';
-const TARGET_HOST = process.env.OPENCHAT_TARGET_HOST || 'localhost:8443/v3.0';
-const ADMIN_API_KEY = process.env.OPENCHAT_ADMIN_API_KEY || (TARGET_HOST.startsWith('localhost') ? 'local-api-key' : '');
+const TARGET_HOST = process.env.SRECHAT_TARGET_HOST || 'localhost:8443/v3.0';
+const ADMIN_API_KEY = process.env.SRECHAT_ADMIN_API_KEY || (TARGET_HOST.startsWith('localhost') ? 'local-api-key' : '');
 let ALICE_TOKEN = process.env.ALICE_TOKEN || (TARGET_HOST.startsWith('localhost') ? 'uid:alice' : '');
 let BOB_TOKEN = process.env.BOB_TOKEN || (TARGET_HOST.startsWith('localhost') ? 'uid:bob' : '');
 
@@ -552,7 +552,7 @@ test('snowy joinGroup(uuid) single-arg works without explicit type/password', as
 
 test('snowy callExtension reactions with msgId/emoji keys (Hangout wire shape)', async ({ page }) => {
   // Mirrors snowy/src/data/chat/cometchat-utils.ts reactMessage().
-  // Snowy uses { msgId, emoji } NOT { messageId, reaction } — the OpenChat extension
+  // Snowy uses { msgId, emoji } NOT { messageId, reaction } — the SREChat extension
   // route must accept this Hangout-specific key naming.
   await loadSdk(page, false);
   const result = await page.evaluate(async (token) => {
@@ -669,7 +669,7 @@ test('snowy callExtension reactions toggle and propagate through message edit li
 });
 
 test('snowy media and GIF-style custom message reactions survive live updates and history', async ({ browser, request }) => {
-  test.skip(!ADMIN_API_KEY, 'Requires an OpenChat admin API key.');
+  test.skip(!ADMIN_API_KEY, 'Requires an SREChat admin API key.');
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
   const aliceUid = `mixed-alice-${suffix}`;
   const bobUid = `mixed-bob-${suffix}`;
@@ -851,7 +851,7 @@ test('snowy media and GIF-style custom message reactions survive live updates an
 });
 
 test('reported room smoke: two users in one room see text, reactions, deletes, and remaining history', async ({ browser, request }) => {
-  test.skip(!ADMIN_API_KEY, 'Requires an OpenChat admin API key.');
+  test.skip(!ADMIN_API_KEY, 'Requires an SREChat admin API key.');
   const room = `reported-room-${Date.now()}`;
 
   const create = await request.post(`https://${TARGET_HOST}/groups`, {
@@ -986,7 +986,7 @@ test('reported room smoke: two users in one room see text, reactions, deletes, a
 });
 
 test('socket admin system song messages are readable as snowy text chat messages', async ({ page, request }) => {
-  test.skip(!ADMIN_API_KEY, 'Requires an OpenChat admin API key.');
+  test.skip(!ADMIN_API_KEY, 'Requires an SREChat admin API key.');
   await loadSdk(page, false);
   const room = 'contract-system-room';
 
@@ -1045,7 +1045,7 @@ test('socket admin system song messages are readable as snowy text chat messages
 });
 
 test('reported system song messages fan out live to joined room clients', async ({ page, request }) => {
-  test.skip(!ADMIN_API_KEY, 'Requires an OpenChat admin API key.');
+  test.skip(!ADMIN_API_KEY, 'Requires an SREChat admin API key.');
   const room = `reported-system-live-${Date.now()}`;
 
   const create = await request.post(`https://${TARGET_HOST}/groups`, {
@@ -1147,7 +1147,7 @@ test('snowy ReactionsRequestBuilder paginated fetch (loops until empty)', async 
 
 test('snowy getUnreadMessageCountForAllUsers(true) returns a uid->count map', async ({ browser }) => {
   // Mirrors snowy/src/data/chat/cometchat-utils.ts fetchMyUnreadCount(). The boolean
-  // argument requests hide-archived behavior on real CometChat; OpenChat must accept
+  // argument requests hide-archived behavior on real CometChat; SREChat must accept
   // and ignore it gracefully.
   const alice = await browser.newPage();
   await loadSdk(alice, false);
@@ -1191,7 +1191,7 @@ test('snowy mentions: <@uid:xxx> and <consumableId:xxx> in text round-trip unmod
 
 test('snowy markAsRead(message) accepts a message object and clears unread', async ({ browser, request }) => {
   // Mirrors snowy/src/data/chat/dm-chat-utils.tsx markMessageAsRead(message).
-  test.skip(!ADMIN_API_KEY, 'Requires an OpenChat admin API key.');
+  test.skip(!ADMIN_API_KEY, 'Requires an SREChat admin API key.');
 
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
   const aliceUid = `mark-read-alice-${suffix}`;
@@ -1243,7 +1243,7 @@ test('snowy markAsRead(message) accepts a message object and clears unread', asy
 });
 
 test('snowy DM open flow marks the first fetched history item read after many unread messages', async ({ browser, request }) => {
-  test.skip(!ADMIN_API_KEY, 'Requires an OpenChat admin API key.');
+  test.skip(!ADMIN_API_KEY, 'Requires an SREChat admin API key.');
 
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
   const aliceUid = `dm-open-alice-${suffix}`;

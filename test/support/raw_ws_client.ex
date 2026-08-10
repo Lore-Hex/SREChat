@@ -1,4 +1,4 @@
-defmodule OpenChat.RawWsClient do
+defmodule SREChat.RawWsClient do
   @moduledoc """
   A deliberately dumb RFC 6455 client over :gen_tcp for transport-layer
   tests. The mocked handler tests can't answer questions like "does the

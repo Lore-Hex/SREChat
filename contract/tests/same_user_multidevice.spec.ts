@@ -5,9 +5,9 @@ const require = createRequire(import.meta.url);
 const sdkPath = require.resolve('@cometchat/chat-sdk-javascript/CometChat.js');
 
 const APP_ID = process.env.COMETCHAT_APP_ID || 'local-app';
-const TARGET_HOST = process.env.OPENCHAT_TARGET_HOST || 'localhost:8443/v3.0';
+const TARGET_HOST = process.env.SRECHAT_TARGET_HOST || 'localhost:8443/v3.0';
 const ADMIN_API_KEY =
-  process.env.OPENCHAT_ADMIN_API_KEY || (TARGET_HOST.startsWith('localhost') ? 'local-api-key' : '');
+  process.env.SRECHAT_ADMIN_API_KEY || (TARGET_HOST.startsWith('localhost') ? 'local-api-key' : '');
 
 async function loadSdk(page: any) {
   await page.goto(`https://${TARGET_HOST}/settings`);
@@ -38,7 +38,7 @@ async function adminPost(request: any, path: string, data: any = {}) {
 }
 
 test('same user receives group messages live on a second SDK client', async ({ browser, request }) => {
-  test.skip(!ADMIN_API_KEY, 'Requires OPENCHAT_ADMIN_API_KEY for user/group setup.');
+  test.skip(!ADMIN_API_KEY, 'Requires SRECHAT_ADMIN_API_KEY for user/group setup.');
   test.setTimeout(60_000);
 
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;

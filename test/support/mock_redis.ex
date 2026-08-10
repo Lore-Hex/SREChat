@@ -1,4 +1,4 @@
-defmodule OpenChat.MockRedis do
+defmodule SREChat.MockRedis do
   @moduledoc false
 
   use Agent
@@ -50,28 +50,28 @@ defmodule OpenChat.MockRedis do
     |> maybe_raise()
   end
 
-  def force_command(response, conn \\ OpenChat.Redis),
+  def force_command(response, conn \\ SREChat.Redis),
     do: push_response(:command_responses, response, conn)
 
   def force_pipeline(response), do: push_response(:pipeline_responses, response)
 
-  def published(conn \\ OpenChat.Redis) do
+  def published(conn \\ SREChat.Redis) do
     Agent.get(conn, &Enum.reverse(&1.published))
   end
 
   def put_string(key, value) do
-    Agent.update(OpenChat.Redis, &put_in(&1, [:strings, key], value))
+    Agent.update(SREChat.Redis, &put_in(&1, [:strings, key], value))
   end
 
   def strings do
-    Agent.get(OpenChat.Redis, & &1.strings)
+    Agent.get(SREChat.Redis, & &1.strings)
   end
 
   def sets do
-    Agent.get(OpenChat.Redis, & &1.sets)
+    Agent.get(SREChat.Redis, & &1.sets)
   end
 
-  defp push_response(queue_key, response, conn \\ OpenChat.Redis) do
+  defp push_response(queue_key, response, conn \\ SREChat.Redis) do
     Agent.update(conn, fn state ->
       update_in(state, [queue_key], &:queue.in(response, &1))
     end)
@@ -284,21 +284,21 @@ defmodule OpenChat.MockRedis do
   end
 end
 
-defmodule OpenChat.MockRedis.AlreadyStartedClient do
+defmodule SREChat.MockRedis.AlreadyStartedClient do
   @moduledoc false
 
   def start_link(url, opts) do
-    case OpenChat.MockRedis.start_link(url, opts) do
+    case SREChat.MockRedis.start_link(url, opts) do
       {:ok, pid} -> {:error, {:already_started, pid}}
       {:error, {:already_started, pid}} -> {:error, {:already_started, pid}}
     end
   end
 
-  def command(conn, command), do: OpenChat.MockRedis.command(conn, command)
-  def pipeline(conn, commands), do: OpenChat.MockRedis.pipeline(conn, commands)
+  def command(conn, command), do: SREChat.MockRedis.command(conn, command)
+  def pipeline(conn, commands), do: SREChat.MockRedis.pipeline(conn, commands)
 end
 
-defmodule OpenChat.MockRedis.FailingClient do
+defmodule SREChat.MockRedis.FailingClient do
   @moduledoc false
 
   def start_link(_url, _opts), do: {:error, :mock_connection_down}
@@ -306,7 +306,7 @@ defmodule OpenChat.MockRedis.FailingClient do
   def pipeline(_conn, _commands), do: {:error, :mock_connection_down}
 end
 
-defmodule OpenChat.MockRedis.PubSub do
+defmodule SREChat.MockRedis.PubSub do
   @moduledoc false
 
   use Agent
@@ -324,7 +324,7 @@ defmodule OpenChat.MockRedis.PubSub do
   end
 end
 
-defmodule OpenChat.MockRedis.FailingPubSub do
+defmodule SREChat.MockRedis.FailingPubSub do
   @moduledoc false
 
   def start_link(_url, _opts), do: {:error, :mock_pubsub_down}
