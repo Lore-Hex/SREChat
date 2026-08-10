@@ -269,6 +269,23 @@ def tool_local_logs(arg: str = "") -> str:
     return _run(["sudo", "docker", "logs", "--tail", "40", cid])
 
 
+def _recent_app_logs() -> str:
+    """App log lines from the last few minutes only.
+
+    The watch must age out: --tail N alone resurfaces an error line however
+    long ago it happened, so a fixed incident kept paging as new — a stale
+    "replication gap" from last night sat inside the tail window 40 minutes
+    after the cursors were repaired. Time-bounding means recovery is observed
+    as recovery. (The chat `logs` command keeps plain --tail on purpose:
+    a human asking for logs wants context regardless of age.)
+    """
+    cid = _run(["sudo", "docker", "ps", "-qf", "name=app"]).split("\n")[0]
+    if not cid or cid.startswith("("):
+        return ""
+    window = f"{max(int(WATCH_SECONDS) * (FAILS_TO_ALERT + 1), 120)}s"
+    return _run(["sudo", "docker", "logs", "--since", window, "--tail", "200", cid])
+
+
 def tool_wireguard(_arg: str = "") -> str:
     return _run(["sudo", "wg", "show"])
 
@@ -735,8 +752,7 @@ def watch_once() -> None:
     #    named, specific page (they are silent divergence, the worst failure this
     #    system has), everything else stays one generic errors alert.
     try:
-        logs = tool_local_logs("app")
-        lines = logs.splitlines()
+        lines = _recent_app_logs().splitlines()
         repl = [ln for ln in lines if "replication gap" in ln or "refusing to continue" in ln]
         bad = [ln for ln in lines
                if any(w in ln.lower() for w in ("error", "crash", "fatal", "exception"))
