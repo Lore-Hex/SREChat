@@ -281,6 +281,16 @@ async function poll() {
 // top that stays until acknowledged, plus a vibration where supported.
 function notifyAlert(text, from) {
   try { if (navigator.vibrate) navigator.vibrate([120, 60, 120]); } catch {}
+  // In the iOS app, hand the alert to native code so it becomes a real
+  // notification (banner + sound) instead of only a bar inside a screen you
+  // might not be looking at.
+  try {
+    window.webkit?.messageHandlers?.sreAlert?.postMessage({
+      title: "SREChat: " + from,
+      body: text.replace(/^🔔\s*/, "").split("\n").slice(0, 3).join(" ").slice(0, 220),
+      id: String(Date.now()),
+    });
+  } catch {}
   let bar = document.getElementById("alertbar");
   if (!bar) {
     bar = document.createElement("div");
