@@ -1,5 +1,13 @@
 # SREChat: multi-master chat that survives losing a cloud
 
+<p align="center">
+  <img src="docs/screenshots/chat-gcp.png" width="31%" alt="Chatting with the GCP agent about region health">
+  <img src="docs/screenshots/chat-aws.png" width="31%" alt="Chatting with the AWS agent">
+  <img src="docs/screenshots/chat-azure.png" width="31%" alt="Asking the Azure agent about errors in its logs">
+</p>
+
+<p align="center"><em>An SRE agent on every cloud — GCP, AWS, Azure — that you DM from the iOS app.<br>Ask about health, replication, or errors; each answers from its own master, backed by TrustedRouter.</em></p>
+
 SREChat is a BEAM/Elixir chat backend that runs as **several equal masters
 — one per cloud** — and keeps serving when the network between them breaks.
 Every region accepts writes during a partition, and the regions converge when
