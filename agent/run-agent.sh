@@ -23,6 +23,22 @@ export SRE_HOST="$host"
 export TR_MODEL="${model:-$default_model}"
 export TR_API_KEY="${TR_API_KEY:-$(cat "$HOME/.tr_key" 2>/dev/null | tr -d '\n\r ' || true)}"
 
+# APNs push credentials, if this host has them. Kept outside the repo so the
+# signing key is never a git object, and optional so a host without it still
+# runs the agent — it just cannot page a closed phone (see agent/apns.py).
+# -r, not -f: under `set -e` a file that exists but cannot be read aborts the
+# script, which turns a permissions mistake on an OPTIONAL credential into a
+# crash-looping agent — i.e. the monitoring dies of the thing it was supposed
+# to make better. Unreadable is treated exactly like absent.
+if [ -r /etc/srechat/apns.env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . /etc/srechat/apns.env
+  set +a
+else
+  echo "note: no readable /etc/srechat/apns.env — running without APNs push" >&2
+fi
+
 if [ -z "${TR_API_KEY:-}" ]; then
   echo "warning: no TR_API_KEY (env or ~/.tr_key) — the agent will run tools but not the LLM" >&2
 fi

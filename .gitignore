@@ -19,3 +19,6 @@ erl_crash.dump
 *.pem
 deploy/.env
 __pycache__/
+
+# Apple signing keys must never become git objects.
+*.p8
