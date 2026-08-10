@@ -48,7 +48,14 @@ def _infer_region_index(host: str) -> int:
 # independent failure domains — an agent that could act on all three would erase
 # the property the architecture exists to provide.
 REGION_INDEX = int(os.environ.get("SRE_REGION_INDEX", _infer_region_index(REGION_HOST)))
-ACTIONABLE = REGION_INDEX == 0
+# Read-only by default, on every region, for safety — an agent you DM should not
+# be able to change infrastructure just because someone asked it nicely. Actions
+# (GCP reads + restarting region 0's own containers) are opt-in via
+# SRE_ALLOW_ACTIONS=true and only ever take effect on region 0 (GCP), where the
+# tools actually work; AWS and Azure stay pure monitors no matter what.
+ACTIONABLE = REGION_INDEX == 0 and os.environ.get(
+    "SRE_ALLOW_ACTIONS", ""
+).strip().lower() in {"1", "true", "yes"}
 CLOUD = {0: "GCP us-central1", 1: "AWS us-east-1", 2: "Azure austriaeast"}.get(
     REGION_INDEX, f"region {REGION_INDEX}"
 )
