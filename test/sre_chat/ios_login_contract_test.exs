@@ -40,41 +40,36 @@ defmodule SREChat.IosLoginContractTest do
     end
   end
 
-  test "iOS settings carry the camelCase keys the SDK's own model decodes" do
-    # The third iOS force-unwrap, one field deeper than extensions.enabled: the
-    # SDK's settings model is Codable with camelCase keys (chatWssPort, chatHost,
-    # the webRTC* group), decoded with convertFromSnakeCase. If the port is
-    # absent in that casing the WHOLE settings object decodes to nil, and
-    # CometChatSocketController.connect() SIGTRAPs on SDKUserDefaults().
-    # CHAT_WSS_PORT — right after a SUCCESSFUL login, so it looks like login
-    # worked and then the app vanished. Bisection: the complete camelCase object
-    # is the change that turns the crash into a live chat UI.
-    settings = Config.ios_settings()
+  test "settings stay UPPER_SNAKE for every client" do
+    # The SDK's settings model uses camelCase PROPERTY names mapped by
+    # CodingKeys onto these UPPER_SNAKE JSON keys — which is why both spellings
+    # appear in its binary. Serving camelCase instead made the decode leave
+    # chat_wss_port nil, and CometChatSocketController.connect() then returned
+    # at its own port guard WITHOUT dialling and without an error: the socket
+    # simply never existed. Both clients get the same UPPER_SNAKE payload.
+    settings = Config.settings()
 
-    required = ~w(chatHost clientAPIHost mainDomain chatAPIVersion wsAPIVersion
-                  chatWsPort chatWssPort chatUseSSL webrtcHost webrtcWsPort
-                  webrtcWssPort webrtcUseSSL)
-
-    for key <- required do
-      assert Map.has_key?(settings, key), "missing camelCase #{key} — crashes iOS on connect"
+    for key <- ~w(CHAT_HOST CHAT_WSS_PORT CHAT_WS_PORT CHAT_USE_SSL) do
+      assert Map.has_key?(settings, key), "missing #{key} — the iOS socket will not dial"
     end
 
-    # Every extension still carries `enabled` in the iOS variant too.
-    assert Enum.all?(settings["extensions"], &Map.has_key?(&1, "enabled"))
+    refute Map.has_key?(settings, "chatWssPort"),
+           "camelCase settings leave the SDK's port nil and silently kill the socket"
 
-    # The port must stay a string: decoding it as Int (a plausible "cleanup")
-    # made the entire settings payload fail to parse and broke login outright.
-    assert is_binary(settings["chatWssPort"])
+    assert Config.ios_settings() == settings, "no per-client divergence today"
+
+    # The port must stay a string: decoding it as Int broke the whole payload.
+    assert is_binary(settings["CHAT_WSS_PORT"])
   end
 
-  test "iOS and default settings must not be merged: no UPPER_SNAKE in the iOS payload" do
-    # convertFromSnakeCase makes CHAT_WSS_PORT and chatWssPort collide, so a
-    # response carrying BOTH decodes to nil and crashes exactly where camelCase
-    # alone succeeds. The iOS payload must therefore be camelCase-ONLY.
-    for key <- Map.keys(Config.ios_settings()) do
-      refute key =~ ~r/^[A-Z0-9_]+$/,
-             "UPPER_SNAKE key #{key} in the iOS settings collides with its camelCase twin and crashes the SDK"
-    end
+  test "CHAT_HOST carries no port or path, or the socket URL is malformed" do
+    # The SDK builds wss://<CHAT_HOST>:<CHAT_WSS_PORT>. A host carrying a port
+    # or an API-version path yields wss://host:4443:4443 or wss://host/v3.0:443,
+    # neither of which is a URL — the client force-unwraps nil and dies.
+    host = Config.settings()["CHAT_HOST"]
+
+    refute String.contains?(host, ":"), "CHAT_HOST must not carry a port"
+    refute String.contains?(host, "/"), "CHAT_HOST must not carry a path"
   end
 
   test "the login JWT is structurally decodable" do

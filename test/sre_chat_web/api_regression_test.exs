@@ -1,9 +1,10 @@
 defmodule SREChatWeb.ApiRegressionTest do
   use SREChat.HttpCase, async: false
 
-  test "settings casing is selected per client by the resource header" do
-    # iOS SDK (resource: ios-*) must get camelCase-only; the default REST/JS
-    # client must get UPPER_SNAKE. Serving both to iOS crashes it.
+  test "both clients get the same UPPER_SNAKE settings over HTTP" do
+    # There is no per-client casing: the SDK's camelCase properties are mapped
+    # by CodingKeys onto UPPER_SNAKE JSON keys. Serving camelCase to iOS left
+    # its socket port nil and the client never dialled.
     {:ok, _} = SREChat.Store.upsert_user(%{"uid" => "caser", "name" => "Caser"})
 
     ios =
@@ -13,22 +14,18 @@ defmodule SREChatWeb.ApiRegressionTest do
       |> Plug.Conn.put_req_header("resource", "ios-4_1_7-token")
       |> SREChatWeb.Endpoint.call([])
 
-    ios_settings = json(ios)["data"]["settings"]
-    assert Map.has_key?(ios_settings, "chatWssPort")
-    refute Map.has_key?(ios_settings, "CHAT_WSS_PORT"),
-           "iOS got both casings — this crashes the SDK on connect"
-
     default =
       conn(:put, "/v3.0/me", "{}")
       |> Plug.Conn.put_req_header("content-type", "application/json")
       |> Plug.Conn.put_req_header("authorization", "Bearer uid:caser")
       |> SREChatWeb.Endpoint.call([])
 
+    ios_settings = json(ios)["data"]["settings"]
     default_settings = json(default)["data"]["settings"]
-    assert Map.has_key?(default_settings, "CHAT_WSS_PORT")
 
-    # Both must still agree on the actual value.
-    assert ios_settings["chatWssPort"] == default_settings["CHAT_WSS_PORT"]
+    assert Map.has_key?(ios_settings, "CHAT_WSS_PORT")
+    refute Map.has_key?(ios_settings, "chatWssPort")
+    assert ios_settings == default_settings
   end
 
   test "a doubled API-version prefix resolves to the same route" do

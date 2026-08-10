@@ -276,81 +276,26 @@ defmodule SREChat.Config do
     upper
   end
 
-  # The iOS SDK decodes its settings model from camelCase keys (chatHost,
-  # chatWssPort, the whole webRTC* group); the JS SDK reads the UPPER_SNAKE keys
-  # from settings/0. The two CANNOT be merged into one response: the Swift
-  # decoder uses convertFromSnakeCase, so CHAT_WSS_PORT and chatWssPort collide
-  # and the WHOLE settings object decodes to nil — after which
-  # CometChatSocketController.connect() force-unwraps the now-nil port and
-  # SIGTRAPs, right after a SUCCESSFUL login (so it looks like login worked and
-  # the app vanished). Proven by clean-device bisection: both casings together
-  # crash; camelCase alone is LOGIN OK into a live chat UI.
+  # The iOS SDK's settings model uses camelCase PROPERTY names (chatWssPort,
+  # chatHost, the webRTC* group) mapped by CodingKeys onto these UPPER_SNAKE
+  # JSON keys — which is why both spellings appear in its binary. UPPER_SNAKE is
+  # the wire format for BOTH SDKs; there is no per-client casing.
   #
-  # So each client gets ITS OWN casing, selected at the HTTP boundary by the
-  # CometChat `resource` header (ios-* vs js-*). This is camel-only, for iOS.
-  # This is the same bug family as extensions.enabled and wsChannel above, one
-  # field deeper.
-  def ios_settings do
-    extensions = [
-      %{
-        "id" => "reactions",
-        "name" => "reactions",
-        "enabled" => true,
-        "version" => "1.0",
-        "configuration" => %{}
-      }
-    ]
+  # Recorded because the wrong reading of that evidence cost a lot: serving
+  # camelCase made the settings decode leave chat_wss_port nil, and
+  # CometChatSocketController.connect() then bailed at its own port guard
+  # WITHOUT dialling and without an error — a silent no-socket that looks
+  # exactly like a client that refuses to connect. The real blocker was always
+  # the malformed JWT (see AuthTokens.local_jwt); with a decodable JWT and these
+  # UPPER_SNAKE settings the native socket connects in about a second.
+  def ios_settings, do: settings()
 
-    camel_settings(extensions)
-  end
-
-  # True when the request came from the CometChat iOS SDK, which sends a
-  # `resource` header shaped `ios-<version>-<token>`. The direct-REST web client
-  # sends no such header, so it falls through to the default (UPPER) settings.
+  # Kept so the router has a stable predicate if a future divergence is needed;
+  # today both clients get the same payload.
   def ios_client?(resource) when is_binary(resource),
     do: String.starts_with?(resource, "ios")
 
   def ios_client?(_), do: false
-
-  # The Swift settings model is not partially decodable: omit a non-optional
-  # field it expects (any port, or the webRTC block) and the whole object
-  # decodes to nil. The webRTC values are unused by chat but must be present and
-  # well-typed. Port stays a STRING — decoding it as Int broke the whole payload.
-  defp camel_settings(extensions) do
-    port = to_string(ws_port())
-
-    %{
-      "chatHost" => host(),
-      "clientAPIHost" => api_host(),
-      "apiHost" => api_host(),
-      "adminHost" => api_host(),
-      "mainDomain" => host(),
-      "analyticsHost" => host(),
-      "extensionDomain" => extension_domain(),
-      "chatAPIVersion" => "v3.0",
-      "wsAPIVersion" => "v3.0",
-      "region" => region(),
-      "mode" => "DEFAULT",
-      "chatWsPort" => port,
-      "chatWssPort" => port,
-      "chatHTTPBindPort" => "80",
-      "chatHTTPSBindPort" => "443",
-      "chatUseSSL" => use_ssl?(),
-      # webRTC is not used by chat, but the settings model still decodes these
-      # fields, so they must be present and correctly typed.
-      "webrtcHost" => host(),
-      "webRTCAPISubdomain" => host(),
-      "webrtcWsPort" => port,
-      "webrtcWssPort" => port,
-      "webrtcHTTPBindPort" => "80",
-      "webrtcHTTPSBindPort" => "443",
-      "webrtcUseSSL" => use_ssl?(),
-      "chatHostOverride" => nil,
-      "chatHostAppSpecific" => nil,
-      "extensions" => extensions,
-      "settingsHash" => "open-chat-0.1.0"
-    }
-  end
 
   defp runtime_secret(key) do
     case :persistent_term.get(key, nil) do
