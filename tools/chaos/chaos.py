@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Three-region partition chaos test — the test that earns the name.
 
-Topology: three FULL RoachChat regions as separate OS processes, each
+Topology: three FULL SREChat regions as separate OS processes, each
 with its own redis-server, all multi-master. Replication links run through
 kill-able TCP proxies:
 

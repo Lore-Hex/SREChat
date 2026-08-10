@@ -2,20 +2,20 @@
 set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-2}"
-TAG="${OPENCHAT_IMAGE_TAG:-$(git rev-parse --short HEAD)}"
-STACK_NAME="${OPENCHAT_STACK_NAME:-openchat-scalable}"
-TEMPLATE_FILE="${OPENCHAT_TEMPLATE_FILE:-infra/aws/openchat-ecs-fargate.yaml}"
-DESIRED_COUNT="${OPENCHAT_DESIRED_COUNT:-6}"
-MIN_CAPACITY="${OPENCHAT_MIN_CAPACITY:-6}"
-MAX_CAPACITY="${OPENCHAT_MAX_CAPACITY:-16}"
-TASK_MEMORY="${OPENCHAT_TASK_MEMORY:-4096}"
-REDIS_NODE_TYPE="${OPENCHAT_REDIS_NODE_TYPE:-cache.t4g.medium}"
-WEBSOCKET_HEARTBEAT_MS="${OPENCHAT_WEBSOCKET_HEARTBEAT_MS:-25000}"
-REDIS_PUBLISHER_LANES="${OPENCHAT_REDIS_PUBLISHER_LANES:-4}"
-DEPLOY_TARGET="${OPENCHAT_DEPLOY_TARGET:-all}"
+TAG="${SRECHAT_IMAGE_TAG:-$(git rev-parse --short HEAD)}"
+STACK_NAME="${SRECHAT_STACK_NAME:-openchat-scalable}"
+TEMPLATE_FILE="${SRECHAT_TEMPLATE_FILE:-infra/aws/openchat-ecs-fargate.yaml}"
+DESIRED_COUNT="${SRECHAT_DESIRED_COUNT:-6}"
+MIN_CAPACITY="${SRECHAT_MIN_CAPACITY:-6}"
+MAX_CAPACITY="${SRECHAT_MAX_CAPACITY:-16}"
+TASK_MEMORY="${SRECHAT_TASK_MEMORY:-4096}"
+REDIS_NODE_TYPE="${SRECHAT_REDIS_NODE_TYPE:-cache.t4g.medium}"
+WEBSOCKET_HEARTBEAT_MS="${SRECHAT_WEBSOCKET_HEARTBEAT_MS:-25000}"
+REDIS_PUBLISHER_LANES="${SRECHAT_REDIS_PUBLISHER_LANES:-4}"
+DEPLOY_TARGET="${SRECHAT_DEPLOY_TARGET:-all}"
 
-STAGING_PROFILE="${OPENCHAT_STAGING_PROFILE:-tt-staging}"
-PRODUCTION_PROFILE="${OPENCHAT_PRODUCTION_PROFILE:-awsproduction-ttfm}"
+STAGING_PROFILE="${SRECHAT_STAGING_PROFILE:-tt-staging}"
+PRODUCTION_PROFILE="${SRECHAT_PRODUCTION_PROFILE:-awsproduction-ttfm}"
 
 STAGING_ACCOUNT="036958288468"
 PRODUCTION_ACCOUNT="829838608284"
@@ -29,8 +29,8 @@ PRODUCTION_EXTENSION_DOMAIN="prod.tt.fm"
 STAGING_EXTENSION_CERTIFICATE_ARN="arn:aws:acm:us-east-2:036958288468:certificate/83aecf08-0c25-435a-b1e8-c95faf7fff36"
 PRODUCTION_EXTENSION_CERTIFICATE_ARN="arn:aws:acm:us-east-2:829838608284:certificate/881eeab3-edcf-4ef8-9e93-939f9fce2451"
 
-STAGING_ADMIN_API_KEY_PARAMETER_NAME="${OPENCHAT_STAGING_ADMIN_API_KEY_PARAMETER_NAME:-/openchat/staging/admin-api-key}"
-PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME="${OPENCHAT_PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME:-/openchat/production/admin-api-key}"
+STAGING_ADMIN_API_KEY_PARAMETER_NAME="${SRECHAT_STAGING_ADMIN_API_KEY_PARAMETER_NAME:-/openchat/staging/admin-api-key}"
+PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME="${SRECHAT_PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME:-/openchat/production/admin-api-key}"
 
 STAGING_CORS_ALLOWED_ORIGINS="https://staging.hang.fm,https://staging.tt.live,https://staging.hangout.fm,https://openchat.staging.tt.fm,https://*.discordsays.com,http://localhost:3000,http://localhost:4173,http://localhost:5173"
 PRODUCTION_CORS_ALLOWED_ORIGINS="https://hang.fm,https://www.hang.fm,https://hangout.fm,https://www.hangout.fm,https://tt.live,https://www.tt.live,https://openchat.prod.tt.fm,https://*.discordsays.com"
@@ -404,18 +404,18 @@ main() {
       ;;
 
     *)
-      echo "Invalid OPENCHAT_DEPLOY_TARGET=$DEPLOY_TARGET; expected staging, production, or all." >&2
+      echo "Invalid SRECHAT_DEPLOY_TARGET=$DEPLOY_TARGET; expected staging, production, or all." >&2
       exit 1
       ;;
   esac
 
-  echo "Building and pushing OpenChat image tag $TAG for $DEPLOY_TARGET"
+  echo "Building and pushing SREChat image tag $TAG for $DEPLOY_TARGET"
   build_and_push "$DEPLOY_TARGET"
 
   local staging_key production_key
 
   if [ "$DEPLOY_TARGET" != "production" ]; then
-    staging_key="$(admin_key staging "$STAGING_PROFILE" "$STAGING_ADMIN_API_KEY_PARAMETER_NAME" OPENCHAT_STAGING_ADMIN_API_KEY OPENCHAT_STAGING_ADMIN_API_KEY_FILE /tmp/openchat-staging-admin-key)"
+    staging_key="$(admin_key staging "$STAGING_PROFILE" "$STAGING_ADMIN_API_KEY_PARAMETER_NAME" SRECHAT_STAGING_ADMIN_API_KEY SRECHAT_STAGING_ADMIN_API_KEY_FILE /tmp/openchat-staging-admin-key)"
     store_admin_key_parameter "$STAGING_PROFILE" staging "$STAGING_ADMIN_API_KEY_PARAMETER_NAME" "$staging_key"
     unset staging_key
 
@@ -429,7 +429,7 @@ main() {
   fi
 
   if [ "$DEPLOY_TARGET" != "staging" ]; then
-    production_key="$(admin_key production "$PRODUCTION_PROFILE" "$PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME" OPENCHAT_PRODUCTION_ADMIN_API_KEY OPENCHAT_PRODUCTION_ADMIN_API_KEY_FILE /tmp/openchat-prod-admin-key)"
+    production_key="$(admin_key production "$PRODUCTION_PROFILE" "$PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME" SRECHAT_PRODUCTION_ADMIN_API_KEY SRECHAT_PRODUCTION_ADMIN_API_KEY_FILE /tmp/openchat-prod-admin-key)"
     store_admin_key_parameter "$PRODUCTION_PROFILE" production "$PRODUCTION_ADMIN_API_KEY_PARAMETER_NAME" "$production_key"
     unset production_key
 
@@ -442,7 +442,7 @@ main() {
     verify_env "$PRODUCTION_PROFILE" openchat-production openchat-production "$PRODUCTION_DOMAIN" "$PRODUCTION_ACCOUNT"
   fi
 
-  echo "OpenChat $TAG deployed to $DEPLOY_TARGET."
+  echo "SREChat $TAG deployed to $DEPLOY_TARGET."
 }
 
 main "$@"

@@ -15,6 +15,6 @@ priv/static/uploads/*
 erl_crash.dump
 
 # deploy secrets — never commit
-.roach-*
+.sre-*
 *.pem
 deploy/.env

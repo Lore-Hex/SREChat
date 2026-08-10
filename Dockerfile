@@ -30,6 +30,6 @@ RUN apt-get -o Acquire::Retries=5 update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 ENV MIX_ENV=prod
-COPY --from=build /app/_build/prod/rel/open_chat ./
+COPY --from=build /app/_build/prod/rel/sre_chat ./
 EXPOSE 4000
-CMD ["/app/bin/open_chat", "start"]
+CMD ["/app/bin/sre_chat", "start"]

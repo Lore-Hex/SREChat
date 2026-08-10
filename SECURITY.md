@@ -3,12 +3,12 @@
 ## Reporting a vulnerability
 
 Please report privately via GitHub's [Report a
-vulnerability](https://github.com/Lore-Hex/RoachChat/security/advisories/new)
+vulnerability](https://github.com/Lore-Hex/SREChat/security/advisories/new)
 form rather than a public issue. We aim to acknowledge within 72 hours.
 
 ## What this software is
 
-RoachChat is a multi-master, partition-tolerant chat backend speaking a
+SREChat is a multi-master, partition-tolerant chat backend speaking a
 CometChat-compatible wire protocol. It is designed to keep serving during
 a cloud or network partition, which means it deliberately accepts writes
 on both sides of a split and converges afterwards.

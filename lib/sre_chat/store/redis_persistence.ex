@@ -1,0 +1,1495 @@
+defmodule SREChat.Store.RedisPersistence do
+  @moduledoc false
+
+  require Logger
+
+  alias SREChat.{Config, Observability, RedisClient}
+
+  @buckets [
+    "users",
+    "tokens",
+    "groups",
+    "members",
+    "messages",
+    "conversation_messages",
+    "conversation_latest",
+    "thread_messages",
+    "reads",
+    "delivered",
+    "hidden_conversations",
+    "reactions",
+    "blocks",
+    "banned",
+    "message_muids",
+    "user_conversations",
+    "conversation_users",
+    "user_groups",
+    "unread_counts",
+    "presence"
+  ]
+
+  @counters ["next_id", "next_reaction_id"]
+  @version "7"
+  @lock_ttl_ms 10_000
+  @lock_attempts 100
+  @reader_name SREChat.Redis
+  @writer_name SREChat.RedisWriter
+  @mutation_reader_name SREChat.RedisMutationReader
+  @counter_name SREChat.RedisCounter
+  @lock_names [
+    SREChat.RedisLock0,
+    SREChat.RedisLock1,
+    SREChat.RedisLock2,
+    SREChat.RedisLock3
+  ]
+  @auxiliary_names [@writer_name, @mutation_reader_name, @counter_name | @lock_names]
+  @read_conn_key :sre_chat_redis_read_conn
+  @atomic_write_script """
+  local prefix = ARGV[1]
+  local version = ARGV[2]
+  local ops = cjson.decode(ARGV[3])
+  local oplog_entry = ARGV[4]
+  local oplog_stream = ARGV[5]
+
+  local function key(...)
+    local parts = {prefix, ...}
+    return table.concat(parts, ":")
+  end
+
+  for i = 1, #ops do
+    local op = ops[i]
+
+    if op["op"] == "put" then
+      redis.call("SET", key(op["bucket"], op["id"]), op["value"])
+      redis.call("SADD", key("index", op["bucket"]), op["id"])
+    elseif op["op"] == "delete" then
+      redis.call("DEL", key(op["bucket"], op["id"]))
+      redis.call("SREM", key("index", op["bucket"]), op["id"])
+    elseif op["op"] == "counter" then
+      local current = redis.call("GET", key("counter", op["counter"]))
+      local current_number = tonumber(current)
+      local candidate = tonumber(op["value"]) or 1
+
+      if not current_number or current_number < candidate then
+        redis.call("SET", key("counter", op["counter"]), tostring(candidate))
+      end
+    else
+      error("unknown Redis write op: " .. tostring(op["op"]))
+    end
+  end
+
+  -- Multi-master: the oplog entry commits in the SAME script as the
+  -- records it describes. A crash cannot commit a mutation that peers
+  -- will never see, or announce one that never landed. MAXLEN bounds the
+  -- stream; the tailer detects trim-induced gaps rather than skipping.
+  -- Each replicated record also gets a version stamp (ts + origin) so
+  -- receivers can last-writer-wins gate against local writes.
+  if oplog_entry ~= "" and oplog_stream ~= "" then
+    redis.call("XADD", oplog_stream, "MAXLEN", "~", "1000000", "*", "entry", oplog_entry)
+
+    local entry = cjson.decode(oplog_entry)
+    local stamp = cjson.encode({ts = entry["ts"], origin = entry["origin"]})
+    for i = 1, #entry["ops"] do
+      local rop = entry["ops"][i]
+      -- rop = [action, bucket, id, value?]
+      redis.call("SET", key("repl_versions", rop[2] .. ":" .. rop[3]), stamp, "EX", 2592000)
+    end
+  end
+
+  redis.call("SET", key("meta", "version"), version)
+  return redis.call("INCR", key("meta", "revision"))
+  """
+
+  def load_or_seed(default_state, seed_fun) do
+    case Config.redis_url() do
+      nil ->
+        seed_fun.()
+
+      "" ->
+        seed_fun.()
+
+      url ->
+        case start_redis(url) do
+          {:ok, _pid} -> load(default_state, seed_fun)
+          {:error, reason} -> redis_failed("connection", reason, seed_fun)
+        end
+    end
+  end
+
+  def enabled?, do: Process.whereis(@reader_name) != nil
+
+  def configured? do
+    case Config.redis_url() do
+      url when is_binary(url) -> url != ""
+      _other -> false
+    end
+  end
+
+  def refresh(default_state, fallback_state) do
+    if enabled?() do
+      case command(["GET", revision_key()]) do
+        {:ok, nil} -> fallback_state
+        {:ok, revision} -> maybe_refresh_state(default_state, fallback_state, to_int(revision))
+        {:error, reason} -> redis_failed("state refresh", reason, fn -> fallback_state end)
+      end
+    else
+      fallback_state
+    end
+  end
+
+  def refresh_keys(default_state, fallback_state, keys) do
+    if enabled?() do
+      keys = normalize_refresh_keys(keys)
+
+      cond do
+        keys == [] -> fallback_state
+        true -> refresh_records(default_state, fallback_state, keys)
+      end
+    else
+      fallback_state
+    end
+  end
+
+  def refresh_keys_for_mutation(default_state, fallback_state, keys) do
+    with_read_conn(mutation_read_conn(), fn ->
+      refresh_keys(default_state, fallback_state, keys)
+    end)
+  end
+
+  def with_lock(fun) when is_function(fun, 0) do
+    with_locks([:global], fun)
+  end
+
+  def with_locks(scopes, fun) when is_function(fun, 0) do
+    cond do
+      enabled?() ->
+        scopes = normalize_lock_scopes(scopes)
+        lock_value = Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false)
+        start = System.monotonic_time()
+
+        case acquire_locks(scopes, lock_value, []) do
+          {:ok, acquired} ->
+            Observability.record_redis_lock(scopes, "ok", Observability.duration_ms(start))
+
+            try do
+              fun.()
+            after
+              release_locks(acquired, lock_value)
+            end
+
+          {:error, reason} ->
+            Observability.record_redis_lock(scopes, "error", Observability.duration_ms(start))
+
+            Logger.warning(
+              "Redis lock failed scopes=#{lock_scope_label(scopes)} reason=#{inspect(reason)}"
+            )
+
+            raise "Redis lock failed for #{inspect(scopes)}: #{inspect(reason)}"
+        end
+
+      configured?() ->
+        Observability.record_redis_lock(scopes, "unavailable", 0)
+        raise "Redis lock failed for #{inspect(scopes)}: Redis is configured but unavailable"
+
+      true ->
+        fun.()
+    end
+  end
+
+  def take_counter(name, fallback_next) do
+    cond do
+      enabled?() ->
+        script = """
+        local current = redis.call("GET", KEYS[1])
+        if not current then
+          current = ARGV[1]
+        end
+        current = tonumber(current) or tonumber(ARGV[1]) or 1
+        redis.call("SET", KEYS[1], current + 1)
+        redis.call("SET", KEYS[2], ARGV[2])
+        redis.call("INCR", KEYS[3])
+        return current
+        """
+
+        case counter_command([
+               "EVAL",
+               script,
+               "3",
+               counter_key(name),
+               meta_key(),
+               revision_key(),
+               to_s(fallback_next),
+               @version
+             ]) do
+          {:ok, value} ->
+            to_int(value)
+
+          {:error, reason} ->
+            raise "Redis counter allocation failed for #{inspect(name)}: #{inspect(reason)}"
+        end
+
+      configured?() ->
+        raise "Redis counter allocation failed for #{inspect(name)}: Redis is configured but unavailable"
+
+      true ->
+        to_int(fallback_next)
+    end
+  end
+
+  @doc """
+  Claim a 0-based sequence slot for one region-id millisecond. The key is
+  scoped to this region's Redis, so claiming needs no cross-region
+  coordination — it is exactly as available as writes already are. Callers
+  must check `enabled?()` first; without Redis (single-node dev/test) the
+  Store allocates from its own state instead.
+
+  The key expires after 10 seconds: slots are only ever claimed for the
+  current (or clock-floored) millisecond, so entries are garbage within
+  moments and must not accumulate.
+  """
+  def take_region_seq(ms) do
+    cond do
+      enabled?() ->
+        script = """
+        local n = redis.call("INCR", KEYS[1])
+        redis.call("PEXPIRE", KEYS[1], 10000)
+        return n
+        """
+
+        case counter_command(["EVAL", script, "1", counter_key("region_seq:#{ms}")]) do
+          {:ok, value} ->
+            # INCR is 1-based; sequence slots are 0-based.
+            to_int(value) - 1
+
+          {:error, reason} ->
+            raise "Redis region sequence allocation failed for ms=#{ms}: #{inspect(reason)}"
+        end
+
+      configured?() ->
+        raise "Redis region sequence allocation failed for ms=#{ms}: Redis is configured but unavailable"
+
+      true ->
+        # The Store only calls this when enabled?() held, and configuration
+        # is static env — so this branch is unreachable. Raising (rather
+        # than returning a sentinel) keeps RegionId's borrow loop, which
+        # retries non-integers on the NEXT millisecond, from spinning
+        # forever on a value that will never become an integer.
+        raise "Redis region sequence requested without Redis; single-node deployments allocate locally"
+    end
+  end
+
+  def write([]), do: :ok
+
+  def write(ops) do
+    cond do
+      enabled?() ->
+        entry = SREChat.Replication.entry_for(ops)
+
+        ops
+        |> List.wrap()
+        |> Enum.flat_map(&atomic_op/1)
+        |> atomic_write(entry)
+
+      configured?() ->
+        {:error, :redis_unavailable}
+
+      true ->
+        :ok
+    end
+  rescue
+    e ->
+      {:error, Exception.message(e)}
+  catch
+    :exit, reason ->
+      {:error, reason}
+  end
+
+  def replace_all(state) do
+    cond do
+      enabled?() ->
+        delete_prefix_commands()
+        |> Kernel.++(state_commands(state))
+        |> Kernel.++([["SET", meta_key(), @version]])
+        |> Kernel.++([["INCR", revision_key()]])
+        |> run_pipeline()
+        |> remember_pipeline_full_revision()
+
+      configured?() ->
+        {:error, :redis_unavailable}
+
+      true ->
+        :ok
+    end
+  rescue
+    e ->
+      {:error, Exception.message(e)}
+  catch
+    :exit, reason ->
+      {:error, reason}
+  end
+
+  def message_conversation_locks(id) do
+    id = to_s(id)
+
+    cond do
+      id == "" ->
+        []
+
+      not enabled?() and not configured?() ->
+        []
+
+      not enabled?() ->
+        raise "Redis message #{inspect(id)} lock lookup failed: Redis is configured but unavailable"
+
+      true ->
+        case command(["GET", record_key("messages", id)]) do
+          {:ok, nil} ->
+            []
+
+          {:ok, json} ->
+            case Jason.decode(json) do
+              {:ok, %{"conversationId" => conv_id}} when is_binary(conv_id) and conv_id != "" ->
+                [{:conversation, conv_id}]
+
+              {:ok, _message} ->
+                raise "Redis message #{inspect(id)} is missing conversationId"
+
+              {:error, reason} ->
+                raise "Redis message #{inspect(id)} could not be decoded: #{inspect(reason)}"
+            end
+
+          {:error, reason} ->
+            raise "Redis message #{inspect(id)} lock lookup failed: #{inspect(reason)}"
+        end
+    end
+  end
+
+  def put(bucket, id, value), do: {:put, to_s(bucket), to_s(id), value}
+  def delete(bucket, id), do: {:delete, to_s(bucket), to_s(id)}
+  def counter(name, value), do: {:counter, to_s(name), value}
+
+  def put_or_delete(bucket, id, value) when value in [nil, %{}, []],
+    do: delete(bucket, id)
+
+  def put_or_delete(bucket, id, value), do: put(bucket, id, value)
+
+  def buckets, do: @buckets
+  def counters, do: @counters
+
+  defp start_redis(url) do
+    with {:ok, reader} <- start_named_redis(url, @reader_name),
+         {:ok, _writer} <- start_writer_redis(url) do
+      {:ok, reader}
+    end
+  end
+
+  defp start_writer_redis(url) do
+    if separate_writer?() do
+      Enum.reduce_while(@auxiliary_names, {:ok, Process.whereis(@reader_name)}, fn name, _acc ->
+        case start_named_redis(url, name) do
+          {:ok, pid} -> {:cont, {:ok, pid}}
+          error -> {:halt, error}
+        end
+      end)
+    else
+      {:ok, Process.whereis(@reader_name)}
+    end
+  end
+
+  defp start_named_redis(url, name) do
+    case Process.whereis(name) do
+      nil ->
+        case RedisClient.start_link(url, name: name) do
+          {:ok, pid} -> {:ok, pid}
+          {:error, {:already_started, pid}} -> {:ok, pid}
+          error -> error
+        end
+
+      pid ->
+        {:ok, pid}
+    end
+  end
+
+  defp load(default_state, seed_fun) do
+    case command(["GET", meta_key()]) do
+      {:ok, nil} -> load_legacy_snapshot_or_seed(default_state, seed_fun)
+      {:ok, _version} -> load_versioned_state(default_state)
+      {:error, reason} -> redis_failed("key load", reason, seed_fun)
+    end
+  end
+
+  defp load_versioned_state(default_state) do
+    case Config.redis_boot_mode() do
+      "lazy" ->
+        Logger.info("Redis lazy boot enabled; skipping full startup state load")
+        default_state
+
+      _other ->
+        read_state(default_state)
+    end
+  end
+
+  defp load_legacy_snapshot_or_seed(default_state, seed_fun) do
+    case command(["GET", Config.redis_snapshot_key()]) do
+      {:ok, nil} ->
+        state = seed_fun.()
+        :ok = replace_all(state)
+        state
+
+      {:ok, json} ->
+        case Jason.decode(json) do
+          {:ok, state} ->
+            state = Map.merge(default_state, state)
+            :ok = replace_all(state)
+            state
+
+          {:error, reason} ->
+            redis_failed("legacy snapshot decode", reason, seed_fun)
+        end
+
+      {:error, reason} ->
+        redis_failed("legacy snapshot load", reason, seed_fun)
+    end
+  end
+
+  defp read_state(default_state) do
+    state =
+      Enum.reduce(@buckets, default_state, fn bucket, acc ->
+        Map.put(acc, bucket, read_bucket(bucket))
+      end)
+
+    state =
+      Enum.reduce(@counters, state, fn counter, acc ->
+        case command(["GET", counter_key(counter)]) do
+          {:ok, nil} -> acc
+          {:ok, value} -> Map.put(acc, counter, max(to_int(value), default_state[counter]))
+          {:error, _reason} -> acc
+        end
+      end)
+
+    remember_remote_full_revision()
+    state
+  end
+
+  defp maybe_refresh_state(_default_state, fallback_state, revision) when revision == 0 do
+    fallback_state
+  end
+
+  defp maybe_refresh_state(default_state, fallback_state, revision) do
+    if revision == local_full_revision() do
+      fallback_state
+    else
+      read_state(default_state)
+    end
+  end
+
+  defp remember_remote_full_revision do
+    case command(["GET", revision_key()]) do
+      {:ok, revision} -> remember_full_revision(revision)
+      _ -> :ok
+    end
+  end
+
+  defp remember_pipeline_full_revision({:ok, results}) do
+    results
+    |> List.last()
+    |> remember_full_revision()
+
+    :ok
+  end
+
+  defp remember_pipeline_full_revision({:error, reason}), do: {:error, reason}
+
+  defp remember_full_revision(revision) do
+    Process.put(:sre_chat_redis_full_revision, to_int(revision))
+    :ok
+  end
+
+  defp local_full_revision do
+    Process.get(:sre_chat_redis_full_revision, 0)
+  end
+
+  defp refresh_records(default_state, state, keys) do
+    {record_keys, record_only_keys, counter_keys, bucket_keys, conversation_pages,
+     conversation_all} =
+      Enum.reduce(keys, {[], [], [], [], [], []}, fn
+        {:record, bucket, id}, {records, record_only, counters, buckets, pages, all} ->
+          {[{bucket, id} | records], record_only, counters, buckets, pages, all}
+
+        {:record_only, bucket, id}, {records, record_only, counters, buckets, pages, all} ->
+          {records, [{bucket, id} | record_only], counters, buckets, pages, all}
+
+        {:counter, counter}, {records, record_only, counters, buckets, pages, all} ->
+          {records, record_only, [counter | counters], buckets, pages, all}
+
+        {:bucket, bucket}, {records, record_only, counters, buckets, pages, all} ->
+          {records, record_only, counters, [bucket | buckets], pages, all}
+
+        {:conversation_page, conv_id, params},
+        {records, record_only, counters, buckets, pages, all} ->
+          {records, record_only, counters, buckets, [{conv_id, params} | pages], all}
+
+        {:conversation_all, conv_id}, {records, record_only, counters, buckets, pages, all} ->
+          {records, record_only, counters, buckets, pages, [conv_id | all]}
+
+        _other, acc ->
+          acc
+      end)
+
+    record_keys = Enum.uniq(record_keys)
+    record_only_keys = Enum.uniq(record_only_keys)
+    bucket_keys = Enum.uniq(bucket_keys)
+    conversation_pages = Enum.uniq(conversation_pages)
+
+    conversation_all =
+      conversation_all |> Enum.map(&to_s/1) |> Enum.reject(&(&1 == "")) |> Enum.uniq()
+
+    state =
+      state
+      |> read_records(Enum.uniq(record_keys ++ record_only_keys))
+      |> read_buckets(bucket_keys)
+
+    {state, all_message_keys} = read_full_conversations(state, conversation_all)
+    {state, page_message_keys} = read_conversation_pages(state, conversation_pages)
+
+    related_keys =
+      Enum.uniq(
+        record_keys ++
+          bucket_record_keys(state, bucket_keys) ++
+          all_message_keys ++
+          page_message_keys
+      )
+
+    state
+    |> read_related_token_users(related_keys)
+    |> read_related_member_users(related_keys)
+    |> read_related_membership_indexes(related_keys)
+    |> read_related_user_groups(related_keys)
+    |> read_related_conversation_indexes(related_keys)
+    |> read_related_messages(related_keys)
+    |> read_related_message_participants(related_keys)
+    |> read_counters(default_state, Enum.uniq(counter_keys))
+  end
+
+  defp read_records(state, []), do: state
+
+  defp read_records(state, record_keys) do
+    commands = Enum.map(record_keys, fn {bucket, id} -> ["GET", record_key(bucket, id)] end)
+
+    case read_pipeline(commands) do
+      {:ok, results} ->
+        record_keys
+        |> Enum.zip(results)
+        |> Enum.reduce(state, fn {{bucket, id}, result}, acc ->
+          apply_record_result(acc, bucket, id, result)
+        end)
+
+      {:error, reason} ->
+        Logger.warning("Redis targeted refresh failed: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp read_buckets(state, []), do: state
+
+  defp read_buckets(state, buckets) do
+    Enum.reduce(buckets, state, fn bucket, acc ->
+      Map.put(acc, bucket, read_bucket(bucket))
+    end)
+  end
+
+  defp read_conversation_pages(state, []), do: {state, []}
+
+  defp read_conversation_pages(state, pages) do
+    conversation_keys =
+      pages
+      |> Enum.map(fn {conv_id, _params} -> {"conversation_messages", to_s(conv_id)} end)
+      |> Enum.reject(fn {_bucket, id} -> id == "" end)
+      |> Enum.uniq()
+
+    state = read_records(state, conversation_keys)
+
+    message_keys =
+      pages
+      |> Enum.flat_map(fn {conv_id, params} ->
+        conversation_page_message_ids(state, conv_id, params)
+      end)
+      |> Enum.map(&{"messages", &1})
+      |> Enum.uniq()
+
+    state =
+      state
+      |> read_records(message_keys)
+      |> read_related_reactions(message_keys)
+
+    {state, message_keys}
+  end
+
+  defp read_full_conversations(state, []), do: {state, []}
+
+  defp read_full_conversations(state, conv_ids) do
+    conversation_keys =
+      conv_ids
+      |> Enum.map(&{"conversation_messages", &1})
+      |> Enum.uniq()
+
+    state = read_records(state, conversation_keys)
+
+    message_keys =
+      conv_ids
+      |> Enum.flat_map(fn conv_id ->
+        state
+        |> get_in(["conversation_messages", conv_id])
+        |> List.wrap()
+        |> Enum.map(&to_s/1)
+      end)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.map(&{"messages", &1})
+      |> Enum.uniq()
+
+    state =
+      state
+      |> read_records(message_keys)
+      |> read_related_reactions(message_keys)
+
+    {state, message_keys}
+  end
+
+  defp bucket_record_keys(state, buckets) do
+    buckets
+    |> Enum.flat_map(fn bucket ->
+      state
+      |> Map.get(bucket, %{})
+      |> Map.keys()
+      |> Enum.map(&{bucket, &1})
+    end)
+  end
+
+  defp read_related_messages(state, record_keys) do
+    message_keys =
+      record_keys
+      |> Enum.filter(fn {bucket, _id} ->
+        bucket in [
+          "conversation_latest",
+          "thread_messages",
+          "message_muids"
+        ]
+      end)
+      |> Enum.flat_map(fn {bucket, id} -> state |> get_in([bucket, id]) |> List.wrap() end)
+      |> Enum.map(&{"messages", to_s(&1)})
+      |> Enum.reject(fn {_bucket, id} -> id == "" end)
+      |> Enum.reject(&(&1 in record_keys))
+      |> Enum.uniq()
+
+    state
+    |> read_records(message_keys)
+    |> read_related_reactions(message_keys)
+    |> read_related_message_participants(message_keys)
+  end
+
+  defp conversation_page_message_ids(state, conv_id, params) do
+    ids =
+      state
+      |> get_in(["conversation_messages", to_s(conv_id)])
+      |> List.wrap()
+      |> Enum.map(&to_s/1)
+      |> Enum.reject(&(&1 == ""))
+
+    window = conversation_page_window(params)
+    cursor_id = conversation_cursor_id(params)
+    affix = conversation_cursor_affix(params)
+
+    case cursor_index(ids, cursor_id) do
+      nil ->
+        take_recent(ids, window)
+
+      index when affix == "append" ->
+        ids
+        |> Enum.drop(index + 1)
+        |> Enum.take(window)
+
+      index ->
+        start = max(index - window, 0)
+
+        ids
+        |> Enum.slice(start, index - start)
+    end
+  end
+
+  defp conversation_page_window(params) do
+    params = stringify_keys(params || %{})
+    requested = to_int(params["per_page"] || params["limit"] || 30)
+    min(Config.redis_conversation_refresh_limit(), max(requested, 1) * 3)
+  end
+
+  defp conversation_cursor_id(params) do
+    params = stringify_keys(params || %{})
+
+    after_id = params["afterId"] || params["after_id"] || params["fromId"] || params["from_id"]
+    before_id = params["beforeId"] || params["before_id"]
+
+    explicit_id =
+      params["id"] || params["messageId"] || params["message_id"] || params["msgId"] ||
+        params["msg_id"] || after_id || before_id || params["cursorId"] || params["cursor_id"]
+
+    cond do
+      to_s(explicit_id) != "" ->
+        to_s(explicit_id)
+
+      params["cursorField"] == "id" and to_s(params["cursorValue"]) != "" ->
+        to_s(params["cursorValue"])
+
+      params["cursor_field"] == "id" and to_s(params["cursor_value"]) != "" ->
+        to_s(params["cursor_value"])
+
+      true ->
+        nil
+    end
+  end
+
+  defp conversation_cursor_affix(params) do
+    params = stringify_keys(params || %{})
+
+    cond do
+      params["cursorAffix"] in ["append", "prepend"] ->
+        params["cursorAffix"]
+
+      params["affix"] in ["append", "prepend"] ->
+        params["affix"]
+
+      not blank?(params["afterId"] || params["after_id"] || params["fromId"] || params["from_id"]) ->
+        "append"
+
+      not blank?(params["fromTimestamp"] || params["fromTimeStamp"] || params["from_timestamp"]) ->
+        "append"
+
+      true ->
+        "prepend"
+    end
+  end
+
+  defp cursor_index(_ids, nil), do: nil
+  defp cursor_index(ids, cursor_id), do: Enum.find_index(ids, &(&1 == to_s(cursor_id)))
+
+  defp take_recent(ids, window) do
+    ids
+    |> Enum.reverse()
+    |> Enum.take(window)
+    |> Enum.reverse()
+  end
+
+  defp read_related_reactions(state, message_keys) do
+    reaction_keys =
+      message_keys
+      |> Enum.map(fn {_bucket, id} -> {"reactions", to_s(id)} end)
+      |> Enum.reject(fn {_bucket, id} -> id == "" end)
+      |> Enum.uniq()
+
+    read_records(state, reaction_keys)
+  end
+
+  defp read_related_token_users(state, record_keys) do
+    user_keys =
+      record_keys
+      |> Enum.filter(fn {bucket, _id} -> bucket == "tokens" end)
+      |> Enum.map(fn {_bucket, token} -> get_in(state, ["tokens", token]) end)
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.map(&{"users", to_s(&1)})
+      |> Enum.reject(&(&1 in record_keys))
+      |> Enum.uniq()
+
+    read_records(state, user_keys)
+  end
+
+  defp read_related_member_users(state, record_keys) do
+    user_keys =
+      record_keys
+      |> Enum.filter(fn {bucket, _id} -> bucket in ["members", "banned", "blocks"] end)
+      |> Enum.flat_map(fn {bucket, id} ->
+        state
+        |> get_in([bucket, id])
+        |> case do
+          map when is_map(map) -> Map.keys(map)
+          _other -> []
+        end
+      end)
+      |> Enum.map(&{"users", to_s(&1)})
+      |> Enum.reject(&(&1 in record_keys))
+      |> Enum.uniq()
+
+    read_records(state, user_keys)
+  end
+
+  defp read_related_membership_indexes(state, record_keys) do
+    user_group_keys =
+      record_keys
+      |> Enum.filter(fn {bucket, _id} -> bucket == "members" end)
+      |> Enum.flat_map(fn {_bucket, guid} ->
+        state
+        |> get_in(["members", guid])
+        |> case do
+          map when is_map(map) -> Map.keys(map)
+          _other -> []
+        end
+      end)
+      |> Enum.map(&{"user_groups", to_s(&1)})
+      |> Enum.reject(fn {_bucket, uid} -> uid == "" end)
+      |> Enum.reject(&(&1 in record_keys))
+      |> Enum.uniq()
+
+    read_records(state, user_group_keys)
+  end
+
+  defp read_related_user_groups(state, record_keys) do
+    group_keys =
+      record_keys
+      |> Enum.filter(fn {bucket, _id} -> bucket == "user_groups" end)
+      |> Enum.flat_map(fn {_bucket, uid} ->
+        state |> get_in(["user_groups", uid]) |> List.wrap()
+      end)
+      |> Enum.flat_map(fn guid ->
+        guid = to_s(guid)
+
+        [
+          {"groups", guid},
+          {"members", guid},
+          {"banned", guid},
+          {"conversation_latest", "group_#{guid}"},
+          {"conversation_users", "group_#{guid}"}
+        ]
+      end)
+      |> Enum.reject(fn {_bucket, id} -> id == "" end)
+      |> Enum.reject(&(&1 in record_keys))
+      |> Enum.uniq()
+
+    state =
+      state
+      |> read_records(group_keys)
+      |> read_related_membership_indexes(group_keys)
+
+    state
+    |> read_related_messages(group_keys)
+    |> read_related_conversation_indexes(group_keys)
+  end
+
+  defp read_related_conversation_indexes(state, record_keys) do
+    conversation_ids =
+      record_keys
+      |> Enum.flat_map(fn
+        {"user_conversations", uid} ->
+          state |> get_in(["user_conversations", uid]) |> List.wrap()
+
+        {"conversation_users", conv_id} ->
+          [conv_id]
+
+        _other ->
+          []
+      end)
+      |> Enum.map(&to_s/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+
+    conversation_keys =
+      conversation_ids
+      |> Enum.flat_map(fn conv_id ->
+        [
+          {"conversation_latest", conv_id},
+          {"conversation_users", conv_id}
+        ]
+      end)
+      |> Enum.reject(&(&1 in record_keys))
+      |> Enum.uniq()
+
+    state =
+      state
+      |> read_records(conversation_keys)
+      |> read_related_messages(conversation_keys)
+
+    user_keys =
+      conversation_ids
+      |> Enum.flat_map(fn conv_id ->
+        state |> get_in(["conversation_users", conv_id]) |> List.wrap()
+      end)
+      |> Enum.map(&to_s/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+      |> Enum.flat_map(fn uid ->
+        [
+          {"users", uid},
+          {"reads", uid},
+          {"delivered", uid},
+          {"hidden_conversations", uid},
+          {"user_conversations", uid},
+          {"unread_counts", uid}
+        ]
+      end)
+      |> Enum.reject(&(&1 in record_keys))
+      |> Enum.uniq()
+
+    read_records(state, user_keys)
+  end
+
+  defp read_related_message_participants(state, record_keys) do
+    participant_keys =
+      record_keys
+      |> Enum.filter(fn {bucket, _id} -> bucket == "messages" end)
+      |> Enum.flat_map(fn {_bucket, id} ->
+        case get_in(state, ["messages", id]) do
+          %{"receiverType" => "group", "receiver" => guid, "sender" => sender} ->
+            [{"users", sender}, {"groups", guid}, {"members", guid}, {"unread_counts", sender}]
+
+          %{"receiver" => receiver, "sender" => sender} ->
+            [
+              {"users", sender},
+              {"users", receiver},
+              {"unread_counts", sender},
+              {"unread_counts", receiver}
+            ]
+
+          _other ->
+            []
+        end
+      end)
+      |> Enum.reject(&(&1 in record_keys))
+      |> Enum.uniq()
+
+    read_records(state, participant_keys)
+  end
+
+  defp read_counters(state, _default_state, []), do: state
+
+  defp read_counters(state, default_state, counters) do
+    commands = Enum.map(counters, fn counter -> ["GET", counter_key(counter)] end)
+
+    case read_pipeline(commands) do
+      {:ok, results} ->
+        counters
+        |> Enum.zip(results)
+        |> Enum.reduce(state, fn {counter, value}, acc ->
+          Map.put(acc, counter, max(to_int(value), default_state[counter] || 1))
+        end)
+
+      {:error, reason} ->
+        Logger.warning("Redis counter refresh failed: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp apply_record_result(state, bucket, id, nil) do
+    update_in(state, [bucket], &Map.delete(&1 || %{}, id))
+  end
+
+  defp apply_record_result(state, bucket, id, json) do
+    case Jason.decode(json) do
+      {:ok, value} -> put_in(state, [bucket, id], value)
+      {:error, _reason} -> state
+    end
+  end
+
+  defp read_bucket(bucket) do
+    with {:ok, ids} <- command(["SMEMBERS", index_key(bucket)]) do
+      Enum.reduce(ids, %{}, fn id, acc ->
+        case command(["GET", record_key(bucket, id)]) do
+          {:ok, nil} ->
+            acc
+
+          {:ok, json} ->
+            case Jason.decode(json) do
+              {:ok, value} -> Map.put(acc, id, value)
+              {:error, _reason} -> acc
+            end
+
+          {:error, _reason} ->
+            acc
+        end
+      end)
+    else
+      _ -> %{}
+    end
+  end
+
+  defp record_put_commands(bucket, id, value) do
+    [
+      ["SET", record_key(bucket, id), Jason.encode!(value)],
+      ["SADD", index_key(bucket), id]
+    ]
+  end
+
+  defp atomic_op({:put, bucket, id, value}) do
+    [
+      %{
+        "op" => "put",
+        "bucket" => to_s(bucket),
+        "id" => to_s(id),
+        "value" => Jason.encode!(value)
+      }
+    ]
+  end
+
+  defp atomic_op({:delete, bucket, id}) do
+    [%{"op" => "delete", "bucket" => to_s(bucket), "id" => to_s(id)}]
+  end
+
+  defp atomic_op({:counter, counter, value}) do
+    [%{"op" => "counter", "counter" => to_s(counter), "value" => to_s(value)}]
+  end
+
+  defp atomic_op(_op), do: []
+
+  # entry_for filters from the same ops list, so empty commands with a
+  # non-nil entry cannot happen; the guard stays on ops alone.
+  defp atomic_write([], _entry), do: :ok
+
+  defp atomic_write(ops, entry) do
+    case write_command([
+           "EVAL",
+           @atomic_write_script,
+           "0",
+           Config.redis_key_prefix(),
+           @version,
+           Jason.encode!(ops),
+           entry || "",
+           if(entry, do: oplog_stream_key(), else: "")
+         ]) do
+      {:ok, revision} ->
+        remember_full_revision(revision)
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Redis atomic persist failed: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  @doc "This region's oplog stream key, fully namespaced."
+  def oplog_stream_key(region_index \\ nil) do
+    region = region_index || Config.region_index()
+    key(SREChat.Replication.stream_suffix(region))
+  end
+
+  # Replication version registry: "bucket:id" -> %{"ts" => ms, "origin" => r}
+  # for last-writer-wins gating. Locally-originated writes are stamped by
+  # the atomic Lua script; applied peer ops are stamped by the Applier.
+  # Keys expire after 30 days — a version is only needed while concurrent
+  # cross-region updates to the same record are plausible.
+
+  @repl_version_ttl_seconds 30 * 24 * 60 * 60
+
+  def get_repl_versions([]), do: %{}
+
+  def get_repl_versions(keys) do
+    if enabled?() do
+      redis_keys = Enum.map(keys, &repl_version_key/1)
+
+      case RedisClient.command(read_conn(), ["MGET" | redis_keys]) do
+        {:ok, values} ->
+          keys
+          |> Enum.zip(values)
+          |> Enum.reduce(%{}, fn
+            {_key, nil}, acc ->
+              acc
+
+            {key, json}, acc ->
+              case Jason.decode(json) do
+                {:ok, decoded} -> Map.put(acc, key, decoded)
+                _error -> acc
+              end
+          end)
+
+        {:error, reason} ->
+          raise "Redis replication version read failed: #{inspect(reason)}"
+      end
+    else
+      %{}
+    end
+  end
+
+  def put_repl_versions(stamps) when map_size(stamps) == 0, do: :ok
+
+  def put_repl_versions(stamps) do
+    if enabled?() do
+      commands =
+        Enum.map(stamps, fn {key, value} ->
+          ["SET", repl_version_key(key), Jason.encode!(value), "EX", @repl_version_ttl_seconds]
+        end)
+
+      case RedisClient.pipeline(write_conn(), commands) do
+        {:ok, _results} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp repl_version_key(bucket_and_id), do: key(["repl_versions", bucket_and_id])
+
+  # Replication cursors: last-applied stream id per peer, in LOCAL Redis.
+
+  def get_replication_cursor(peer_index) do
+    case command(["GET", replication_cursor_key(peer_index)]) do
+      {:ok, value} -> {:ok, value}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def put_replication_cursor(peer_index, stream_id) do
+    case write_command(["SET", replication_cursor_key(peer_index), to_s(stream_id)]) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp replication_cursor_key(peer_index), do: key(["repl_cursor", to_s(peer_index)])
+
+  @doc """
+  Single-holder lease election in local Redis: acquires when free, renews
+  when this token already holds it. Returns :acquired, :held_elsewhere,
+  or an error.
+  """
+  def acquire_or_renew_lease(name, token, ttl_ms) do
+    script = """
+    local current = redis.call("GET", KEYS[1])
+    if current == false then
+      redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[2])
+      return 1
+    elseif current == ARGV[1] then
+      redis.call("PEXPIRE", KEYS[1], ARGV[2])
+      return 1
+    else
+      return 0
+    end
+    """
+
+    case lock_command(["EVAL", script, "1", key(["lease", name]), token, to_s(ttl_ms)]) do
+      {:ok, 1} -> :acquired
+      {:ok, 0} -> :held_elsewhere
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp state_commands(state) do
+    bucket_commands =
+      @buckets
+      |> Enum.flat_map(fn bucket ->
+        state
+        |> Map.get(bucket, %{})
+        |> Enum.flat_map(fn {id, value} -> record_put_commands(bucket, id, value) end)
+      end)
+
+    counter_commands =
+      Enum.map(@counters, fn counter ->
+        ["SET", counter_key(counter), to_s(Map.get(state, counter, 1))]
+      end)
+
+    bucket_commands ++ counter_commands
+  end
+
+  defp delete_prefix_commands(cursor \\ "0", commands \\ []) do
+    case command(["SCAN", cursor, "MATCH", "#{Config.redis_key_prefix()}:*", "COUNT", "1000"]) do
+      {:ok, [next_cursor, []]} when next_cursor != "0" ->
+        delete_prefix_commands(next_cursor, commands)
+
+      {:ok, [_next_cursor, []]} ->
+        commands
+
+      {:ok, [next_cursor, keys]} when next_cursor != "0" ->
+        keys = Enum.reject(keys, &lock_key?/1)
+        delete_prefix_commands(next_cursor, delete_command(keys, commands))
+
+      {:ok, [_next_cursor, keys]} ->
+        keys = Enum.reject(keys, &lock_key?/1)
+        delete_command(keys, commands)
+
+      {:error, reason} ->
+        Logger.warning("Redis prefix scan failed: #{inspect(reason)}")
+        commands
+    end
+  end
+
+  # Callers only reach this with a non-empty command list (the type checker
+  # proves it), so there is no empty-list clause.
+  defp run_pipeline(commands) do
+    case RedisClient.pipeline(write_conn(), commands) do
+      {:ok, results} ->
+        {:ok, results}
+
+      {:error, reason} ->
+        Logger.warning("Redis pipeline failed: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp delete_command([], commands), do: commands
+  defp delete_command(keys, commands), do: [["DEL" | keys] | commands]
+
+  defp acquire_locks([], _lock_value, acquired), do: {:ok, acquired}
+
+  defp acquire_locks([scope | rest], lock_value, acquired) do
+    case acquire_lock(scope, lock_value, @lock_attempts) do
+      :ok ->
+        acquire_locks(rest, lock_value, [scope | acquired])
+
+      {:error, reason} ->
+        release_locks(acquired, lock_value)
+        {:error, {scope, reason}}
+    end
+  end
+
+  defp acquire_lock(_scope, _lock_value, 0), do: {:error, :timeout}
+
+  defp acquire_lock(scope, lock_value, attempts) do
+    case lock_command(["SET", lock_key(scope), lock_value, "NX", "PX", to_s(@lock_ttl_ms)]) do
+      {:ok, "OK"} ->
+        :ok
+
+      {:ok, nil} ->
+        Process.sleep(50)
+        acquire_lock(scope, lock_value, attempts - 1)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp release_locks(scopes, lock_value) do
+    Enum.each(scopes, &release_lock(&1, lock_value))
+    :ok
+  end
+
+  defp release_lock(scope, lock_value) do
+    script = """
+    if redis.call("GET", KEYS[1]) == ARGV[1] then
+      return redis.call("DEL", KEYS[1])
+    else
+      return 0
+    end
+    """
+
+    lock_command(["EVAL", script, "1", lock_key(scope), lock_value])
+    :ok
+  end
+
+  defp redis_failed(context, reason, seed_fun) do
+    Logger.warning("Redis #{context} failed: #{inspect(reason)}; using seeds")
+    seed_fun.()
+  end
+
+  defp lock_scope_label(scopes) do
+    scopes
+    |> List.wrap()
+    |> Enum.map(fn
+      :global -> "global"
+      [scope | _rest] -> to_s(scope)
+      {scope, _id} -> to_s(scope)
+      {scope, _id, _extra} -> to_s(scope)
+      other -> to_s(other)
+    end)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.join("+")
+    |> case do
+      "" -> "none"
+      value -> value
+    end
+  end
+
+  defp normalize_refresh_keys(keys) do
+    keys
+    |> List.wrap()
+    |> Enum.flat_map(fn
+      {:counter, counter} ->
+        [{:counter, to_s(counter)}]
+
+      {:bucket, bucket} ->
+        normalize_bucket_key(bucket)
+
+      {:record, bucket, id} ->
+        normalize_record_key(bucket, id)
+
+      {:record_only, bucket, id} ->
+        normalize_record_only_key(bucket, id)
+
+      {:conversation_page, conv_id, params} ->
+        normalize_conversation_page_key(conv_id, params)
+
+      {:conversation_all, conv_id} ->
+        normalize_conversation_all_key(conv_id)
+
+      {bucket, id} ->
+        normalize_record_key(bucket, id)
+
+      _other ->
+        []
+    end)
+    |> Enum.uniq()
+  end
+
+  defp normalize_record_key(bucket, id) do
+    bucket = to_s(bucket)
+    id = to_s(id)
+
+    if bucket in @buckets and id != "" do
+      [{:record, bucket, id}]
+    else
+      []
+    end
+  end
+
+  defp normalize_record_only_key(bucket, id) do
+    bucket = to_s(bucket)
+    id = to_s(id)
+
+    if bucket in @buckets and id != "" do
+      [{:record_only, bucket, id}]
+    else
+      []
+    end
+  end
+
+  defp normalize_bucket_key(bucket) do
+    bucket = to_s(bucket)
+
+    if bucket in @buckets do
+      [{:bucket, bucket}]
+    else
+      []
+    end
+  end
+
+  defp normalize_conversation_page_key(conv_id, params) do
+    conv_id = to_s(conv_id)
+
+    if conv_id == "" do
+      []
+    else
+      [{:conversation_page, conv_id, stringify_keys(params || %{})}]
+    end
+  end
+
+  defp normalize_conversation_all_key(conv_id) do
+    conv_id = to_s(conv_id)
+
+    if conv_id == "" do
+      []
+    else
+      [{:conversation_all, conv_id}]
+    end
+  end
+
+  defp normalize_lock_scopes(scopes) do
+    scopes
+    |> List.wrap()
+    |> Enum.map(&lock_scope_parts/1)
+    |> Enum.reject(&(&1 == []))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp lock_scope_parts(:global), do: ["global"]
+  defp lock_scope_parts({type, id}), do: [type, id] |> Enum.map(&to_s/1)
+  defp lock_scope_parts({type, a, b}), do: [type, a, b] |> Enum.map(&to_s/1)
+  defp lock_scope_parts(scope) when is_list(scope), do: Enum.map(scope, &to_s/1)
+  defp lock_scope_parts(scope), do: [to_s(scope)]
+
+  defp command(args), do: RedisClient.command(read_conn(), args)
+  defp read_pipeline(commands), do: RedisClient.pipeline(read_conn(), commands)
+  defp write_command(args), do: RedisClient.command(write_conn(), args)
+  defp counter_command(args), do: RedisClient.command(counter_conn(), args)
+  defp lock_command(args), do: RedisClient.command(lock_conn(), args)
+
+  defp with_read_conn(conn, fun) do
+    previous = Process.get(@read_conn_key, :unset)
+    Process.put(@read_conn_key, conn)
+
+    try do
+      fun.()
+    after
+      case previous do
+        :unset -> Process.delete(@read_conn_key)
+        value -> Process.put(@read_conn_key, value)
+      end
+    end
+  end
+
+  defp read_conn, do: Process.get(@read_conn_key, @reader_name)
+
+  defp mutation_read_conn do
+    named_conn(@mutation_reader_name, write_conn())
+  end
+
+  defp write_conn do
+    named_conn(@writer_name, @reader_name)
+  end
+
+  defp counter_conn do
+    named_conn(@counter_name, write_conn())
+  end
+
+  defp lock_conn do
+    if separate_writer?() do
+      pooled_conn(@lock_names, write_conn())
+    else
+      write_conn()
+    end
+  end
+
+  defp named_conn(name, fallback) do
+    if separate_writer?() and Process.whereis(name), do: name, else: fallback
+  end
+
+  defp pooled_conn(names, fallback) do
+    available = Enum.filter(names, &Process.whereis/1)
+
+    case available do
+      [] ->
+        fallback
+
+      _ ->
+        Enum.at(available, rem(:erlang.unique_integer([:positive]), length(available)))
+    end
+  end
+
+  defp separate_writer? do
+    Application.get_env(:sre_chat, :redis_client, Redix) == Redix
+  end
+
+  defp key(parts),
+    do: [Config.redis_key_prefix() | parts] |> Enum.map(&to_s/1) |> Enum.join(":")
+
+  defp meta_key, do: key(["meta", "version"])
+  defp revision_key, do: key(["meta", "revision"])
+  defp lock_key(scope), do: key(["lock" | scope])
+  defp lock_key?(redis_key), do: String.starts_with?(redis_key, key(["lock"]) <> ":")
+  defp index_key(bucket), do: key(["index", bucket])
+  defp record_key(bucket, id), do: key([bucket, id])
+  defp counter_key(counter), do: key(["counter", counter])
+
+  defp to_s(nil), do: ""
+  defp to_s(value) when is_binary(value), do: value
+  defp to_s(value), do: to_string(value)
+
+  defp to_int(nil), do: 0
+  defp to_int(value) when is_integer(value), do: value
+
+  defp to_int(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      :error -> 0
+    end
+  end
+
+  defp to_int(value), do: value |> to_s() |> to_int()
+
+  defp stringify_keys(%{__struct__: _} = struct), do: struct
+
+  defp stringify_keys(map) when is_map(map) do
+    Map.new(map, fn {k, v} -> {to_s(k), stringify_keys(v)} end)
+  end
+
+  defp stringify_keys(list) when is_list(list), do: Enum.map(list, &stringify_keys/1)
+  defp stringify_keys(other), do: other
+
+  defp blank?(value), do: value in [nil, "", false]
+end

@@ -5,14 +5,14 @@ const require = createRequire(import.meta.url);
 const jsSdkPath = require.resolve('@cometchat/chat-sdk-javascript/CometChat.js');
 
 const APP_ID = process.env.COMETCHAT_APP_ID || 'local-app';
-const TARGET_HOST = process.env.OPENCHAT_TARGET_HOST || 'localhost:8443/v3.0';
+const TARGET_HOST = process.env.SRECHAT_TARGET_HOST || 'localhost:8443/v3.0';
 const ADMIN_API_KEY =
-  process.env.OPENCHAT_ADMIN_API_KEY || (TARGET_HOST.startsWith('localhost') ? 'local-api-key' : '');
-const DM_MESSAGE_COUNT = Number(process.env.OPENCHAT_RN_DM_MESSAGES || 12);
-const GROUP_MESSAGE_COUNT = Number(process.env.OPENCHAT_RN_GROUP_MESSAGES || 12);
-const MAX_LIVE_LATENCY_MS = Number(process.env.OPENCHAT_RN_MAX_LIVE_LATENCY_MS || 5000);
-const RN_WS_SOAK_MS = Number(process.env.OPENCHAT_RN_WS_SOAK_MS || 180_000);
-const RN_WS_SOAK_INTERVAL_MS = Number(process.env.OPENCHAT_RN_WS_SOAK_INTERVAL_MS || 45_000);
+  process.env.SRECHAT_ADMIN_API_KEY || (TARGET_HOST.startsWith('localhost') ? 'local-api-key' : '');
+const DM_MESSAGE_COUNT = Number(process.env.SRECHAT_RN_DM_MESSAGES || 12);
+const GROUP_MESSAGE_COUNT = Number(process.env.SRECHAT_RN_GROUP_MESSAGES || 12);
+const MAX_LIVE_LATENCY_MS = Number(process.env.SRECHAT_RN_MAX_LIVE_LATENCY_MS || 5000);
+const RN_WS_SOAK_MS = Number(process.env.SRECHAT_RN_WS_SOAK_MS || 180_000);
+const RN_WS_SOAK_INTERVAL_MS = Number(process.env.SRECHAT_RN_WS_SOAK_INTERVAL_MS || 45_000);
 
 if (TARGET_HOST.startsWith('localhost') || TARGET_HOST.startsWith('127.0.0.1')) {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED ||= '0';
@@ -164,7 +164,7 @@ async function loadWebSdk(page: any, token: string) {
       };
 
       CometChat.addMessageListener(
-        'OPENCHAT_RN_CONTRACT_WEB',
+        'SRECHAT_RN_CONTRACT_WEB',
         new CometChat.MessageListener({
           onTextMessageReceived: (message: any) => snapshot('text', message),
           onMessageEdited: (message: any) => snapshot('edited', message),
@@ -274,7 +274,7 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
   browser,
   request,
 }) => {
-  test.skip(!ADMIN_API_KEY, 'Requires OPENCHAT_ADMIN_API_KEY for staging user/group setup.');
+  test.skip(!ADMIN_API_KEY, 'Requires SRECHAT_ADMIN_API_KEY for staging user/group setup.');
   test.setTimeout(120_000);
   installReactNativeNodeShims();
 
@@ -331,7 +331,7 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
 
   const rnEvents: any[] = [];
   RNCometChat.addMessageListener(
-    `OPENCHAT_RN_CONTRACT_${suffix}`,
+    `SRECHAT_RN_CONTRACT_${suffix}`,
     new RNCometChat.MessageListener({
       onTextMessageReceived: (message: any) => recordRnEvent(rnEvents, 'text', message, RNCometChat),
       onMessageEdited: (message: any) => recordRnEvent(rnEvents, 'edited', message, RNCometChat),
@@ -656,7 +656,7 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
 
   await web.close();
   try {
-    RNCometChat.removeMessageListener(`OPENCHAT_RN_CONTRACT_${suffix}`);
+    RNCometChat.removeMessageListener(`SRECHAT_RN_CONTRACT_${suffix}`);
   } catch {
     // RN SDK cleanup is noisy in the Node shim harness; the assertions above
     // are the compatibility contract.
@@ -664,7 +664,7 @@ test('real React Native SDK DMs and reactions stay live and durable across web a
 });
 
 test('real React Native SDK receives app-shaped DMs from a web peer', async ({ browser, request }) => {
-  test.skip(!ADMIN_API_KEY, 'Requires OPENCHAT_ADMIN_API_KEY for staging user setup.');
+  test.skip(!ADMIN_API_KEY, 'Requires SRECHAT_ADMIN_API_KEY for staging user setup.');
   test.setTimeout(60_000);
   installReactNativeNodeShims();
 
@@ -698,7 +698,7 @@ test('real React Native SDK receives app-shaped DMs from a web peer', async ({ b
 
   const rnEvents: any[] = [];
   RNCometChat.addMessageListener(
-    `OPENCHAT_RN_MOBILE_RECEIVER_${suffix}`,
+    `SRECHAT_RN_MOBILE_RECEIVER_${suffix}`,
     new RNCometChat.MessageListener({
       onTextMessageReceived: (message: any) => recordRnEvent(rnEvents, 'text', message, RNCometChat),
       onCustomMessageReceived: (message: any) => recordRnEvent(rnEvents, 'custom', message, RNCometChat),
@@ -788,7 +788,7 @@ test('real React Native SDK receives app-shaped DMs from a web peer', async ({ b
 
   await web.close();
   try {
-    RNCometChat.removeMessageListener(`OPENCHAT_RN_MOBILE_RECEIVER_${suffix}`);
+    RNCometChat.removeMessageListener(`SRECHAT_RN_MOBILE_RECEIVER_${suffix}`);
   } catch {
     // RN SDK cleanup is noisy in the Node shim harness; the assertions above
     // are the compatibility contract.
@@ -796,7 +796,7 @@ test('real React Native SDK receives app-shaped DMs from a web peer', async ({ b
 });
 
 test('real React Native SDK stays live across websocket idle periods', async ({ browser, request }) => {
-  test.skip(!ADMIN_API_KEY, 'Requires OPENCHAT_ADMIN_API_KEY for staging user/group setup.');
+  test.skip(!ADMIN_API_KEY, 'Requires SRECHAT_ADMIN_API_KEY for staging user/group setup.');
   test.setTimeout(RN_WS_SOAK_MS + 90_000);
   installReactNativeNodeShims();
 
@@ -844,8 +844,8 @@ test('real React Native SDK stays live across websocket idle periods', async ({ 
 
   const rnEvents: any[] = [];
   const connectionEvents: any[] = [];
-  const listenerId = `OPENCHAT_RN_SOAK_${suffix}`;
-  const connectionListenerId = `OPENCHAT_RN_SOAK_CONNECTION_${suffix}`;
+  const listenerId = `SRECHAT_RN_SOAK_${suffix}`;
+  const connectionListenerId = `SRECHAT_RN_SOAK_CONNECTION_${suffix}`;
 
   RNCometChat.addConnectionListener(
     connectionListenerId,

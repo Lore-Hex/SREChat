@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Provision one RoachChat region on a fresh Debian 12 VM.
+# Provision one SREChat region on a fresh Debian 12 VM.
 #
 # Idempotent: safe to re-run (updates code + config, rebuilds, restarts).
 # Everything is built natively on the VM (amd64) — no cross-arch emulation,
@@ -42,21 +42,21 @@ sudo systemctl enable wg-quick@wg0 >/dev/null 2>&1 || true
 sudo wg-quick down wg0 >/dev/null 2>&1 || true
 sudo wg-quick up wg0
 
-# Code is expected to already be present at $HOME/RoachChat (rsync'd up, so
+# Code is expected to already be present at $HOME/SREChat (rsync'd up, so
 # no git credentials live on the VM — the repo is private). SKIP_FETCH=1
 # is the default path; set it empty to git-pull a public mirror instead.
-echo "== using RoachChat tree =="
-if [ "${SKIP_FETCH:-1}" != "1" ] && [ ! -d "$HOME/RoachChat/.git" ]; then
-  git clone --depth 1 https://github.com/Lore-Hex/RoachChat.git "$HOME/RoachChat"
+echo "== using SREChat tree =="
+if [ "${SKIP_FETCH:-1}" != "1" ] && [ ! -d "$HOME/SREChat/.git" ]; then
+  git clone --depth 1 https://github.com/Lore-Hex/SREChat.git "$HOME/SREChat"
 fi
-test -f "$HOME/RoachChat/deploy/provision.sh" || { echo "RoachChat tree missing at \$HOME/RoachChat"; exit 1; }
-cd "$HOME/RoachChat"
+test -f "$HOME/SREChat/deploy/provision.sh" || { echo "SREChat tree missing at \$HOME/SREChat"; exit 1; }
+cd "$HOME/SREChat"
 
 echo "== writing region config =="
 sed "s|PUBLIC_HOST_PLACEHOLDER|${PUBLIC_HOST}|" deploy/Caddyfile.tmpl > deploy/Caddyfile
 cat > deploy/.env <<EOF
 PUBLIC_HOST=${PUBLIC_HOST}
-COMETCHAT_API_KEY=${COMETCHAT_API_KEY:-roach-admin-key-change-me}
+COMETCHAT_API_KEY=${COMETCHAT_API_KEY:-sre-admin-key-change-me}
 REGION_INDEX=${REGION_INDEX}
 WG_IP=${WG_IP}
 PEER_REGIONS=${PEER_REGIONS}

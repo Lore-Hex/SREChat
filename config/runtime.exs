@@ -65,14 +65,14 @@ accept_uid_tokens =
 public_host = System.get_env("PUBLIC_HOST") || "localhost"
 api_key = System.get_env("COMETCHAT_API_KEY") || default_api_key
 
-config :open_chat,
+config :sre_chat,
   port: integer_env.("PORT", 4000),
   host: public_host,
   ws_port: System.get_env("PUBLIC_WS_PORT") || System.get_env("PORT") || "4000",
   use_ssl: System.get_env("CHAT_USE_SSL") != "false",
   api_host: System.get_env("API_HOST"),
   app_id: System.get_env("COMETCHAT_APP_ID") || "local-app",
-  version: System.get_env("OPENCHAT_VERSION") || System.get_env("OPENCHAT_IMAGE_TAG") || "dev",
+  version: System.get_env("SRECHAT_VERSION") || System.get_env("SRECHAT_IMAGE_TAG") || "dev",
   api_key: api_key,
   reject_weak_admin_api_key:
     boolean_env.("REJECT_WEAK_ADMIN_API_KEY", default_reject_weak_admin_api_key),
@@ -120,8 +120,8 @@ config :open_chat,
   replication_mode: System.get_env("REPLICATION_MODE") || "off",
   peer_regions: System.get_env("PEER_REGIONS") || "",
   redis_url: System.get_env("REDIS_URL"),
-  redis_key_prefix: System.get_env("REDIS_KEY_PREFIX") || "open_chat",
-  redis_snapshot_key: System.get_env("REDIS_SNAPSHOT_KEY") || "open_chat:snapshot:v1",
+  redis_key_prefix: System.get_env("REDIS_KEY_PREFIX") || "sre_chat",
+  redis_snapshot_key: System.get_env("REDIS_SNAPSHOT_KEY") || "sre_chat:snapshot:v1",
   redis_boot_mode: System.get_env("REDIS_BOOT_MODE") || "full",
   seed_users_json: System.get_env("SEED_USERS_JSON"),
   seed_groups_json: System.get_env("SEED_GROUPS_JSON"),
