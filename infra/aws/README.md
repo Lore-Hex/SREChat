@@ -13,7 +13,7 @@
   - `chat.example.com`
   - Optional `*.chat.example.com`
 - ElastiCache Redis for chat state.
-- Private S3 bucket for uploaded media. Production does not configure or create a durable local upload directory. OpenChat returns presigned S3 URLs in message payloads; `/media/...` is intentionally disabled for S3-backed objects so media access stays time-limited.
+- Private S3 bucket for uploaded media. Production does not configure or create a durable local upload directory. SREChat returns presigned S3 URLs in message payloads; `/media/...` is intentionally disabled for S3-backed objects so media access stays time-limited.
 - ECS runs multiple tasks behind the ALB. Redis is the durable state backend, scoped locks serialize room/conversation/message mutations, and Redis Pub/Sub refreshes peer task caches before websocket fanout.
 
 ## Environment
@@ -29,7 +29,7 @@ EXTENSION_DOMAIN=chat.example.com
 REQUEST_BODY_LIMIT=12000000
 UPLOAD_MAX_BYTES=10000000
 REDIS_URL=redis://<elasticache-primary-endpoint>:6379/0
-REDIS_KEY_PREFIX=open_chat
+REDIS_KEY_PREFIX=sre_chat
 REDIS_PUBLISHER_LANES=4
 MEDIA_STORAGE=s3
 S3_BUCKET=<private-upload-bucket>
@@ -42,13 +42,13 @@ Uploaded media expires through the S3 lifecycle policy configured in the CloudFo
 
 ## Staged rollout
 
-The deployment script accepts `OPENCHAT_DEPLOY_TARGET=staging`, `production`, or
+The deployment script accepts `SRECHAT_DEPLOY_TARGET=staging`, `production`, or
 `all` (the default). Use separate runs to gate production on staging contract tests:
 
 ```bash
-OPENCHAT_DEPLOY_TARGET=staging ./infra/aws/deploy-openchat.sh
+SRECHAT_DEPLOY_TARGET=staging ./infra/aws/deploy-openchat.sh
 # Run the SDK and browser smoke suites.
-OPENCHAT_DEPLOY_TARGET=production ./infra/aws/deploy-openchat.sh
+SRECHAT_DEPLOY_TARGET=production ./infra/aws/deploy-openchat.sh
 ```
 
 Each targeted run verifies the expected AWS account before it builds, pushes, or

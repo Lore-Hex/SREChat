@@ -1,4 +1,4 @@
-# One region of a multi-master RoachChat mesh. Built natively on the VM
+# One region of a multi-master SREChat mesh. Built natively on the VM
 # (amd64) — no cross-arch emulation. Redis is published on the WireGuard
 # interface so peer regions can tail this region's oplog; peers are reached
 # over the same tunnel. Env comes from deploy/<region>.env.
@@ -17,7 +17,7 @@ services:
       PORT: "4000"
       PUBLIC_HOST: "${PUBLIC_HOST}"
       PUBLIC_WS_PORT: "443"
-      COMETCHAT_APP_ID: "roachchat"
+      COMETCHAT_APP_ID: "srechat"
       COMETCHAT_API_KEY: "${COMETCHAT_API_KEY}"
       COMETCHAT_REGION: "us"
       ACCEPT_UID_TOKENS: "true"
@@ -27,7 +27,7 @@ services:
       UPLOAD_DIR: "/app/uploads"
       # host networking: reach the local redis on loopback, not a compose DNS name.
       REDIS_URL: "redis://127.0.0.1:6379/0"
-      REDIS_KEY_PREFIX: "roachchat"
+      REDIS_KEY_PREFIX: "srechat"
       ID_ALLOCATOR: "region"
       REGION_INDEX: "${REGION_INDEX}"
       REPLICATION_MODE: "multi_master"

@@ -1,7 +1,7 @@
-defmodule OpenChat.MockS3 do
+defmodule SREChat.MockS3 do
   @moduledoc false
 
-  @table :open_chat_mock_s3
+  @table :sre_chat_mock_s3
 
   def reset do
     if :ets.whereis(@table) != :undefined, do: :ets.delete(@table)

@@ -1,6 +1,6 @@
-# RoachChat: multi-master chat that survives losing a cloud
+# SREChat: multi-master chat that survives losing a cloud
 
-RoachChat is a BEAM/Elixir chat backend that runs as **several equal masters
+SREChat is a BEAM/Elixir chat backend that runs as **several equal masters
 — one per cloud** — and keeps serving when the network between them breaks.
 Every region accepts writes during a partition, and the regions converge when
 it heals. It is named for the thing that is famously hard to kill.
@@ -9,10 +9,10 @@ It speaks a CometChat-compatible wire protocol, so the CometChat JavaScript,
 React Native, and iOS SDKs talk to it directly by overriding their host —
 `CometChat.login`, `sendMessage`, `MessagesRequestBuilder`,
 `ConversationsRequestBuilder`, listeners, and reactions all work unchanged.
-It descends from [OpenChat](https://github.com/Lore-Hex/OpenChat), which
-provides that compatibility layer; RoachChat adds the multi-master half.
+It descends from [SREChat](https://github.com/Lore-Hex/SREChat), which
+provides that compatibility layer; SREChat adds the multi-master half.
 
-**License:** AGPL-3.0-or-later (inherited from OpenChat).
+**License:** AGPL-3.0-or-later (inherited from SREChat).
 
 ## How the multi-master part works
 
@@ -86,7 +86,7 @@ The SDK builds the WebSocket URL from the `/me` settings as:
 wss://<CHAT_HOST>:<CHAT_WSS_PORT>
 ```
 
-OpenChat accepts WebSocket connections at `/`, `/ws`, and `/socket`. It handles the SDK auth event, broadcasts messages/actions/reactions, and processes read receipts.
+SREChat accepts WebSocket connections at `/`, `/ws`, and `/socket`. It handles the SDK auth event, broadcasts messages/actions/reactions, and processes read receipts.
 
 ## Important compatibility note
 
@@ -108,7 +108,7 @@ Compose publishes Caddy on both `https://localhost` and `https://localhost:8443`
 docker compose up --build
 cd contract
 npm install
-OPENCHAT_TARGET_HOST=localhost:8443/v3.0 npm test
+SRECHAT_TARGET_HOST=localhost:8443/v3.0 npm test
 ```
 
 For local Playwright, Caddy uses an internal/self-signed certificate and the Playwright config ignores HTTPS errors.
@@ -160,8 +160,8 @@ Runtime environment variables are read from `config/runtime.exs`, so container a
 | `CORS_ALLOWED_ORIGINS` | `*` outside prod, empty in prod | Comma-separated browser origins allowed to call the API. Set this to your real app origins in production. |
 | `EXTENSION_DOMAIN` | `PUBLIC_HOST` | Extension domain used by `callExtension` URL generation |
 | `REDIS_URL` | unset | Optional Redis URL for durable per-record storage |
-| `REDIS_KEY_PREFIX` | `open_chat` | Redis namespace prefix for record keys, indexes, and counters |
-| `REDIS_SNAPSHOT_KEY` | `open_chat:snapshot:v1` | Legacy import key for older single-snapshot deployments |
+| `REDIS_KEY_PREFIX` | `sre_chat` | Redis namespace prefix for record keys, indexes, and counters |
+| `REDIS_SNAPSHOT_KEY` | `sre_chat:snapshot:v1` | Legacy import key for older single-snapshot deployments |
 | `REDIS_PUBLISHER_LANES` | `4` | Ordered Redis Pub/Sub publisher lanes. Conversations are deterministically sharded so one slow publish cannot delay unrelated rooms or DMs. Clamped to 1-16. |
 | `SEED_USERS_JSON` | built-in Alice/Bob/Carol without auth tokens | Initial users. List or map. Users may include `authToken`. |
 | `SEED_GROUPS_JSON` | built-in public `lobby` | Initial groups. List or map. |
@@ -175,7 +175,7 @@ Runtime environment variables are read from `config/runtime.exs`, so container a
 | `UPLOAD_MAX_BYTES` | `10000000` | Max single uploaded media file size in bytes |
 | `UPLOAD_ALLOWED_MIME_TYPES` | image/audio/video/pdf/text allowlist | Comma-separated allowlist for stored uploads |
 | `DM_HISTORY_CONNECT_GRACE_MS` | `600` outside tests, `0` in tests | Compatibility delay on direct-message history responses so the CometChat JS SDK WebSocket state is connected before immediate `markAsRead()` calls. Set `0` to disable. |
-| `PUBLIC_MEDIA_BASE_URL` | unset | Absolute stable media URL base; otherwise `/media/<file>`. With private S3, keep this pointed at OpenChat for stored fallback URLs while outbound payloads are rewritten to presigned S3 URLs. |
+| `PUBLIC_MEDIA_BASE_URL` | unset | Absolute stable media URL base; otherwise `/media/<file>`. With private S3, keep this pointed at SREChat for stored fallback URLs while outbound payloads are rewritten to presigned S3 URLs. |
 
 ## Observability
 
@@ -186,10 +186,10 @@ contents or auth tokens. Cross-instance delivery exposes these metrics:
 - `redis.publish.queue_ms`: time an event waited before its publisher lane ran;
 - `redis.publish.duration_ms`: Redis `PUBLISH` command time;
 - `redis.publish.queue_length`: queued events remaining on each lane;
-- `redis.pubsub.delivery_ms`: publish enqueue to receipt on a peer OpenChat instance;
+- `redis.pubsub.delivery_ms`: publish enqueue to receipt on a peer SREChat instance;
 - `redis.pubsub.received`: peer events received, tagged by event type.
 
-OpenChat logs a warning when an individual Redis publish takes at least 250 ms. These
+SREChat logs a warning when an individual Redis publish takes at least 250 ms. These
 signals separate HTTP/store latency from cross-instance fanout latency during an incident.
 
 ## Admin moderation
@@ -199,12 +199,12 @@ Server-side moderation uses the CometChat-style admin API key. Send the configur
 `authToken`, and message mutations run with full moderation access:
 
 ```bash
-curl -X PUT "$OPENCHAT_URL/v3/messages/$MESSAGE_ID" \
+curl -X PUT "$SRECHAT_URL/v3/messages/$MESSAGE_ID" \
   -H "apikey: $COMETCHAT_API_KEY" \
   -H "content-type: application/json" \
   -d '{"data":{"text":"moderated text"}}'
 
-curl -X DELETE "$OPENCHAT_URL/v3/messages/$MESSAGE_ID" \
+curl -X DELETE "$SRECHAT_URL/v3/messages/$MESSAGE_ID" \
   -H "apikey: $COMETCHAT_API_KEY"
 ```
 
@@ -218,27 +218,27 @@ members or escalate scopes.
 
 By default all state is in one OTP GenServer. If `REDIS_URL` is set, each mutation is also persisted into Redis as per-record keys under `REDIS_KEY_PREFIX`:
 
-- `open_chat:users:<uid>`
-- `open_chat:tokens:<authToken>`
-- `open_chat:groups:<guid>`
-- `open_chat:members:<guid>`
-- `open_chat:messages:<messageId>`
-- `open_chat:conversation_messages:<conversationId>`
-- `open_chat:thread_messages:<parentMessageId>`
-- `open_chat:reads:<uid>`
-- `open_chat:delivered:<uid>`
-- `open_chat:hidden_conversations:<uid>`
-- `open_chat:reactions:<messageId>`
-- `open_chat:blocks:<uid>`
-- `open_chat:banned:<guid>`
-- `open_chat:message_muids:<muid>` for client message-id lookup
-- `open_chat:user_conversations:<uid>` for conversation list and unread fanout
-- `open_chat:conversation_users:<conversationId>` for participant-scoped cleanup
-- `open_chat:user_groups:<uid>` for group conversation discovery
-- `open_chat:counter:<counterName>`
-- `open_chat:index:<bucket>` sets for reloadable key discovery
+- `sre_chat:users:<uid>`
+- `sre_chat:tokens:<authToken>`
+- `sre_chat:groups:<guid>`
+- `sre_chat:members:<guid>`
+- `sre_chat:messages:<messageId>`
+- `sre_chat:conversation_messages:<conversationId>`
+- `sre_chat:thread_messages:<parentMessageId>`
+- `sre_chat:reads:<uid>`
+- `sre_chat:delivered:<uid>`
+- `sre_chat:hidden_conversations:<uid>`
+- `sre_chat:reactions:<messageId>`
+- `sre_chat:blocks:<uid>`
+- `sre_chat:banned:<guid>`
+- `sre_chat:message_muids:<muid>` for client message-id lookup
+- `sre_chat:user_conversations:<uid>` for conversation list and unread fanout
+- `sre_chat:conversation_users:<conversationId>` for participant-scoped cleanup
+- `sre_chat:user_groups:<uid>` for group conversation discovery
+- `sre_chat:counter:<counterName>`
+- `sre_chat:index:<bucket>` sets for reloadable key discovery
 
-On startup, OpenChat reloads state from those Redis keys. Normal mutations write only the touched records, indexes, and counters; reset and legacy imports replace the namespace. If no per-key namespace has been initialized but `REDIS_SNAPSHOT_KEY` exists, OpenChat imports that legacy JSON snapshot into the per-key layout.
+On startup, SREChat reloads state from those Redis keys. Normal mutations write only the touched records, indexes, and counters; reset and legacy imports replace the namespace. If no per-key namespace has been initialized but `REDIS_SNAPSHOT_KEY` exists, SREChat imports that legacy JSON snapshot into the per-key layout.
 
 When Redis is enabled, Store behaves as a local read-through/write-through cache over the per-key Redis layout:
 
@@ -251,7 +251,7 @@ When Redis is enabled, Store behaves as a local read-through/write-through cache
 
 This keeps Redis as a high-scale write-through/read-through record store for the current API surface, while each BEAM node keeps a local Store cache. Horizontal task scaling is supported by Redis-scoped locks/counters, targeted read-through refreshes, and Redis Pub/Sub-triggered cache refresh on peer nodes before websocket fanout. Message writes are serialized by conversation or room, reaction writes by message, and membership writes by group. For a larger production deployment, the next architecture step is PostgreSQL as the source of truth for users, groups, messages, receipts, moderation logs, and searchable audit history, with Redis kept for Pub/Sub, hot counters, ephemeral presence, rate limits, and short-lived caches.
 
-WebSocket events are also fanned out through Redis Pub/Sub so instances behind a load balancer can notify each other's connected clients. Publishers are conversation-sharded across ordered lanes: messages, edits, deletes, receipts, and reactions in one room or DM preserve order, while a delayed Redis command for one conversation does not block unrelated conversations on the same OpenChat instance.
+WebSocket events are also fanned out through Redis Pub/Sub so instances behind a load balancer can notify each other's connected clients. Publishers are conversation-sharded across ordered lanes: messages, edits, deletes, receipts, and reactions in one room or DM preserve order, while a delayed Redis command for one conversation does not block unrelated conversations on the same SREChat instance.
 
 ## AWS deployment sketch
 
@@ -305,28 +305,28 @@ Useful knobs:
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| `OPENCHAT_LOAD_USERS` | `100` | Distinct users for direct-message load |
-| `OPENCHAT_LOAD_MESSAGES` | `2000` | Direct Store messages |
-| `OPENCHAT_LOAD_GROUP_MEMBERS` | `150` | Members in the group fanout test |
-| `OPENCHAT_LOAD_GROUP_MESSAGES` | `600` | Group messages |
-| `OPENCHAT_LOAD_HTTP_MESSAGES` | `500` | Plug HTTP message sends |
-| `OPENCHAT_LOAD_REDIS_MESSAGES` | `300` | Redis-backed message sends |
-| `OPENCHAT_LOAD_REDIS_INDEX_MESSAGES` | `240` | Redis secondary-index write/read checks |
-| `OPENCHAT_LOAD_CONCURRENCY` | `16` | Concurrent Store writer tasks |
-| `OPENCHAT_LOAD_WORKER_MESSAGES` | `150` | Messages per concurrent Store writer |
-| `OPENCHAT_LOAD_HTTP_CONCURRENCY` | `12` | Concurrent Plug HTTP writer tasks |
-| `OPENCHAT_LOAD_HTTP_WORKER_MESSAGES` | `50` | Messages per concurrent HTTP writer |
-| `OPENCHAT_LOAD_REDIS_CONCURRENCY` | `8` | Concurrent Redis-backed writer tasks |
-| `OPENCHAT_LOAD_REDIS_WORKER_MESSAGES` | `60` | Messages per concurrent Redis writer |
-| `OPENCHAT_LOAD_RECEIPT_CONCURRENCY` | `16` | Concurrent receipt writer tasks |
-| `OPENCHAT_MIN_STORE_MSG_PER_SEC` | `300` | Minimum direct Store throughput |
-| `OPENCHAT_MIN_GROUP_MSG_PER_SEC` | `100` | Minimum group-message throughput |
-| `OPENCHAT_MIN_HTTP_MSG_PER_SEC` | `100` | Minimum Plug HTTP throughput |
-| `OPENCHAT_MIN_REDIS_MSG_PER_SEC` | `20` | Minimum Redis-backed throughput |
-| `OPENCHAT_MIN_CONCURRENT_STORE_MSG_PER_SEC` | `200` | Minimum concurrent Store throughput |
-| `OPENCHAT_MIN_CONCURRENT_HTTP_MSG_PER_SEC` | `100` | Minimum concurrent Plug HTTP throughput |
-| `OPENCHAT_MIN_CONCURRENT_REDIS_MSG_PER_SEC` | `20` | Minimum concurrent Redis throughput |
-| `OPENCHAT_MIN_RECEIPT_PER_SEC` | `100` | Minimum concurrent receipt throughput |
+| `SRECHAT_LOAD_USERS` | `100` | Distinct users for direct-message load |
+| `SRECHAT_LOAD_MESSAGES` | `2000` | Direct Store messages |
+| `SRECHAT_LOAD_GROUP_MEMBERS` | `150` | Members in the group fanout test |
+| `SRECHAT_LOAD_GROUP_MESSAGES` | `600` | Group messages |
+| `SRECHAT_LOAD_HTTP_MESSAGES` | `500` | Plug HTTP message sends |
+| `SRECHAT_LOAD_REDIS_MESSAGES` | `300` | Redis-backed message sends |
+| `SRECHAT_LOAD_REDIS_INDEX_MESSAGES` | `240` | Redis secondary-index write/read checks |
+| `SRECHAT_LOAD_CONCURRENCY` | `16` | Concurrent Store writer tasks |
+| `SRECHAT_LOAD_WORKER_MESSAGES` | `150` | Messages per concurrent Store writer |
+| `SRECHAT_LOAD_HTTP_CONCURRENCY` | `12` | Concurrent Plug HTTP writer tasks |
+| `SRECHAT_LOAD_HTTP_WORKER_MESSAGES` | `50` | Messages per concurrent HTTP writer |
+| `SRECHAT_LOAD_REDIS_CONCURRENCY` | `8` | Concurrent Redis-backed writer tasks |
+| `SRECHAT_LOAD_REDIS_WORKER_MESSAGES` | `60` | Messages per concurrent Redis writer |
+| `SRECHAT_LOAD_RECEIPT_CONCURRENCY` | `16` | Concurrent receipt writer tasks |
+| `SRECHAT_MIN_STORE_MSG_PER_SEC` | `300` | Minimum direct Store throughput |
+| `SRECHAT_MIN_GROUP_MSG_PER_SEC` | `100` | Minimum group-message throughput |
+| `SRECHAT_MIN_HTTP_MSG_PER_SEC` | `100` | Minimum Plug HTTP throughput |
+| `SRECHAT_MIN_REDIS_MSG_PER_SEC` | `20` | Minimum Redis-backed throughput |
+| `SRECHAT_MIN_CONCURRENT_STORE_MSG_PER_SEC` | `200` | Minimum concurrent Store throughput |
+| `SRECHAT_MIN_CONCURRENT_HTTP_MSG_PER_SEC` | `100` | Minimum concurrent Plug HTTP throughput |
+| `SRECHAT_MIN_CONCURRENT_REDIS_MSG_PER_SEC` | `20` | Minimum concurrent Redis throughput |
+| `SRECHAT_MIN_RECEIPT_PER_SEC` | `100` | Minimum concurrent receipt throughput |
 | `REDIS_TEST_URL` | `redis://localhost:6379/15` | Redis URL for Redis load/persistence tests |
 
 ### Playwright contract tests against the real SDK

@@ -1,6 +1,6 @@
 # Runbook — Multi-master regions
 
-The single source of truth for running RoachChat as one logical chat
+The single source of truth for running SREChat as one logical chat
 service across independent regions (one per cloud), each fully usable
 during a network partition, converging on heal.
 
@@ -28,7 +28,7 @@ Every region sets, in addition to its normal env:
 | `REGION_INDEX` | unique per region, `0..7` |
 | `REPLICATION_MODE` | `multi_master` |
 | `PEER_REGIONS` | `1=rediss://…,2=rediss://…` — each peer's **Redis**, not its API |
-| `REDIS_KEY_PREFIX` | identical across regions (default `open_chat`) |
+| `REDIS_KEY_PREFIX` | identical across regions (default `sre_chat`) |
 
 Misconfiguration (multi_master without region ids, own index in
 `PEER_REGIONS`, duplicate indexes) refuses to boot, loudly.
@@ -60,7 +60,7 @@ public listener.
   both-sides-live asserted during the partition, byte-identical
   convergence asserted after heal.
 
-Accepted v1 anomalies (documented in `OpenChat.Replication.Ingest`):
+Accepted v1 anomalies (documented in `SREChat.Replication.Ingest`):
 concurrent membership edits to the SAME group on both sides of a
 partition resolve whole-map last-writer-wins; reactions likewise.
 Messages are never lost. Receipt EVENTS don't re-broadcast cross-region
@@ -108,7 +108,7 @@ trusting it.
 **Rollback to single-master:** set `REPLICATION_MODE=off` everywhere and
 point all traffic at one region. Do NOT flip `ID_ALLOCATOR` back to
 `global` unless `next_id` is first raised above the largest allocated
-region id (see `OpenChat.RegionId`).
+region id (see `SREChat.RegionId`).
 
 ## Local three-region sandbox
 
