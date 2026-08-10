@@ -108,7 +108,17 @@ defmodule OpenChat.Config do
   def region, do: Application.fetch_env!(:open_chat, :region)
   def cors_allowed_origins, do: cors_csv_env(:cors_allowed_origins)
   def host, do: Application.fetch_env!(:open_chat, :host)
+  # The HTTP API host defaults to host(), so production is unchanged. It can be
+  # set separately (API_HOST env) for local debugging where the HTTP API must
+  # carry a port (e.g. a TLS proxy on :4443) while CHAT_HOST stays a bare name
+  # so the SDK's wss://<CHAT_HOST>:<CHAT_WSS_PORT> URL does not become
+  # localhost:4443:4443 and crash the client's socket URL builder.
+  def api_host, do: Application.get_env(:open_chat, :api_host) || host()
   def ws_port, do: Application.fetch_env!(:open_chat, :ws_port)
+  # Defaults true so production (behind TLS-terminating Caddy) is unchanged.
+  # Set CHAT_USE_SSL=false only for a plain-HTTP local backend, where the
+  # client SDKs must be told not to upgrade http/ws to https/wss.
+  def use_ssl?, do: Application.get_env(:open_chat, :use_ssl, true)
   def extension_domain, do: Application.fetch_env!(:open_chat, :extension_domain)
   def upload_dir, do: Application.fetch_env!(:open_chat, :upload_dir)
 
@@ -218,13 +228,13 @@ defmodule OpenChat.Config do
       "CHAT_HOST" => host(),
       "CHAT_HOST_OVERRIDE" => nil,
       "CHAT_HOST_APP_SPECIFIC" => nil,
-      "CHAT_USE_SSL" => true,
+      "CHAT_USE_SSL" => use_ssl?(),
       "CHAT_WSS_PORT" => to_string(ws_port()),
       "CHAT_WS_PORT" => to_string(ws_port()),
       "CHAT_API_VERSION" => "v3.0",
       "WS_API_VERSION" => "v3.0",
-      "ADMIN_API_HOST" => host(),
-      "CLIENT_API_HOST" => host(),
+      "ADMIN_API_HOST" => api_host(),
+      "CLIENT_API_HOST" => api_host(),
       "MAIN_DOMAIN" => host(),
       "REGION" => region(),
       "MODE" => "DEFAULT",
@@ -232,7 +242,7 @@ defmodule OpenChat.Config do
       "ANALYTICS_PING_DISABLED" => true,
       "ANALYTICS_HOST" => host(),
       "ANALYTICS_VERSION" => "v1",
-      "ANALYTICS_USE_SSL" => true,
+      "ANALYTICS_USE_SSL" => use_ssl?(),
       "POLLING_ENABLED" => false,
       "DENY_FALLBACK_TO_POLLING" => false,
       "EXTENSION_DOMAIN" => extension_domain(),
