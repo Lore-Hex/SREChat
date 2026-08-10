@@ -24,6 +24,7 @@ does.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -33,6 +34,9 @@ import sys
 import time
 import urllib.error
 import urllib.request
+
+# Sibling module; the agent is run from its own directory by run-agent.sh.
+import apns
 
 REGION_HOST = os.environ.get("SRE_HOST", "sre0.trustedrouter.com")
 
@@ -548,6 +552,60 @@ _watch_state: dict[str, str] = {}     # what -> "up" | "down"
 _agent_seen: dict[str, float] = {}    # agent uid -> last heartbeat epoch
 
 
+def owner_devices() -> dict[str, dict]:
+    """The owner's registered phones, read from their user metadata.
+
+    Device tokens live on the user record, so they replicate to all three
+    masters: whichever cloud is still alive can page the same phone.
+    """
+    try:
+        user = api("GET", f"/users/{OWNER_UID}").get("data", {}) or {}
+        tokens = (user.get("metadata") or {}).get("apnsTokens") or {}
+        return tokens if isinstance(tokens, dict) else {}
+    except Exception as exc:  # noqa: BLE001
+        log(f"device lookup failed: {exc}")
+        return {}
+
+
+def push_alert(text: str) -> None:
+    """Send the alert to the owner's phones via APNs.
+
+    The in-chat 🔔 only becomes a banner while SREChat is running. This is the
+    path that reaches a locked phone with the app closed, which is the case an
+    alerting system exists for. Best-effort by design: a push failure must never
+    stop the message that already went to the chat.
+    """
+    if not apns.enabled():
+        return
+    for token, meta in owner_devices().items():
+        try:
+            # Collapse on the alert text so a flapping node replaces its own
+            # notification instead of stacking one per poll.
+            status, body = apns.push(
+                token,
+                "SREChat",
+                text,
+                collapse_id=hashlib.sha1(text.encode()).hexdigest()[:32],
+                env=(meta or {}).get("env"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log(f"push failed: {exc}")
+            continue
+
+        if status == 200:
+            log(f"pushed to {token[:12]}…")
+        elif status == 410:
+            # The app was uninstalled. Left registered this token fails forever,
+            # so drop it rather than retrying it on every future alert.
+            log(f"device {token[:12]}… gone (410), unregistering")
+            try:
+                api("DELETE", f"/me/devices/{token}", uid=OWNER_UID)
+            except Exception as exc:  # noqa: BLE001
+                log(f"unregister failed: {exc}")
+        else:
+            log(f"push to {token[:12]}… failed: {status} {body[:120]}")
+
+
 def alert(text: str) -> None:
     """Page the owner. 🔔 marks it as an alert in the clients."""
     try:
@@ -555,6 +613,9 @@ def alert(text: str) -> None:
         log(f"ALERT -> {OWNER_UID}: {text[:120]}")
     except Exception as exc:  # noqa: BLE001 — never let paging kill the loop
         log(f"alert failed: {exc}")
+    # Outside the try above on purpose: if writing to chat fails, the phone push
+    # is the only remaining way you hear about it, so it still gets attempted.
+    push_alert(text)
 
 
 def _transition(key: str, up: bool, up_msg: str, down_msg: str) -> None:

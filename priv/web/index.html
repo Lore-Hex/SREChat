@@ -341,6 +341,32 @@ function startPolling() {
   pollTimer = setInterval(poll, 2000);
 }
 
+// APNs bridge. The native app registers with Apple and hands the token here,
+// because the page is the only side that knows who is signed in. The token can
+// arrive before or after sign-in, so it is held and registered at whichever of
+// the two happens second — otherwise push silently works only when the ordering
+// happens to be lucky.
+let pendingDevice = null;
+window.sreSetDeviceToken = function (info) {
+  pendingDevice = info && info.token ? info : null;
+  registerDevice();
+  return true;
+};
+
+async function registerDevice() {
+  if (!pendingDevice || !token) return;
+  const device = pendingDevice;
+  try {
+    await api("POST", "/me/devices", device);
+    // Cleared only on success: a failed registration must stay pending so the
+    // next sign-in retries it rather than leaving the phone unreachable.
+    pendingDevice = null;
+    console.log("push registered for this device (" + device.env + ")");
+  } catch (e) {
+    console.warn("push registration failed, will retry: " + (e.message || e));
+  }
+}
+
 async function signIn(tok, name) {
   me = name; token = tok;
   el.status.hidden = false;
@@ -355,6 +381,7 @@ async function signIn(tok, name) {
     el.log.hidden = false;
     el.composer.hidden = false;
     renderPeers();
+    registerDevice();                      // no-op unless the native app gave us a token
     await primeAlerts();
     await selectPeer(ALERTS_VIEW);
     startPolling();

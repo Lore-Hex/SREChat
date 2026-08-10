@@ -384,7 +384,27 @@ defmodule SREChatWeb.ApiRegressionTest do
     assert text["type"] == "text"
     assert get_in(text, ["metadata", "chatMessage", "message"]) == "raw bot text"
     assert get_in(text, ["metadata", "chatMessage", "userUuid"]) == "alice"
-    assert get_in(text, ["data", "metadata", "chatMessage", "uuid"]) == to_string(text["id"])
+    # The uuid is the message's muid, not its id. A client that sends no muid
+    # gets a server-generated "srv-<id>" rather than nil, because the iOS SDK
+    # 4.1.7 force-unwraps this field and crashes the app on a null (ca6aa28).
+    # Asserting equality with the id would forbid exactly that fix.
+    assert get_in(text, ["data", "metadata", "chatMessage", "uuid"]) ==
+             "srv-" <> to_string(text["id"])
+
+    # A muid the client did supply must still be echoed untouched: that is what
+    # lets a sender match its own optimistic bubble to the delivered message.
+    client_muid_conn =
+      auth_conn(:post, "/v3.0/messages", %{
+        "receiver" => room,
+        "receiverType" => "group",
+        "muid" => "client-supplied-muid",
+        "data" => %{"text" => "with muid"}
+      })
+
+    assert client_muid_conn.status == 201
+
+    assert get_in(json(client_muid_conn), ["data", "data", "metadata", "chatMessage", "uuid"]) ==
+             "client-supplied-muid"
 
     gif_conn =
       auth_conn(:post, "/v3.0/messages", %{

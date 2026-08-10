@@ -72,6 +72,29 @@ defmodule SREChatWeb.ApiRouter do
     end)
   end
 
+  # Register this phone for push. Deliberately scoped to the caller — the uid
+  # comes from the auth token, never from the body — so a signed-in client can
+  # only ever point its own pages at itself, not redirect someone else's.
+  post "/me/devices" do
+    with_user(conn, fn conn, user, _token ->
+      case Store.register_device(user["uid"], conn.body_params) do
+        {:ok, data} -> JSON.ok(conn, data)
+        {:error, e} -> JSON.error(conn, e, 400)
+      end
+    end)
+  end
+
+  # Apple answers 410 for a token whose app was uninstalled. Left registered it
+  # is a permanent failure on every future page, so the sender prunes it here.
+  delete "/me/devices/:device_token" do
+    with_user(conn, fn conn, user, _token ->
+      case Store.forget_device(user["uid"], device_token) do
+        {:ok, data} -> JSON.ok(conn, data)
+        {:error, e} -> JSON.error(conn, e, 404)
+      end
+    end)
+  end
+
   post "/user_sessions" do
     with_user(conn, fn conn, user, _token ->
       JSON.ok(conn, %{

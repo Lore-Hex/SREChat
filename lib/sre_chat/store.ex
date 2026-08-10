@@ -66,6 +66,9 @@ defmodule SREChat.Store do
   def blocked_users(uid, params \\ %{}),
     do: call({:blocked_users, to_s(uid), params})
 
+  def register_device(uid, attrs), do: call({:register_device, to_s(uid), attrs})
+  def forget_device(uid, token), do: call({:forget_device, to_s(uid), to_s(token)})
+
   def create_auth_token(uid), do: call({:create_auth_token, to_s(uid)})
   def revoke_auth_token(token), do: call({:revoke_auth_token, token})
   def authenticate(token), do: call({:authenticate, token})
@@ -337,6 +340,64 @@ defmodule SREChat.Store do
       state = UserState.maybe_store_embedded_token(state, user)
       persist_ops(PersistenceOps.user_with_embedded_token(user))
       {:reply, {:ok, UserState.public(user)}, state}
+    end
+  end
+
+  # APNs device tokens live inside the user's metadata rather than in an entity
+  # of their own so they inherit the replication and persistence users already
+  # have: a phone that registers against whichever cloud it reached can still be
+  # paged by the other two when that cloud is the one that died.
+  #
+  # `upsert_user` merges only at the top level, so writing metadata through it
+  # would drop every other metadata key and every previously registered device.
+  # Hence a dedicated call that merges into the token map.
+  def handle_call({:register_device, uid, attrs}, _from, state) do
+    attrs = stringify_keys(attrs)
+    token = to_s(attrs["token"] || "")
+
+    cond do
+      blank?(uid) ->
+        {:reply, {:error, Errors.missing("uid")}, state}
+
+      blank?(token) ->
+        {:reply, {:error, Errors.missing("token")}, state}
+
+      true ->
+        {user, state} = UserState.ensure(state, uid)
+
+        entry = %{
+          # Sandbox and production tokens are not interchangeable and the
+          # mismatch surfaces only as BadDeviceToken at send time, so the
+          # sender needs to know which one this is.
+          "env" => to_s(attrs["env"] || "development"),
+          "bundleId" => to_s(attrs["bundleId"] || ""),
+          "updatedAt" => Time.now()
+        }
+
+        metadata = Map.get(user, "metadata") || %{}
+        devices = Map.get(metadata, "apnsTokens") || %{}
+        metadata = Map.put(metadata, "apnsTokens", Map.put(devices, token, entry))
+
+        user = UserState.normalise(Map.put(user, "metadata", metadata))
+        state = UserState.put(state, user)
+        persist_ops(PersistenceOps.user(state, [uid]))
+        {:reply, {:ok, %{"success" => true, "token" => token}}, state}
+    end
+  end
+
+  def handle_call({:forget_device, uid, token}, _from, state) do
+    case Map.fetch(state["users"], uid) do
+      :error ->
+        {:reply, {:error, Errors.user_not_found(uid)}, state}
+
+      {:ok, user} ->
+        metadata = Map.get(user, "metadata") || %{}
+        devices = Map.get(metadata, "apnsTokens") || %{}
+        metadata = Map.put(metadata, "apnsTokens", Map.delete(devices, token))
+        user = UserState.normalise(Map.put(user, "metadata", metadata))
+        state = UserState.put(state, user)
+        persist_ops(PersistenceOps.user(state, [uid]))
+        {:reply, {:ok, %{"success" => true, "token" => token}}, state}
     end
   end
 
