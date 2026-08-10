@@ -87,7 +87,13 @@ _AUTHORITY_ACTIONABLE = (
     "Your authority: you may READ anything about GCP and the deployment, and you "
     "may restart region 0's own containers. You cannot create, delete, or modify "
     "cloud resources, and you have no access to AWS or Azure at all — those are "
-    "kept independent on purpose."
+    "kept independent on purpose.\n\n"
+    "You are also on call for TrustedRouter (https://trustedrouter.com), the "
+    "product itself: you can read its Cloud Run errors, service status, deploy "
+    "revisions, and Sentry issues, and — only when explicitly enabled — roll its "
+    "traffic back to a previous revision. When the owner reports a TrustedRouter "
+    "problem, triage concretely: what is failing, since when, which revision "
+    "introduced it, and what the specific next step is."
 )
 _AUTHORITY_READONLY = (
     f"You run on the {CLOUD} master (region {REGION_INDEX}) as a READ-ONLY monitor. "
@@ -136,11 +142,20 @@ def log(msg: str) -> None:
 
 # ---------------------------------------------------------------- chat client
 
+# Shared access passcode. When the deployment is gated, every uid token must
+# carry "|<passcode>" or the server rejects it — so the agents need it too.
+ACCESS_SECRET = os.environ.get("SRE_ACCESS_SECRET", "")
+
+
+def uid_token(uid: str) -> str:
+    return f"uid:{uid}" + (f"|{ACCESS_SECRET}" if ACCESS_SECRET else "")
+
+
 def api(method: str, path: str, body: dict | None = None, uid: str = AGENT_UID) -> dict:
     url = f"https://{REGION_HOST}/v3.0{path}"
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Authorization", f"Bearer uid:{uid}")
+    req.add_header("Authorization", f"Bearer {uid_token(uid)}")
     if data:
         req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=20) as resp:
@@ -205,7 +220,7 @@ def tool_replication_status(_arg: str = "") -> str:
                     "data": {"text": f"probe-r{r['index']}-{stamp}"},
                 }).encode(),
                 method="POST",
-                headers={"Authorization": "Bearer uid:_replication_probe_src",
+                headers={"Authorization": f"Bearer {uid_token('_replication_probe_src')}",
                          "Content-Type": "application/json"},
             ), timeout=15)
         except Exception as exc:  # noqa: BLE001
@@ -217,7 +232,7 @@ def tool_replication_status(_arg: str = "") -> str:
         try:
             req = urllib.request.Request(
                 f"https://{r['host']}/v3.0/users/_replication_probe_src/messages?limit=30",
-                headers={"Authorization": "Bearer uid:_replication_probe"})
+                headers={"Authorization": f"Bearer {uid_token('_replication_probe')}"})
             with urllib.request.urlopen(req, timeout=15) as resp:
                 msgs = json.loads(resp.read().decode()).get("data", [])
             seen = sorted(m["data"].get("text", "") for m in msgs
@@ -264,6 +279,95 @@ def tool_restart_region0(arg: str = "") -> str:
                 timeout=90)
 
 
+# ------------------------------------------------- TrustedRouter (the product)
+#
+# SREChat doubles as the on-call surface for TrustedRouter itself. These read
+# the live product's signals so an error can be triaged from a phone. They run
+# only on region 0, whose service account holds the (read + safe-restart) grant.
+
+TR_PROJECT = os.environ.get("TR_GCP_PROJECT", "quill-cloud-proxy")
+TR_REGION = os.environ.get("TR_GCP_REGION", "us-central1")
+TR_SERVICE = os.environ.get("TR_RUN_SERVICE", "trusted-router")
+SENTRY_TOKEN = os.environ.get("SENTRY_AUTH_TOKEN", "")
+SENTRY_ORG = os.environ.get("SENTRY_ORG", "")
+SENTRY_PROJECT = os.environ.get("SENTRY_PROJECT", "")
+
+
+def tool_tr_errors(arg: str = "") -> str:
+    """Recent ERROR+ log entries from TrustedRouter's Cloud Run service."""
+    freshness = re.sub(r"[^0-9hmd]", "", arg.strip() or "1h") or "1h"
+    return _run([
+        "gcloud", "logging", "read",
+        f'severity>=ERROR AND resource.labels.service_name="{TR_SERVICE}"',
+        f"--project={TR_PROJECT}", f"--freshness={freshness}", "--limit=15",
+        "--format=value(timestamp,jsonPayload.MESSAGE,textPayload,protoPayload.status.message)",
+    ], timeout=60)
+
+
+def tool_tr_status(_arg: str = "") -> str:
+    """Is TrustedRouter serving? Public probe + the Cloud Run revision behind it."""
+    lines = []
+    for name, url in (("gateway", "https://api.trustedrouter.com/v1/models"),
+                      ("site", "https://trustedrouter.com/")):
+        try:
+            with urllib.request.urlopen(url, timeout=10) as resp:
+                lines.append(f"{name}: HTTP {resp.status}")
+        except Exception as exc:  # noqa: BLE001
+            lines.append(f"{name}: UNREACHABLE ({exc})")
+    lines.append(_run([
+        "gcloud", "run", "services", "describe", TR_SERVICE,
+        f"--project={TR_PROJECT}", f"--region={TR_REGION}",
+        "--format=value(status.traffic,status.latestReadyRevisionName)",
+    ], timeout=45))
+    return "\n".join(lines)
+
+
+def tool_tr_revisions(_arg: str = "") -> str:
+    """Recent Cloud Run revisions — the deploy history behind an incident."""
+    return _run([
+        "gcloud", "run", "revisions", "list", f"--service={TR_SERVICE}",
+        f"--project={TR_PROJECT}", f"--region={TR_REGION}", "--limit=5",
+        "--format=table(metadata.name,metadata.creationTimestamp,status.conditions[0].status)",
+    ], timeout=45)
+
+
+def tool_sentry_issues(_arg: str = "") -> str:
+    """Unresolved Sentry issues for TrustedRouter."""
+    if not (SENTRY_TOKEN and SENTRY_ORG and SENTRY_PROJECT):
+        return ("Sentry is not configured for this agent. Set SENTRY_AUTH_TOKEN, "
+                "SENTRY_ORG, and SENTRY_PROJECT to enable it.")
+    url = (f"https://sentry.io/api/0/projects/{SENTRY_ORG}/{SENTRY_PROJECT}/issues/"
+           "?query=is:unresolved&statsPeriod=24h&limit=10")
+    try:
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {SENTRY_TOKEN}"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            issues = json.loads(resp.read().decode())
+    except Exception as exc:  # noqa: BLE001
+        return f"(Sentry query failed: {exc})"
+    if not issues:
+        return "No unresolved Sentry issues in the last 24h."
+    return "\n".join(
+        f"[{i.get('count', '?')}x] {i.get('title', '?')[:110]} — {i.get('permalink', '')}"
+        for i in issues)
+
+
+def tool_tr_rollback(arg: str = "") -> str:
+    """Shift TrustedRouter traffic to a previous revision. The one TR mitigation
+    available, and only with SRE_ALLOW_TR_WRITES=true — rolling back production
+    is exactly the kind of action that should need a deliberate opt-in."""
+    if os.environ.get("SRE_ALLOW_TR_WRITES", "").strip().lower() not in {"1", "true", "yes"}:
+        return ("refused: TrustedRouter writes are disabled. Set SRE_ALLOW_TR_WRITES=true "
+                "on the region-0 agent to allow rollback.")
+    revision = re.sub(r"[^A-Za-z0-9-]", "", arg.strip())[:80]
+    if not revision:
+        return "refused: name the revision to roll back to (see `tr revisions`)."
+    return _run([
+        "gcloud", "run", "services", "update-traffic", TR_SERVICE,
+        f"--project={TR_PROJECT}", f"--region={TR_REGION}",
+        f"--to-revisions={revision}=100",
+    ], timeout=120)
+
+
 # Read-only tools available on every master: they either probe the public
 # endpoints (health/replication) or inspect THIS VM's own containers/mesh.
 _READ_ONLY_TOOLS = {
@@ -279,6 +383,12 @@ _ACTIONABLE_TOOLS = {
     "gcp_instances": (tool_gcp_instances, "list GCP compute instances"),
     "gcp_dns": (tool_gcp_dns, "list sre* DNS records"),
     "restart": (tool_restart_region0, "restart a region-0 container (arg: app|redis|caddy)"),
+    # TrustedRouter (the product) — triage from your phone.
+    "tr_status": (tool_tr_status, "is TrustedRouter serving? gateway + Cloud Run revision"),
+    "tr_errors": (tool_tr_errors, "recent TrustedRouter errors (arg: freshness like 1h/30m)"),
+    "tr_revisions": (tool_tr_revisions, "recent TrustedRouter Cloud Run revisions"),
+    "sentry": (tool_sentry_issues, "unresolved Sentry issues for TrustedRouter"),
+    "tr_rollback": (tool_tr_rollback, "roll TrustedRouter traffic back to a revision (gated)"),
 }
 TOOLS = {**_READ_ONLY_TOOLS, **(_ACTIONABLE_TOOLS if ACTIONABLE else {})}
 
@@ -336,6 +446,21 @@ def choose_tool(text: str) -> tuple[str, str]:
     """Keyword routing. Deliberately NOT model-chosen: the model never decides
     which command runs, so a persuasive chat message cannot reach a tool."""
     t = text.lower()
+    # TrustedRouter (the product) first: "tr"/"trustedrouter" scopes the question
+    # to the product rather than this chat deployment.
+    tr = "trustedrouter" in t or re.search(r"\btr\b", t) is not None
+    if tr or "sentry" in t:
+        if "sentry" in t:
+            return _if_available("sentry", "")
+        if "rollback" in t or "roll back" in t:
+            m = re.search(r"([a-z0-9-]*trusted-router[a-z0-9-]*)", t)
+            return _if_available("tr_rollback", m.group(1) if m else "")
+        if "revision" in t or "deploy" in t:
+            return _if_available("tr_revisions", "")
+        if any(w in t for w in ("error", "exception", "failing", "500", "broken", "log")):
+            m = re.search(r"\b(\d+[hmd])\b", t)
+            return _if_available("tr_errors", m.group(1) if m else "1h")
+        return _if_available("tr_status", "")
     if any(w in t for w in ("restart", "reboot", "bounce")):
         for svc in ("redis", "caddy", "app"):
             if svc in t:
@@ -404,6 +529,130 @@ def handle(sender: str, text: str) -> None:
     log(f"-> {sender}: {reply[:120]}")
 
 
+# ------------------------------------------------------------------ watchdog
+#
+# Every agent independently watches ALL THREE nodes and the OTHER TWO agents,
+# and DMs the owner when something changes state. Running the same watch on
+# each cloud is the point: whoever is still alive reports the one that died, so
+# a node (or a whole cloud) going dark is never the thing that also silences the
+# alert. Alerts fire on TRANSITIONS only — nobody wants a page every 30s while
+# an outage persists.
+
+OWNER_UID = os.environ.get("SRE_OWNER_UID", "joseph")
+WATCH_SECONDS = float(os.environ.get("SRE_WATCH_SECONDS", "30"))
+# An agent is considered down if it hasn't been seen for this long. Each agent
+# posts a heartbeat to the others, so silence means the process or its host died.
+AGENT_STALE_SECONDS = float(os.environ.get("SRE_AGENT_STALE_SECONDS", "180"))
+
+_watch_state: dict[str, str] = {}     # what -> "up" | "down"
+_agent_seen: dict[str, float] = {}    # agent uid -> last heartbeat epoch
+
+
+def alert(text: str) -> None:
+    """Page the owner. 🔔 marks it as an alert in the clients."""
+    try:
+        send(OWNER_UID, f"🔔 {text}")
+        log(f"ALERT -> {OWNER_UID}: {text[:120]}")
+    except Exception as exc:  # noqa: BLE001 — never let paging kill the loop
+        log(f"alert failed: {exc}")
+
+
+def _transition(key: str, up: bool, up_msg: str, down_msg: str) -> None:
+    now = "up" if up else "down"
+    was = _watch_state.get(key)
+    if was == now:
+        return
+    _watch_state[key] = now
+    if was is None:
+        return                    # first observation is the baseline, not news
+    alert(up_msg if up else down_msg)
+
+
+def probe_region(r: dict) -> bool:
+    try:
+        with urllib.request.urlopen(f"https://{r['host']}/health", timeout=8) as resp:
+            return resp.status == 200 and "ok" in resp.read().decode().lower()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def watch_once() -> None:
+    # 1. Every region's health endpoint.
+    for r in REGIONS:
+        ok = probe_region(r)
+        _transition(
+            f"region-{r['index']}", ok,
+            f"RECOVERED: region {r['index']} ({r['cloud']}, {r['host']}) is serving again.",
+            f"NODE DOWN: region {r['index']} ({r['cloud']}, {r['host']}) is not responding "
+            f"on /health. Reported by {AGENT_UID} on {CLOUD}.",
+        )
+
+    # 2. Peer agents: heartbeat freshness. A silent agent means its process or
+    #    its host is gone even when the node's own health endpoint answers.
+    now = time.time()
+    for idx in range(len(REGIONS)):
+        if idx == REGION_INDEX:
+            continue
+        uid = f"sre-agent-{idx}"
+        last = _agent_seen.get(uid)
+        if last is None:
+            continue              # not yet heard from; wait for a baseline
+        fresh = (now - last) < AGENT_STALE_SECONDS
+        _transition(
+            f"agent-{idx}", fresh,
+            f"RECOVERED: {uid} ({REGIONS[idx]['cloud']}) is reporting again.",
+            f"AGENT DOWN: {uid} ({REGIONS[idx]['cloud']}) has not checked in for "
+            f"{int(now - last)}s. Its node may be up while the agent is dead.",
+        )
+
+    # 3. TrustedRouter itself (region 0 only — it holds the cloud grant). The
+    #    product going down matters more than this chat does.
+    if ACTIONABLE:
+        try:
+            up = False
+            try:
+                with urllib.request.urlopen("https://api.trustedrouter.com/v1/models", timeout=10) as resp:
+                    up = resp.status == 200
+            except Exception:  # noqa: BLE001
+                up = False
+            _transition(
+                "trustedrouter", up,
+                "RECOVERED: TrustedRouter's gateway is serving again.",
+                "TRUSTEDROUTER DOWN: api.trustedrouter.com is not serving /v1/models. "
+                "Ask me for `tr errors` and `tr revisions` to triage.",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 4. This region's own container logs, for errors worth waking up for.
+    try:
+        logs = tool_local_logs("app")
+        bad = [ln for ln in logs.splitlines()
+               if any(w in ln.lower() for w in ("error", "crash", "fatal", "exception"))]
+        _transition(
+            "local-logs", not bad,
+            f"RECOVERED: no more errors in region {REGION_INDEX}'s app log.",
+            f"ERRORS in region {REGION_INDEX} ({CLOUD}) app log:\n"
+            + "\n".join(bad[-5:])[:1200],
+        )
+    except Exception:  # noqa: BLE001 — log access is best-effort
+        pass
+
+
+def heartbeat() -> None:
+    """Tell the other agents we're alive. They page the owner if we stop."""
+    for idx in range(len(REGIONS)):
+        if idx == REGION_INDEX:
+            continue
+        try:
+            send(f"sre-agent-{idx}", f"{HEARTBEAT_PREFIX} {AGENT_UID} {int(time.time())}")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+HEARTBEAT_PREFIX = "::heartbeat::"
+
+
 def main() -> int:
     log(f"starting as {AGENT_UID} on the {CLOUD} master (region {REGION_INDEX}, "
         f"{'actionable' if ACTIONABLE else 'read-only'}) against {REGION_HOST}, "
@@ -418,6 +667,7 @@ def main() -> int:
         if with_uid and latest:
             seen[with_uid] = int(latest)
 
+    last_watch = 0.0
     while True:
         try:
             for conv in fetch_conversations():
@@ -431,7 +681,20 @@ def main() -> int:
                     seen[peer] = max(seen.get(peer, 0), mid)
                     if msg.get("sender") == AGENT_UID or msg.get("type") != "text":
                         continue
-                    handle(msg["sender"], (msg.get("data") or {}).get("text", ""))
+                    text = (msg.get("data") or {}).get("text", "")
+                    # Peer heartbeats are bookkeeping, not conversation: record
+                    # liveness and never answer, or the agents would chat in a
+                    # loop forever.
+                    if text.startswith(HEARTBEAT_PREFIX):
+                        _agent_seen[msg["sender"]] = time.time()
+                        continue
+                    handle(msg["sender"], text)
+
+            # Watchdog + heartbeat on their own cadence, independent of chat.
+            if time.time() - last_watch >= WATCH_SECONDS:
+                last_watch = time.time()
+                heartbeat()
+                watch_once()
         except Exception as exc:  # noqa: BLE001 — a bot that dies is useless
             log(f"loop error (continuing): {exc}")
         time.sleep(POLL_SECONDS)

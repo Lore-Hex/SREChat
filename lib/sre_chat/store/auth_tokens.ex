@@ -46,8 +46,35 @@ defmodule SREChat.Store.AuthTokens do
     end
   end
 
-  def uid_token("uid:" <> uid) when uid != "", do: {:ok, uid}
+  # A uid token is "uid:<name>" optionally suffixed with "|<passcode>". When an
+  # access passcode is configured (SRE_ACCESS_SECRET), the suffix must match, so
+  # only someone holding the passcode can sign in as anyone — the deployment is
+  # no longer open to whoever guesses a name. With no passcode set the suffix is
+  # ignored, preserving the open dev/test behaviour and letting clients start
+  # sending "|<passcode>" before the gate is switched on (no lockout window).
+  def uid_token("uid:" <> rest) when rest != "" do
+    {uid, provided} =
+      case String.split(rest, "|", parts: 2) do
+        [uid, secret] -> {uid, secret}
+        [uid] -> {uid, nil}
+      end
+
+    cond do
+      uid == "" -> :error
+      is_nil(access_secret()) -> {:ok, uid}
+      is_binary(provided) and secure_compare(provided, access_secret()) -> {:ok, uid}
+      true -> :error
+    end
+  end
+
   def uid_token(_token), do: :error
+
+  defp access_secret do
+    case Config.access_secret() do
+      secret when is_binary(secret) and secret != "" -> secret
+      _ -> nil
+    end
+  end
 
   defp opaque_token_candidates("local." <> _invalid_jwt), do: []
   defp opaque_token_candidates(token), do: [token]

@@ -119,6 +119,10 @@ defmodule SREChat.Config do
   # Set CHAT_USE_SSL=false only for a plain-HTTP local backend, where the
   # client SDKs must be told not to upgrade http/ws to https/wss.
   def use_ssl?, do: Application.get_env(:sre_chat, :use_ssl, true)
+  # Shared access passcode. When set, every uid-token sign-in must carry a
+  # matching "|<passcode>" suffix, so only holders of the passcode get in. nil
+  # (default) keeps the deployment open, as for dev/test.
+  def access_secret, do: Application.get_env(:sre_chat, :access_secret)
   def extension_domain, do: Application.fetch_env!(:sre_chat, :extension_domain)
   def upload_dir, do: Application.fetch_env!(:sre_chat, :upload_dir)
 
