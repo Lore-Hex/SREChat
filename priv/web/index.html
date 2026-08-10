@@ -37,8 +37,10 @@
   /* peer picker */
   #peers { display:flex; gap:8px; padding:10px 16px; overflow-x:auto; border-bottom:1px solid var(--line); }
   #peers button {
-    flex:0 0 auto; padding:8px 14px; border-radius:999px; border:1px solid var(--line);
-    background:var(--theirs); color:var(--fg); font:inherit; font-size:14px; cursor:pointer;
+    flex:0 0 auto; padding:8px 16px; border-radius:999px; border:1px solid var(--line);
+    background:var(--theirs); color:var(--fg); font:inherit; font-size:14px; line-height:1;
+    cursor:pointer; -webkit-appearance:none; appearance:none; margin:0; text-align:center;
+    display:inline-flex; align-items:center; justify-content:center;
   }
   #peers button.active { background:var(--mine); color:var(--mine-fg); border-color:var(--mine); }
 
@@ -72,8 +74,9 @@
 
 <form id="login">
   <input id="uid" type="text" placeholder="your name (e.g. joseph)" autocomplete="username" autocapitalize="off" autocorrect="off">
+  <input id="pass" type="password" placeholder="passcode" autocomplete="current-password" autocapitalize="off" autocorrect="off">
   <button type="submit">Start</button>
-  <span class="hint">Pick a name. You'll land in a room with your three cloud agents.</span>
+  <span class="hint">Your name and the deployment passcode. Land in a room with your three cloud agents.</span>
 </form>
 
 <nav id="peers" hidden></nav>
@@ -208,15 +211,13 @@ function startPolling() {
   pollTimer = setInterval(poll, 2000);
 }
 
-el.login.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const name = el.uid.value.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, "");
-  if (!name) return;
-  me = name;
-  token = "uid:" + me;
+async function signIn(tok, name) {
+  me = name; token = tok;
+  el.status.hidden = false;
   el.status.textContent = "Signing in…";
   try {
-    await api("PUT", "/me", {});           // ensure the user exists / validate token
+    await api("PUT", "/me", {});           // validates the token (incl. passcode)
+    try { localStorage.setItem("sre_token", token); localStorage.setItem("sre_me", me); } catch {}
     el.who.textContent = me;
     el.status.hidden = true;
     el.login.hidden = true;
@@ -227,8 +228,21 @@ el.login.addEventListener("submit", async (e) => {
     await selectPeer(AGENTS[0].uid);
     startPolling();
   } catch (e2) {
-    el.status.textContent = "Sign-in failed: " + (e2.message || e2);
+    try { localStorage.removeItem("sre_token"); } catch {}
+    el.login.hidden = false; el.peers.hidden = true; el.log.hidden = true; el.composer.hidden = true;
+    el.status.hidden = false;
+    el.status.textContent = (e2.status === 401 || e2.status === 403)
+      ? "Wrong passcode — try again." : "Sign-in failed: " + (e2.message || e2);
   }
+}
+
+el.login.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const name = el.uid.value.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, "");
+  const pass = document.getElementById("pass").value;
+  if (!name) return;
+  // The passcode gates access server-side as uid:<name>|<passcode>.
+  signIn("uid:" + name + (pass ? "|" + pass : ""), name);
 });
 
 el.composer.addEventListener("submit", async (e) => {
@@ -248,9 +262,13 @@ el.composer.addEventListener("submit", async (e) => {
   }
 });
 
-// Refresh the health dot immediately on load and whenever we regain focus.
+// Refresh the health dot, then auto sign-in if we already hold a valid token.
 (async () => {
   try { await fetch("https://" + location.host + "/health"); setDot(true); } catch { setDot(false); }
+  try {
+    const tok = localStorage.getItem("sre_token"), name = localStorage.getItem("sre_me");
+    if (tok && name) { el.uid.value = name; signIn(tok, name); }
+  } catch {}
 })();
 document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
 </script>
