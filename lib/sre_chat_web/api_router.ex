@@ -890,21 +890,24 @@ defmodule SREChatWeb.ApiRouter do
   # settings model collides on our dual-cased keys and crashes, so it gets a
   # camelCase-only object; everyone else keeps the UPPER_SNAKE default.
   defp client_settings(conn) do
-    if Config.ios_client?(resource_header(conn)),
-      do: Config.ios_settings(),
-      else: Config.settings()
+    if ios_client?(conn), do: Config.ios_settings(), else: Config.settings()
   end
 
   defp recase_me_settings(conn, %{"settings" => _} = me) do
-    if Config.ios_client?(resource_header(conn)),
-      do: Map.put(me, "settings", Config.ios_settings()),
-      else: me
+    if ios_client?(conn), do: Map.put(me, "settings", Config.ios_settings()), else: me
   end
 
   defp recase_me_settings(_conn, me), do: me
 
-  defp resource_header(conn) do
-    conn |> get_req_header("resource") |> List.first()
+  # Kept local rather than calling Config: a release that had a stale Config
+  # module answered every /me with a 500 (UndefinedFunctionError) and took
+  # sign-in down fleet-wide. The predicate is one line — the cross-module call
+  # bought nothing and made the login path depend on deploy ordering.
+  defp ios_client?(conn) do
+    case get_req_header(conn, "resource") do
+      [resource | _] when is_binary(resource) -> String.starts_with?(resource, "ios")
+      _ -> false
+    end
   end
 
   defp blank?(v), do: v in [nil, "", false]
