@@ -550,6 +550,44 @@ AGENT_STALE_SECONDS = float(os.environ.get("SRE_AGENT_STALE_SECONDS", "180"))
 
 _watch_state: dict[str, str] = {}     # what -> "up" | "down"
 _agent_seen: dict[str, float] = {}    # agent uid -> last heartbeat epoch
+_fail_streak: dict[str, int] = {}     # what -> consecutive bad observations
+
+# One bad poll is a deploy, not an outage. A restarted container answers again
+# in seconds; paging on the first miss meant every deploy fired NODE DOWN and
+# RECOVERED from every watching agent — the single loudest noise source. Three
+# misses at the 30s cadence ≈ 90s of real downtime before anyone is paged.
+FAILS_TO_ALERT = int(os.environ.get("SRE_FAILS_TO_ALERT", "3"))
+
+
+def _debounced(key: str, ok: bool) -> bool:
+    """Absorb blips: stay "up" until FAILS_TO_ALERT consecutive bad looks.
+    Recovery is immediate — good news does not need confirmation."""
+    if ok:
+        _fail_streak[key] = 0
+        return True
+    _fail_streak[key] = _fail_streak.get(key, 0) + 1
+    if _fail_streak[key] < FAILS_TO_ALERT and _watch_state.get(key, "up") == "up":
+        return True                      # suspicious, not yet news
+    return False
+
+
+def _primary_reporter(target_index: int) -> bool:
+    """Exactly one healthy agent pages for a given region's problems.
+
+    Both survivors seeing the same dead node paged in duplicate. The next
+    region around the ring reports; the one after only steps up if the
+    primary itself has gone quiet, so a double failure still gets reported.
+    """
+    order = [(target_index + k) % len(REGIONS) for k in (1, 2)]
+    order = [i for i in order if i != target_index]
+    for idx in order:
+        if idx == REGION_INDEX:
+            return True
+        uid = f"sre-agent-{idx}"
+        last = _agent_seen.get(uid)
+        if last is not None and (time.time() - last) < AGENT_STALE_SECONDS:
+            return False                 # a healthier-ranked reporter is alive
+    return True
 
 
 def owner_devices() -> dict[str, dict]:
@@ -638,14 +676,19 @@ def probe_region(r: dict) -> bool:
 
 
 def watch_once() -> None:
-    # 1. Every region's health endpoint.
+    # 1. Every region's health endpoint. Debounced so deploys do not page, and
+    #    reported by exactly one agent so one outage is one message.
     for r in REGIONS:
-        ok = probe_region(r)
+        ok = _debounced(f"region-{r['index']}", probe_region(r))
+        if not ok and not _primary_reporter(r["index"]):
+            _watch_state[f"region-{r['index']}"] = "down"   # track, silently
+            continue
         _transition(
             f"region-{r['index']}", ok,
             f"RECOVERED: region {r['index']} ({r['cloud']}, {r['host']}) is serving again.",
-            f"NODE DOWN: region {r['index']} ({r['cloud']}, {r['host']}) is not responding "
-            f"on /health. Reported by {AGENT_UID} on {CLOUD}.",
+            f"NODE DOWN: region {r['index']} ({r['cloud']}, {r['host']}) has failed "
+            f"{FAILS_TO_ALERT} straight health checks (~{int(FAILS_TO_ALERT * WATCH_SECONDS)}s). "
+            f"Reported by {AGENT_UID} on {CLOUD}.",
         )
 
     # 2. Peer agents: heartbeat freshness. A silent agent means its process or
@@ -659,6 +702,9 @@ def watch_once() -> None:
         if last is None:
             continue              # not yet heard from; wait for a baseline
         fresh = (now - last) < AGENT_STALE_SECONDS
+        if not fresh and not _primary_reporter(idx):
+            _watch_state[f"agent-{idx}"] = "down"
+            continue
         _transition(
             f"agent-{idx}", fresh,
             f"RECOVERED: {uid} ({REGIONS[idx]['cloud']}) is reporting again.",
@@ -685,11 +731,23 @@ def watch_once() -> None:
         except Exception:  # noqa: BLE001
             pass
 
-    # 4. This region's own container logs, for errors worth waking up for.
+    # 4. This region's own container logs. Two tiers: replication problems get a
+    #    named, specific page (they are silent divergence, the worst failure this
+    #    system has), everything else stays one generic errors alert.
     try:
         logs = tool_local_logs("app")
-        bad = [ln for ln in logs.splitlines()
-               if any(w in ln.lower() for w in ("error", "crash", "fatal", "exception"))]
+        lines = logs.splitlines()
+        repl = [ln for ln in lines if "replication gap" in ln or "refusing to continue" in ln]
+        bad = [ln for ln in lines
+               if any(w in ln.lower() for w in ("error", "crash", "fatal", "exception"))
+               and ln not in repl]
+        _transition(
+            "replication", not repl,
+            f"RECOVERED: region {REGION_INDEX} is replicating from its peers again.",
+            f"REPLICATION BROKEN in region {REGION_INDEX} ({CLOUD}): this region has "
+            f"stopped applying a peer's writes and will silently diverge until an "
+            f"operator resyncs (runbook: multi-master.md).\n" + "\n".join(repl[-2:])[:400],
+        )
         _transition(
             "local-logs", not bad,
             f"RECOVERED: no more errors in region {REGION_INDEX}'s app log.",
