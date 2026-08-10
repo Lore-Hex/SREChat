@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <title>SREChat</title>
 <style>
   :root {
@@ -16,13 +16,20 @@
     }
   }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-  html { height:-webkit-fill-available; }
+  html { height:100%; overflow:hidden; }
+  /* position:fixed rather than height:100dvh. A tall document still scrolls as
+     a document in a WKWebView — dragging the composer and header off-screen and
+     rubber-banding — and no height alone prevents that. Pinning body to the
+     viewport means there is no document scroll to have: only #log scrolls. */
   body {
     margin:0; background:var(--bg); color:var(--fg);
     font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
-    height:100vh; height:100dvh; height:-webkit-fill-available;
+    position:fixed; top:0; right:0; bottom:0; left:0;
+    overflow:hidden; overscroll-behavior:none;
     display:flex; flex-direction:column;
   }
+  /* Chrome that must never scroll away. */
+  header, #peers, #status, #login, #composer { flex:0 0 auto; }
   [hidden] { display:none !important; }
   header {
     padding:calc(env(safe-area-inset-top) + 10px) 16px 10px; border-bottom:1px solid var(--line);
@@ -53,7 +60,17 @@
     box-shadow:0 6px 20px rgba(0,0,0,.28); cursor:pointer;
   }
 
-  #log { flex:1; overflow-y:auto; padding:14px 12px; display:flex; flex-direction:column; gap:8px; -webkit-overflow-scrolling:touch; }
+  /* min-height:0 is load-bearing: a flex item's default min-height:auto refuses
+     to shrink below its content, so a long transcript grows the column past the
+     viewport and the WHOLE page becomes scrollable — the composer included.
+     This is the actual cause of the scrolling, not the height unit.
+     overscroll-behavior:contain stops a scroll that reaches the end of the
+     transcript from chaining out to the page. */
+  #log {
+    flex:1 1 auto; min-height:0;
+    overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch;
+    padding:14px 12px; display:flex; flex-direction:column; gap:8px;
+  }
   .row { display:flex; }
   .row.mine { justify-content:flex-end; }
   .bubble { max-width:82%; padding:9px 13px; border-radius:16px; white-space:pre-wrap; word-wrap:break-word; overflow-wrap:anywhere; }
@@ -341,6 +358,30 @@ function startPolling() {
   pollTimer = setInterval(poll, 2000);
 }
 
+// Credential bridge. WKWebView localStorage lives in the app container and is
+// destroyed by every reinstall, which is why the passcode kept needing to be
+// retyped. The native side mirrors it into the iOS Keychain, which survives
+// reinstalls, and replays it here on launch.
+let pendingRestore = null, restoreReady = false;
+
+function saveAuthNatively(tok, name) {
+  try { window.webkit.messageHandlers.sreSaveAuth.postMessage({ token: tok, me: name }); } catch {}
+}
+
+function clearAuthNatively() {
+  try { window.webkit.messageHandlers.sreClearAuth.postMessage({}); } catch {}
+}
+
+window.sreRestoreAuth = function (info) {
+  if (!info || !info.token || !info.me) return false;
+  // The native side can call this before the boot block has run; hold it.
+  if (!restoreReady) { pendingRestore = info; return true; }
+  if (token) return true;                  // already signed in; nothing to do
+  el.uid.value = info.me;
+  signIn(info.token, info.me);
+  return true;
+};
+
 // APNs bridge. The native app registers with Apple and hands the token here,
 // because the page is the only side that knows who is signed in. The token can
 // arrive before or after sign-in, so it is held and registered at whichever of
@@ -374,6 +415,7 @@ async function signIn(tok, name) {
   try {
     await api("PUT", "/me", {});           // validates the token (incl. passcode)
     try { localStorage.setItem("sre_token", token); localStorage.setItem("sre_me", me); } catch {}
+    saveAuthNatively(token, me);
     el.who.textContent = me;
     el.status.hidden = true;
     el.login.hidden = true;
@@ -387,6 +429,7 @@ async function signIn(tok, name) {
     startPolling();
   } catch (e2) {
     try { localStorage.removeItem("sre_token"); } catch {}
+    if (e2.status === 401 || e2.status === 403) clearAuthNatively();
     el.login.hidden = false; el.peers.hidden = true; el.log.hidden = true; el.composer.hidden = true;
     el.status.hidden = false;
     el.status.textContent = (e2.status === 401 || e2.status === 403)
@@ -425,8 +468,13 @@ el.composer.addEventListener("submit", async (e) => {
   try { await fetch("https://" + location.host + "/health"); setDot(true); } catch { setDot(false); }
   try {
     const tok = localStorage.getItem("sre_token"), name = localStorage.getItem("sre_me");
-    if (tok && name) { el.uid.value = name; signIn(tok, name); }
+    if (tok && name) { el.uid.value = name; signIn(tok, name); return; }
   } catch {}
+  // Nothing in localStorage. If the native app holds a Keychain credential it
+  // will call sreRestoreAuth() once the page has loaded; until then, show the
+  // login form as usual.
+  restoreReady = true;
+  if (pendingRestore) sreRestoreAuth(pendingRestore);
 })();
 document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
 </script>
