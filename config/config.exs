@@ -21,7 +21,7 @@ default_upload_allowed_mime_types =
 
 config :logger, :default_formatter, format: "[$level] $message\n"
 
-config :open_chat,
+config :sre_chat,
   port: 4000,
   host: "localhost",
   ws_port: "4000",
@@ -53,8 +53,8 @@ config :open_chat,
   public_media_base_url: nil,
   s3_presigned_url_ttl_seconds: 3600,
   redis_url: nil,
-  redis_key_prefix: "open_chat",
-  redis_snapshot_key: "open_chat:snapshot:v1",
+  redis_key_prefix: "sre_chat",
+  redis_snapshot_key: "sre_chat:snapshot:v1",
   redis_boot_mode: "full",
   seed_users_json: nil,
   seed_groups_json: nil,

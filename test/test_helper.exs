@@ -1,5 +1,5 @@
 ExUnit.start(exclude: [load: true, idle: true])
 Application.ensure_all_started(:plug_cowboy)
-Application.put_env(:open_chat, :port, 4001)
-Application.put_env(:open_chat, :host, "localhost")
-Application.put_env(:open_chat, :ws_port, "4001")
+Application.put_env(:sre_chat, :port, 4001)
+Application.put_env(:sre_chat, :host, "localhost")
+Application.put_env(:sre_chat, :ws_port, "4001")

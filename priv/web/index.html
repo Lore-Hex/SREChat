@@ -1,7 +1,7 @@
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RoachChat</title>
+<title>SREChat</title>
 <style>
   :root { color-scheme: light dark; --bg:#fff; --fg:#111; --muted:#666; --line:#e3e3e3; --mine:#2a6df4; --accent:#6b3a1a; }
   @media (prefers-color-scheme: dark) { :root { --bg:#111; --fg:#eee; --muted:#999; --line:#2a2a2a; } }
@@ -22,7 +22,7 @@
 </style>
 
 <header>
-  <b>RoachChat</b>
+  <b>SREChat</b>
   <span id="who"></span>
   <span id="region"></span>
 </header>
@@ -35,7 +35,7 @@
 
 <form id="login">
   <input id="uid" placeholder="your user id (e.g. joseph)" autocomplete="off">
-  <input id="peer" placeholder="talk to (e.g. roach-agent)" value="roach-agent" autocomplete="off">
+  <input id="peer" placeholder="talk to (e.g. sre-agent)" value="sre-agent" autocomplete="off">
   <button>Start</button>
 </form>
 
@@ -48,7 +48,7 @@ import SDK from "https://esm.sh/@cometchat/chat-sdk-javascript@4.1.8";
 const CometChat = SDK.CometChat ?? SDK;
 
 const HOST = location.host + "/v3.0";       // this region, whichever one served the page
-const APP_ID = "roachchat";
+const APP_ID = "srechat";
 const statusEl = document.getElementById("status");
 const logEl = document.getElementById("log");
 const loginForm = document.getElementById("login");
@@ -100,7 +100,7 @@ loginForm.addEventListener("submit", async (e) => {
       if (m.getType() === "text") say(m.getText(), m.getSender().getUid(), m.getSender().getUid() === me);
     }
 
-    CometChat.addMessageListener("roachchat-web", new CometChat.MessageListener({
+    CometChat.addMessageListener("srechat-web", new CometChat.MessageListener({
       onTextMessageReceived: (m) => say(m.getText(), m.getSender().getUid(), false)
     }));
   } catch (err) {

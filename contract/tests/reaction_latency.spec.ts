@@ -5,13 +5,13 @@ const require = createRequire(import.meta.url);
 const sdkPath = require.resolve('@cometchat/chat-sdk-javascript/CometChat.js');
 
 const APP_ID = process.env.COMETCHAT_APP_ID || 'local-app';
-const TARGET_HOST = process.env.OPENCHAT_TARGET_HOST || 'localhost:8443/v3.0';
+const TARGET_HOST = process.env.SRECHAT_TARGET_HOST || 'localhost:8443/v3.0';
 const ADMIN_API_KEY =
-  process.env.OPENCHAT_ADMIN_API_KEY || (TARGET_HOST.startsWith('localhost') ? 'local-api-key' : '');
-const MESSAGE_COUNT = Number(process.env.OPENCHAT_LATENCY_MESSAGES || 30);
-const MAX_MESSAGE_LATENCY_MS = Number(process.env.OPENCHAT_MAX_MESSAGE_LATENCY_MS || 5000);
-const MAX_REACTION_LATENCY_MS = Number(process.env.OPENCHAT_MAX_REACTION_LATENCY_MS || 5000);
-const MAX_BOT_MESSAGE_LATENCY_MS = Number(process.env.OPENCHAT_MAX_BOT_MESSAGE_LATENCY_MS || 2500);
+  process.env.SRECHAT_ADMIN_API_KEY || (TARGET_HOST.startsWith('localhost') ? 'local-api-key' : '');
+const MESSAGE_COUNT = Number(process.env.SRECHAT_LATENCY_MESSAGES || 30);
+const MAX_MESSAGE_LATENCY_MS = Number(process.env.SRECHAT_MAX_MESSAGE_LATENCY_MS || 5000);
+const MAX_REACTION_LATENCY_MS = Number(process.env.SRECHAT_MAX_REACTION_LATENCY_MS || 5000);
+const MAX_BOT_MESSAGE_LATENCY_MS = Number(process.env.SRECHAT_MAX_BOT_MESSAGE_LATENCY_MS || 2500);
 
 async function loadSdk(page: any) {
   await page.goto(`https://${TARGET_HOST}/settings`);
@@ -64,7 +64,7 @@ test('staging SDK room messages and reactions arrive quickly across two browser 
   browser,
   request,
 }) => {
-  test.skip(!ADMIN_API_KEY, 'Requires OPENCHAT_ADMIN_API_KEY for staging user/group setup.');
+  test.skip(!ADMIN_API_KEY, 'Requires SRECHAT_ADMIN_API_KEY for staging user/group setup.');
   test.setTimeout(Math.max(120_000, MESSAGE_COUNT * 10_000));
 
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
@@ -285,7 +285,7 @@ test('staging SDK room messages and reactions arrive quickly across two browser 
 });
 
 test('bot-style REST group replies arrive quickly on live SDK clients', async ({ browser, request }) => {
-  test.skip(!ADMIN_API_KEY, 'Requires OPENCHAT_ADMIN_API_KEY for staging user/group setup.');
+  test.skip(!ADMIN_API_KEY, 'Requires SRECHAT_ADMIN_API_KEY for staging user/group setup.');
   test.setTimeout(Math.max(90_000, MESSAGE_COUNT * 10_000));
 
   const suffix = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
