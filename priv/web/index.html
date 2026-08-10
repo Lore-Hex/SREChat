@@ -43,6 +43,15 @@
     display:inline-flex; align-items:center; justify-content:center;
   }
   #peers button.active { background:var(--mine); color:var(--mine-fg); border-color:var(--mine); }
+  /* An unread count has to be loud: a missed alert is the whole failure mode. */
+  #peers button.badged { border-color:var(--bad); box-shadow:inset 0 0 0 1px var(--bad); font-weight:600; }
+  #peers button.badged:not(.active) { background:#fee2e2; color:#991b1b; }
+  @media (prefers-color-scheme: dark){ #peers button.badged:not(.active){ background:#3b1414; color:#fca5a5; } }
+  #alertbar {
+    position:fixed; left:8px; right:8px; top:calc(env(safe-area-inset-top) + 6px); z-index:50;
+    background:var(--bad); color:#fff; padding:11px 14px; border-radius:12px; font-size:14px;
+    box-shadow:0 6px 20px rgba(0,0,0,.28); cursor:pointer;
+  }
 
   #log { flex:1; overflow-y:auto; padding:14px 12px; display:flex; flex-direction:column; gap:8px; -webkit-overflow-scrolling:touch; }
   .row { display:flex; }
@@ -107,8 +116,16 @@ const AGENTS = [
   { uid:"sre-agent-2", label:"Azure agent" },
 ];
 
+// A pseudo-peer: the aggregated alert feed, not a real chat partner.
+const ALERTS_VIEW = "__alerts__";
+// The drill runner reports as its own user, so watch it alongside the agents.
+const WATCHED = [...AGENTS.map(a => a.uid), "sre-drill"];
+
 let me = null, peer = null, token = null;
-const seen = {};          // peer -> highest message id shown
+const seen = {};          // peer -> highest message id seen (any tab)
+const unread = {};        // peer -> unread count while you're elsewhere
+const alerts = [];        // aggregated 🔔 across every agent
+let unseenAlerts = 0;
 let pollTimer = null;
 
 el.region.textContent = HOST;
@@ -144,21 +161,63 @@ function bubble(text, who, kind) {
 
 function renderPeers() {
   el.peers.innerHTML = "";
-  for (const a of AGENTS) {
+  const tabs = [{ uid: ALERTS_VIEW, label: "🔔 Alerts" }, ...AGENTS];
+  for (const a of tabs) {
     const btn = document.createElement("button");
-    btn.textContent = a.label;
-    btn.className = (a.uid === peer) ? "active" : "";
+    const count = (a.uid === ALERTS_VIEW) ? unseenAlerts : (unread[a.uid] || 0);
+    btn.textContent = a.label + (count ? "  " + count : "");
+    btn.className = (a.uid === peer ? "active " : "") + (count ? "badged" : "");
     btn.onclick = () => selectPeer(a.uid);
     el.peers.appendChild(btn);
   }
+  // Alerts also drive the tab title, so a page left open shows the count.
+  document.title = unseenAlerts ? `(${unseenAlerts}) SREChat` : "SREChat";
 }
 
 async function selectPeer(uid) {
   peer = uid;
-  renderPeers();
   el.log.innerHTML = "";
+  if (uid === ALERTS_VIEW) {
+    el.composer.hidden = true;
+    unseenAlerts = 0;
+    renderPeers();
+    renderAlerts();
+    return;
+  }
+  el.composer.hidden = false;
+  unread[uid] = 0;
+  renderPeers();
   seen[peer] = 0;
   await loadHistory();
+}
+
+// Load existing history for every watched agent BEFORE polling starts, so past
+// alerts are visible in the feed but don't each fire a banner. Without this the
+// first poll treats all history as new and pages you for week-old incidents.
+async function primeAlerts() {
+  for (const uid of WATCHED) {
+    try {
+      const r = await api("GET", `/users/${encodeURIComponent(uid)}/messages?per_page=30`);
+      for (const m of (r.data || [])) {
+        if (m.type !== "text") continue;
+        seen[uid] = Math.max(seen[uid] || 0, Number(m.id) || 0);
+        const text = (m.data && m.data.text) || "";
+        if ((text.startsWith("🔔") || text.startsWith("🧪")) && m.sender !== me) {
+          alerts.push({ text, from: m.sender });
+        }
+      }
+    } catch (e) { /* a peer with no history is fine */ }
+  }
+}
+
+// The alert feed: every 🔔 from any agent, newest last, labelled with who saw it.
+function renderAlerts() {
+  el.log.innerHTML = "";
+  if (!alerts.length) {
+    bubble("No alerts. You'll see node/agent failures and error spikes here, from whichever cloud is still alive to report them.", "system", "system");
+    return;
+  }
+  for (const a of alerts.slice(-60)) bubble(a.text, a.from, "alert");
 }
 
 async function loadHistory() {
@@ -187,21 +246,49 @@ function renderMessage(m, isHistory) {
   }
 }
 
+// Poll EVERY agent, not just the tab in view. An alert is most likely to come
+// from a cloud you're not looking at — the surviving one reporting the dead one
+// — so only polling the visible conversation is exactly how you miss a page.
 async function poll() {
-  if (!peer) return;
-  try {
-    const r = await api("GET", `/users/${encodeURIComponent(peer)}/messages?per_page=20`);
-    const fresh = (r.data || [])
-      .filter(m => m.type === "text" && (Number(m.id) || 0) > (seen[peer] || 0))
-      .sort((a,b) => (Number(a.id)||0) - (Number(b.id)||0));
-    for (const m of fresh) {
-      renderMessage(m, false);
-      seen[peer] = Math.max(seen[peer] || 0, Number(m.id) || 0);
-    }
-    setDot(true);
-  } catch (e) {
-    setDot(false);
+  if (!token) return;
+  let ok = false;
+  for (const uid of WATCHED) {
+    try {
+      const r = await api("GET", `/users/${encodeURIComponent(uid)}/messages?per_page=20`);
+      ok = true;
+      const fresh = (r.data || [])
+        .filter(m => m.type === "text" && (Number(m.id) || 0) > (seen[uid] || 0))
+        .sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0));
+      for (const m of fresh) {
+        seen[uid] = Math.max(seen[uid] || 0, Number(m.id) || 0);
+        const text = (m.data && m.data.text) || "";
+        const isAlert = text.startsWith("🔔") || text.startsWith("🧪");
+        if (isAlert && m.sender !== me) {
+          alerts.push({ text, from: m.sender });
+          if (peer !== ALERTS_VIEW) { unseenAlerts++; notifyAlert(text, m.sender); }
+          if (peer === ALERTS_VIEW) bubble(text, m.sender, "alert");
+        }
+        if (uid === peer) renderMessage(m, false);
+        else if (m.sender !== me && !isAlert) unread[uid] = (unread[uid] || 0) + 1;
+      }
+    } catch (e) { /* one peer failing shouldn't stop the rest */ }
   }
+  renderPeers();
+  setDot(ok);
+}
+
+// Make a new alert impossible to miss while the app is open: a banner at the
+// top that stays until acknowledged, plus a vibration where supported.
+function notifyAlert(text, from) {
+  try { if (navigator.vibrate) navigator.vibrate([120, 60, 120]); } catch {}
+  let bar = document.getElementById("alertbar");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "alertbar";
+    bar.onclick = () => { selectPeer(ALERTS_VIEW); bar.remove(); };
+    document.body.appendChild(bar);
+  }
+  bar.textContent = `🔔 ${from}: ${text.replace(/^🔔\s*/, "").split("\n")[0].slice(0, 90)} — tap to view`;
 }
 
 function setDot(ok) { el.dot.className = ok ? "ok" : "bad"; }
@@ -225,7 +312,8 @@ async function signIn(tok, name) {
     el.log.hidden = false;
     el.composer.hidden = false;
     renderPeers();
-    await selectPeer(AGENTS[0].uid);
+    await primeAlerts();
+    await selectPeer(ALERTS_VIEW);
     startPolling();
   } catch (e2) {
     try { localStorage.removeItem("sre_token"); } catch {}
