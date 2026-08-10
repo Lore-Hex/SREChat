@@ -14,22 +14,22 @@ access.
 
 ## What each agent can do
 
-| Region | Cloud | Default model | Authority |
-|---|---|---|---|
-| 0 | GCP us-central1 | **Kimi K3** (`moonshotai/kimi-k3`) | reads GCP + restarts region-0 containers |
-| 1 | AWS us-east-1 | **GLM 5.2-Fast** (`z-ai/glm-5.2-fast`) | **read-only monitor** |
-| 2 | Azure austriaeast | **DeepSeek 0731** (`deepseek/deepseek-v4-flash-0731`) | **read-only monitor** |
+| Region | Cloud | Default model |
+|---|---|---|
+| 0 | GCP us-central1 | **Kimi K3** (`moonshotai/kimi-k3`) |
+| 1 | AWS us-east-1 | **GLM 5.2-Fast** (`z-ai/glm-5.2-fast`) |
+| 2 | Azure austriaeast | **DeepSeek 0731** (`deepseek/deepseek-v4-flash-0731`) |
 
-Only region 0 (GCP) can act — read GCP and restart its *own* containers. Regions
-1 and 2 are **read-only** by design, so AWS and Azure stay independent failure
-domains: an agent that could act on all three would erase the very property the
-architecture exists to provide. Every agent can still *report* on all three
-regions (health, replication/convergence) and inspect its own VM's containers,
-logs, and WireGuard mesh.
+**Every agent is read-only by default** — safe to DM. It reports on all three
+regions (health, replication/convergence) and inspects its own VM's containers,
+logs, and WireGuard mesh, but changes nothing. Chat content is treated as
+**untrusted input**: the tool allowlist is enforced in code and keyword-routed,
+so no message — however it's phrased — can make the agent do more than look.
 
-Chat content is treated as **untrusted input**: the tool allowlist is enforced in
-code and keyword-routed, so no message — however it's phrased — can make the
-agent exceed the tools its region grants it.
+If you want an agent that can also restart region 0's own containers, it's a
+one-line opt-in — see [Enabling actions](#enabling-actions-optional) below.
+It only ever takes effect on region 0 (GCP); AWS and Azure stay pure monitors so
+those clouds remain independent failure domains.
 
 ## Prerequisites
 
@@ -86,10 +86,21 @@ in as yourself and set **talk to** = `sre-agent-0` (GCP), `sre-agent-1` (AWS), o
 - *is everything healthy?* → probes all three regions
 - *are the regions converging?* → writes a probe in every region and checks it replicates
 - *show me the app logs* / *containers* / *wireguard*
-- *show the GCP instances / DNS* (region 0 only)
-- *restart the app* (region 0 only)
 
 `help` lists what the agent you're talking to can do.
+
+## Enabling actions (optional)
+
+By default every agent is read-only. To let the **region 0 (GCP)** agent also
+read GCP and restart its own containers, opt in with one env var:
+
+```bash
+SRE_ALLOW_ACTIONS=true ./run-agent.sh 0
+```
+
+Then it will answer *show the GCP instances / DNS* and *restart the app*. This
+only has any effect on region 0 (where `gcloud` and `docker` are reachable); the
+AWS and Azure agents ignore it and stay read-only monitors on purpose.
 
 ## Configuration (environment variables)
 
@@ -98,7 +109,8 @@ in as yourself and set **talk to** = `sre-agent-0` (GCP), `sre-agent-1` (AWS), o
 | `TR_API_KEY` | — | TrustedRouter API key (required for the LLM; without it the agent still runs tools) |
 | `TR_MODEL` | `trustedrouter/cheap` | primary model; **always** falls back to `trustedrouter/auto` |
 | `SRE_HOST` | `sre0.trustedrouter.com` | which master's API to talk to (region is inferred from `sreN`) |
-| `SRE_REGION_INDEX` | inferred from host | force the region (0 actionable, 1/2 read-only) |
+| `SRE_REGION_INDEX` | inferred from host | force the region |
+| `SRE_ALLOW_ACTIONS` | `false` (read-only) | opt in to GCP reads + region-0 restarts (region 0 only) |
 | `SRE_AGENT_UID` | `sre-agent-<region>` | the agent's chat identity |
 | `SRE_DEPLOY_DIR` | auto (`~/SREChat` or `~/RoachChat`) | deploy dir the region-0 restart tool drives |
 | `SRE_POLL_SECONDS` | `3` | chat poll interval |

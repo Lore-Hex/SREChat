@@ -103,16 +103,16 @@ fronts every provider with retries and regional/alias failover):
 ```bash
 git clone https://github.com/Lore-Hex/SREChat.git && cd SREChat/agent
 export TR_API_KEY=sk-tr-...
-./run-agent.sh 0   # GCP   — Kimi K3        (moonshotai/kimi-k3),        can act
-./run-agent.sh 1   # AWS   — GLM 5.2-Fast   (z-ai/glm-5.2-fast),         read-only
-./run-agent.sh 2   # Azure — DeepSeek 0731  (deepseek/deepseek-v4-flash-0731), read-only
+./run-agent.sh 0   # GCP   — Kimi K3       (moonshotai/kimi-k3)
+./run-agent.sh 1   # AWS   — GLM 5.2-Fast  (z-ai/glm-5.2-fast)
+./run-agent.sh 2   # Azure — DeepSeek 0731 (deepseek/deepseek-v4-flash-0731)
 ```
 
-Only the GCP agent can act (read GCP, restart its own containers); the AWS and
-Azure agents are **read-only monitors**, keeping those clouds independent failure
-domains. Chat content is untrusted input — the tool allowlist is enforced in code,
-so no message can make an agent exceed its region's authority. Full setup,
-per-region models, systemd unit, and configuration: **[agent/README.md](agent/README.md)**.
+Every agent is **read-only by default** — safe to DM, it can't change anything.
+Chat content is untrusted input, and the tool allowlist is enforced in code, so
+no message can make it do more than look. (Restarting region 0's own containers
+is an opt-in you can enable in config.) Full setup, per-region models, systemd
+unit, and configuration: **[agent/README.md](agent/README.md)**.
 
 ## Important compatibility note
 
