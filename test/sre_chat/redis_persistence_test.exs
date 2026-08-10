@@ -342,7 +342,9 @@ defmodule SREChat.RedisPersistenceTest do
   test "local JWT auth refreshes the underlying token and user keys", context do
     with_redis(context, fn ->
       assert {:ok, first_me} = Store.me("uid:local-jwt-refresh-user")
-      assert first_me["jwt"] =~ "local."
+      # A structurally valid JWT, not the old undecodable "local." marker.
+      assert [header, _payload, _sig] = String.split(first_me["jwt"], ".", parts: 3)
+      assert {:ok, _} = Base.url_decode64(header, padding: false)
 
       external_user =
         context

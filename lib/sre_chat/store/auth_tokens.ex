@@ -5,6 +5,29 @@ defmodule SREChat.Store.AuthTokens do
 
   @sdk_jwt_advisory_ttl_seconds 24 * 60 * 60
 
+  # A real base64url JWT header, not the literal marker "local" this used to
+  # emit. "local" is 5 characters, and a base64 segment can never have a length
+  # of 1 more than a multiple of 4 — so the token was structurally undecodable.
+  # The JS SDK never looks inside it and passed it around happily; the iOS SDK
+  # decodes it, gets nil, and per its own log line "jwtToken found nil calling
+  # disconnect" it tears the socket down BEFORE dialling. That is why the native
+  # client connected to nothing at all while REST worked perfectly.
+  @jwt_header Base.url_encode64(~s({"alg":"HS256","typ":"JWT"}), padding: false)
+
+  @doc """
+  True when a token CLAIMS to be one of our local JWTs, whichever header it
+  carries. Callers use this to route a credential to JWT verification rather
+  than treating it as an opaque token.
+
+  Deliberately a shared predicate: the "local." prefix used to be spelled out in
+  four different files, so changing the header fixed the client and silently
+  broke the WebSocket's credential classification and the store's auth branch.
+  """
+  def local_jwt_shaped?(token) do
+    token = to_s(token)
+    String.starts_with?(token, "local.") or String.starts_with?(token, @jwt_header <> ".")
+  end
+
   def local_jwt(uid, auth_token, now \\ Time.now()) do
     payload =
       %{
@@ -16,7 +39,7 @@ defmodule SREChat.Store.AuthTokens do
       |> Jason.encode!()
       |> Base.url_encode64(padding: false)
 
-    "local." <> payload <> "." <> signature(payload)
+    @jwt_header <> "." <> payload <> "." <> signature(payload)
   end
 
   def lookup_tokens(token) do
@@ -50,7 +73,12 @@ defmodule SREChat.Store.AuthTokens do
   end
 
   def local_jwt_token(token) do
-    with ["local", payload, token_signature] <- String.split(to_s(token), ".", parts: 3),
+    # Accept both headers: tokens minted before the fix carry the legacy "local"
+    # marker and are still in clients' hands, so rejecting them would sign
+    # everyone out. The signature covers the payload in both cases — the header
+    # was never signed material, so nothing about the security changes.
+    with [header, payload, token_signature] when header in ["local", @jwt_header] <-
+           String.split(to_s(token), ".", parts: 3),
          true <- valid_signature?(payload, token_signature),
          {:ok, json} <- Base.url_decode64(payload, padding: false),
          {:ok, %{"token" => auth_token} = payload_map} <- Jason.decode(json),
@@ -93,8 +121,14 @@ defmodule SREChat.Store.AuthTokens do
     end
   end
 
-  defp opaque_token_candidates("local." <> _invalid_jwt), do: []
-  defp opaque_token_candidates(token), do: [token]
+  # A token that CLAIMS to be one of our JWTs but failed verification must never
+  # be retried as an opaque stored token — that would let a tampered or
+  # stale-secret credential match a real token by string equality. This keyed on
+  # the "local." prefix, so changing the header to a proper base64 JWT header
+  # silently reopened the fallback; match on either header instead.
+  defp opaque_token_candidates(token) do
+    if local_jwt_shaped?(token), do: [], else: [token]
+  end
 
   defp valid_signature?(payload, token_signature) do
     secure_compare(to_s(token_signature), signature(payload))

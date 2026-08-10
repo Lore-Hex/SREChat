@@ -77,6 +77,46 @@ defmodule SREChat.IosLoginContractTest do
     end
   end
 
+  test "the login JWT is structurally decodable" do
+    # The fourth iOS defect. The header segment used to be the literal string
+    # "local" — 5 characters, and a base64 segment can never be 1 more than a
+    # multiple of 4, so the token could not be decoded by anything that tried.
+    # The JS SDK never looks inside it; the iOS SDK does, gets nil, and by its
+    # own log line ("jwtToken found nil calling disconnect") tears the socket
+    # down BEFORE dialling — which is why the native client made zero WebSocket
+    # attempts while every REST call succeeded.
+    alias SREChat.Store.AuthTokens
+
+    jwt = AuthTokens.local_jwt("alice", "uid:alice")
+    assert [header, payload, _signature] = String.split(jwt, ".", parts: 3)
+
+    assert {:ok, header_json} = Base.url_decode64(header, padding: false)
+    assert %{"alg" => _, "typ" => "JWT"} = Jason.decode!(header_json)
+
+    assert {:ok, payload_json} = Base.url_decode64(payload, padding: false)
+    assert %{"uid" => "alice", "token" => "uid:alice"} = Jason.decode!(payload_json)
+
+    # Every segment must be valid base64url, which is what "decodable" means to
+    # a strict client.
+    for segment <- String.split(jwt, ".") do
+      assert rem(String.length(segment), 4) != 1,
+             "segment #{segment} has an impossible base64 length"
+    end
+  end
+
+  test "tokens minted before the JWT header fix still authenticate" do
+    # Those are in clients' hands right now; rejecting them signs everyone out.
+    alias SREChat.Store.AuthTokens
+
+    jwt = AuthTokens.local_jwt("alice", "uid:alice")
+    [_header, payload, signature] = String.split(jwt, ".", parts: 3)
+
+    assert {:ok, "uid:alice"} = AuthTokens.local_jwt_token(jwt)
+    assert {:ok, "uid:alice"} = AuthTokens.local_jwt_token("local.#{payload}.#{signature}")
+    # But an arbitrary header is still not a free pass.
+    assert :error = AuthTokens.local_jwt_token("bogus.#{payload}.#{signature}")
+  end
+
   test "the iOS SDK is recognised by its resource header" do
     assert Config.ios_client?("ios-4_1_7-abc123")
     refute Config.ios_client?("js-4_0_0-abc123")

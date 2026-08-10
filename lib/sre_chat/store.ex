@@ -2040,7 +2040,7 @@ defmodule SREChat.Store do
         state = put_in(state, ["tokens", uid_token], user["uid"])
         {{:ok, user}, state}
 
-      String.starts_with?(token, "local.") ->
+      AuthTokens.local_jwt_shaped?(token) ->
         authenticate_local_jwt(state, token)
 
       true ->

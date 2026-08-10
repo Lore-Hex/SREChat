@@ -51,8 +51,11 @@ defmodule SREChat.StoreRegressionTest do
     assert {:ok, %{"uid" => "alice"}} = Store.me(jwt)
     refute String.ends_with?(jwt, ".unsigned")
 
-    tampered = String.replace(jwt, "local.", "localx.", global: false)
-    assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.me(tampered)
+    # Tamper the header itself rather than a hardcoded "local." prefix — that
+    # prefix no longer exists, so the old form silently replaced nothing and
+    # asserted a VALID token was rejected.
+    [header, rest] = String.split(jwt, ".", parts: 2)
+    assert {:error, %{"code" => "ERR_NO_AUTH"}} = Store.me("x#{header}.#{rest}")
 
     expired = AuthTokens.local_jwt("alice", token, Time.now() - 90_000)
     assert {:ok, %{"uid" => "alice"}} = Store.me(expired)
@@ -78,8 +81,13 @@ defmodule SREChat.StoreRegressionTest do
 
     assert {:ok, ^token} = AuthTokens.local_jwt_token(jwt)
 
-    ["local", encoded_payload, signature] = String.split(jwt, ".", parts: 3)
+    [header, encoded_payload, signature] = String.split(jwt, ".", parts: 3)
     assert signature != "unsigned"
+
+    # The header must be a real, decodable JWT header now — the literal "local"
+    # was undecodable base64 and made the iOS SDK drop its socket.
+    assert {:ok, header_json} = Base.url_decode64(header, padding: false)
+    assert %{"typ" => "JWT"} = Jason.decode!(header_json)
 
     payload_map = encoded_payload |> Base.url_decode64!(padding: false) |> Jason.decode!()
     assert payload_map["uid"] == "jwt-edge"
@@ -95,6 +103,7 @@ defmodule SREChat.StoreRegressionTest do
 
     assert :error = AuthTokens.local_jwt_token(legacy_unsigned)
     assert :error = AuthTokens.local_jwt_token("local.not-base64.signature")
+    assert :error = AuthTokens.local_jwt_token("#{header}.not-base64.signature")
 
     tampered_payload =
       payload_map
@@ -103,6 +112,7 @@ defmodule SREChat.StoreRegressionTest do
       |> Base.url_encode64(padding: false)
 
     assert :error = AuthTokens.local_jwt_token("local." <> tampered_payload <> "." <> signature)
+    assert :error = AuthTokens.local_jwt_token(header <> "." <> tampered_payload <> "." <> signature)
 
     Application.put_env(:sre_chat, :local_jwt_secret, "jwt-secret-b")
     assert :error = AuthTokens.local_jwt_token(jwt)

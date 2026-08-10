@@ -380,8 +380,14 @@ defmodule SREChatWeb.WSHandler do
 
   defp present?(value), do: to_s(value) != ""
 
-  defp credential_kind("local." <> _rest), do: "sdk_jwt"
   defp credential_kind(value) when value in [nil, "", false], do: "missing"
+
+  defp credential_kind(token) when is_binary(token) do
+    # Shape check, not a prefix literal: the JWT header changed and a literal
+    # here would have silently reclassified every SDK socket credential.
+    if SREChat.Store.AuthTokens.local_jwt_shaped?(token), do: "sdk_jwt", else: "opaque"
+  end
+
   defp credential_kind(_value), do: "opaque"
 
   defp close_reason({:remote, code, _text}), do: "remote_#{code}"
