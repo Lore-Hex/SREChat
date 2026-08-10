@@ -18,3 +18,4 @@ erl_crash.dump
 .sre-*
 *.pem
 deploy/.env
+__pycache__/

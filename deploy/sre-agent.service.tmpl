@@ -1,0 +1,26 @@
+# systemd unit for one SREAgent. Render with envsubst, giving TR_API_KEY and
+# SRE_REGION (0=GCP/actionable, 1=AWS, 2=Azure):
+#
+#   sudo TR_API_KEY=sk-tr-... SRE_REGION=0 \
+#     bash -c 'envsubst < deploy/sre-agent.service.tmpl > /etc/systemd/system/sre-agent.service'
+#   sudo systemctl daemon-reload && sudo systemctl enable --now sre-agent
+#
+# Assumes the repo is checked out at /home/<user>/SREChat (or legacy RoachChat).
+[Unit]
+Description=SREAgent (region ${SRE_REGION}) — SREChat monitor on TrustedRouter
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=TR_API_KEY=${TR_API_KEY}
+# run-agent.sh sets SRE_HOST + the per-region default model from the region arg.
+ExecStart=/usr/bin/env bash %h/SREChat/agent/run-agent.sh ${SRE_REGION}
+Restart=always
+RestartSec=5
+# The agent needs sudo for docker/wg on the actionable (region 0) master; on the
+# read-only masters it never calls them. Adjust User= to a sudo-capable account.
+User=root
+
+[Install]
+WantedBy=multi-user.target
