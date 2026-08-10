@@ -9,10 +9,10 @@ It speaks a CometChat-compatible wire protocol, so the CometChat JavaScript,
 React Native, and iOS SDKs talk to it directly by overriding their host —
 `CometChat.login`, `sendMessage`, `MessagesRequestBuilder`,
 `ConversationsRequestBuilder`, listeners, and reactions all work unchanged.
-It descends from [SREChat](https://github.com/Lore-Hex/SREChat), which
+It descends from [OpenChat](https://github.com/Lore-Hex/OpenChat), which
 provides that compatibility layer; SREChat adds the multi-master half.
 
-**License:** AGPL-3.0-or-later (inherited from SREChat).
+**License:** AGPL-3.0-or-later (inherited from OpenChat).
 
 ## How the multi-master part works
 
@@ -87,6 +87,32 @@ wss://<CHAT_HOST>:<CHAT_WSS_PORT>
 ```
 
 SREChat accepts WebSocket connections at `/`, `/ws`, and `/socket`. It handles the SDK auth event, broadcasts messages/actions/reactions, and processes read receipts.
+
+## Monitoring agents (SREAgent)
+
+Put an AI agent on every master and you can DM your deployment. `agent/sre_agent.py`
+joins SREChat as an ordinary user and answers operational questions in plain
+English — *is everything healthy? are the regions converging? show me the app
+logs; restart the app* — running the real checks and summarizing them.
+
+Run one per cloud, each with its own model, each falling back to
+`trustedrouter/auto` so a single provider outage never leaves it without a brain
+(that's where the ~5-nines "always answers" comes from — [TrustedRouter](https://trustedrouter.com)
+fronts every provider with retries and regional/alias failover):
+
+```bash
+git clone https://github.com/Lore-Hex/SREChat.git && cd SREChat/agent
+export TR_API_KEY=sk-tr-...
+./run-agent.sh 0   # GCP   — Kimi K3        (moonshotai/kimi-k3),        can act
+./run-agent.sh 1   # AWS   — GLM 5.2-Fast   (z-ai/glm-5.2-fast),         read-only
+./run-agent.sh 2   # Azure — DeepSeek 0731  (deepseek/deepseek-v4-flash-0731), read-only
+```
+
+Only the GCP agent can act (read GCP, restart its own containers); the AWS and
+Azure agents are **read-only monitors**, keeping those clouds independent failure
+domains. Chat content is untrusted input — the tool allowlist is enforced in code,
+so no message can make an agent exceed its region's authority. Full setup,
+per-region models, systemd unit, and configuration: **[agent/README.md](agent/README.md)**.
 
 ## Important compatibility note
 
