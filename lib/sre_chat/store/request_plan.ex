@@ -32,6 +32,19 @@ defmodule SREChat.Store.RequestPlan do
   def build({:list_users, _params}), do: read([{:bucket, "users"}])
   def build({:delete_user, uid}), do: mutate(user_scope(uid), [{"users", uid}])
 
+  # Device registration reads the user, merges one key into its metadata, and
+  # writes it back — so it must hydrate the record first. Without this clause
+  # both fall through to `build(_request) -> read([])` and get an empty
+  # `state["users"]`: forgetting a device answers "user not found", and
+  # registering one builds a BLANK user from nothing and persists it over the
+  # real record. Tests do not catch it because their state is entirely in
+  # memory; only a deployment that hydrates per request does.
+  def build({:register_device, uid, _attrs}),
+    do: mutate(user_scope(uid), user_record_keys(uid))
+
+  def build({:forget_device, uid, _token}),
+    do: mutate(user_scope(uid), user_record_keys(uid))
+
   def build({:reactivate_users, uids}) do
     mutate(
       Enum.flat_map(List.wrap(uids), &user_scope/1),

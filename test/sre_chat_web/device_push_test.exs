@@ -17,6 +17,39 @@ defmodule SREChatWeb.DevicePushTest do
     end
   end
 
+  # The in-memory test state hands every handler a fully populated
+  # `state["users"]`, but a deployment hydrates only the keys the request plan
+  # asks for. A Store call with no plan clause falls through to
+  # `build(_request) -> read([])`, which is silent: registering then builds a
+  # blank user over the real record and forgetting reports "user not found".
+  # Both were live in production and invisible to every test below, so assert
+  # the plan directly.
+  describe "request plan" do
+    alias SREChat.Store.RequestPlan
+
+    test "register_device hydrates the user record and takes its lock" do
+      plan = RequestPlan.build({:register_device, "alice", %{"token" => "t"}})
+      assert plan.mutating?
+      assert {"users", "alice"} in plan.refresh
+      assert {:user, "alice"} in plan.locks
+    end
+
+    test "forget_device hydrates the user record and takes its lock" do
+      plan = RequestPlan.build({:forget_device, "alice", "t"})
+      assert plan.mutating?
+      assert {"users", "alice"} in plan.refresh
+      assert {:user, "alice"} in plan.locks
+    end
+
+    test "an unplanned call is the silent fallback these clauses exist to avoid" do
+      # Documents the trap rather than asserting good behaviour: this is what
+      # both device calls used to get.
+      plan = RequestPlan.build({:no_such_store_call, "alice"})
+      refute plan.mutating?
+      assert plan.refresh == []
+    end
+  end
+
   test "registering a device stores it under the caller's own uid" do
     conn = auth_conn(:post, "/v3.0/me/devices", %{"token" => "abc123", "env" => "development"}, "uid:alice")
     assert conn.status == 200
