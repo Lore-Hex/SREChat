@@ -40,8 +40,15 @@ defmodule SREChat.Store.PersistenceOps do
     |> Enum.flat_map(&uid_token_with_user(state, &1))
   end
 
-  def uid_token_with_user(state, "uid:" <> uid = token) when uid != "" do
-    token(state, token) ++ user(state, [uid])
+  # Parse through AuthTokens rather than taking everything after "uid:" as the
+  # name. A gated token is "uid:<name>|<passcode>", so the naive split created a
+  # USER whose id contained the passcode — leaking the shared secret into the
+  # user list and every conversation that touched it.
+  def uid_token_with_user(state, "uid:" <> rest = token) when rest != "" do
+    case AuthTokens.uid_token(token) do
+      {:ok, uid} -> token(state, token) ++ user(state, [uid])
+      :error -> token(state, token)
+    end
   end
 
   def uid_token_with_user(state, token), do: token(state, token)
