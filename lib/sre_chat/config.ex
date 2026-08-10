@@ -228,7 +228,24 @@ defmodule SREChat.Config do
   end
 
   def settings do
-    %{
+    extensions = [
+      # `enabled` is NOT optional to clients. The CometChat iOS SDK force
+      # unwraps it while decoding the login response, so an entry without it
+      # crashes the app (SIGTRAP in loginCallToServerWith) before the login
+      # callback can fire — every iOS login died here, looking like a hang.
+      # The JS SDK tolerates its absence, which is why the web client worked
+      # and hid this for so long. `version` and `configuration` are included
+      # because the SDK reads them too; only `enabled` is load-bearing today.
+      %{
+        "id" => "reactions",
+        "name" => "reactions",
+        "enabled" => true,
+        "version" => "1.0",
+        "configuration" => %{}
+      }
+    ]
+
+    upper = %{
       "CHAT_HOST" => host(),
       "CHAT_HOST_OVERRIDE" => nil,
       "CHAT_HOST_APP_SPECIFIC" => nil,
@@ -250,25 +267,88 @@ defmodule SREChat.Config do
       "POLLING_ENABLED" => false,
       "DENY_FALLBACK_TO_POLLING" => false,
       "EXTENSION_DOMAIN" => extension_domain(),
-      # `enabled` is NOT optional to clients. The CometChat iOS SDK force
-      # unwraps it while decoding the login response, so an entry without it
-      # crashes the app (SIGTRAP in loginCallToServerWith) before the login
-      # callback can fire — every iOS login died here, looking like a hang.
-      # The JS SDK tolerates its absence, which is why the web client worked
-      # and hid this for so long. `version` and `configuration` are included
-      # because the SDK reads them too; only `enabled` is load-bearing today.
-      "extensions" => [
-        %{
-          "id" => "reactions",
-          "name" => "reactions",
-          "enabled" => true,
-          "version" => "1.0",
-          "configuration" => %{}
-        }
-      ],
+      "extensions" => extensions,
       "SECURED_MEDIA_HOST" => nil,
       "settingsHash" => "open-chat-0.1.0",
       "settingsHashReceivedAt" => SREChat.Time.now()
+    }
+
+    upper
+  end
+
+  # The iOS SDK decodes its settings model from camelCase keys (chatHost,
+  # chatWssPort, the whole webRTC* group); the JS SDK reads the UPPER_SNAKE keys
+  # from settings/0. The two CANNOT be merged into one response: the Swift
+  # decoder uses convertFromSnakeCase, so CHAT_WSS_PORT and chatWssPort collide
+  # and the WHOLE settings object decodes to nil — after which
+  # CometChatSocketController.connect() force-unwraps the now-nil port and
+  # SIGTRAPs, right after a SUCCESSFUL login (so it looks like login worked and
+  # the app vanished). Proven by clean-device bisection: both casings together
+  # crash; camelCase alone is LOGIN OK into a live chat UI.
+  #
+  # So each client gets ITS OWN casing, selected at the HTTP boundary by the
+  # CometChat `resource` header (ios-* vs js-*). This is camel-only, for iOS.
+  # This is the same bug family as extensions.enabled and wsChannel above, one
+  # field deeper.
+  def ios_settings do
+    extensions = [
+      %{
+        "id" => "reactions",
+        "name" => "reactions",
+        "enabled" => true,
+        "version" => "1.0",
+        "configuration" => %{}
+      }
+    ]
+
+    camel_settings(extensions)
+  end
+
+  # True when the request came from the CometChat iOS SDK, which sends a
+  # `resource` header shaped `ios-<version>-<token>`. The direct-REST web client
+  # sends no such header, so it falls through to the default (UPPER) settings.
+  def ios_client?(resource) when is_binary(resource),
+    do: String.starts_with?(resource, "ios")
+
+  def ios_client?(_), do: false
+
+  # The Swift settings model is not partially decodable: omit a non-optional
+  # field it expects (any port, or the webRTC block) and the whole object
+  # decodes to nil. The webRTC values are unused by chat but must be present and
+  # well-typed. Port stays a STRING — decoding it as Int broke the whole payload.
+  defp camel_settings(extensions) do
+    port = to_string(ws_port())
+
+    %{
+      "chatHost" => host(),
+      "clientAPIHost" => api_host(),
+      "apiHost" => api_host(),
+      "adminHost" => api_host(),
+      "mainDomain" => host(),
+      "analyticsHost" => host(),
+      "extensionDomain" => extension_domain(),
+      "chatAPIVersion" => "v3.0",
+      "wsAPIVersion" => "v3.0",
+      "region" => region(),
+      "mode" => "DEFAULT",
+      "chatWsPort" => port,
+      "chatWssPort" => port,
+      "chatHTTPBindPort" => "80",
+      "chatHTTPSBindPort" => "443",
+      "chatUseSSL" => use_ssl?(),
+      # webRTC is not used by chat, but the settings model still decodes these
+      # fields, so they must be present and correctly typed.
+      "webrtcHost" => host(),
+      "webRTCAPISubdomain" => host(),
+      "webrtcWsPort" => port,
+      "webrtcWssPort" => port,
+      "webrtcHTTPBindPort" => "80",
+      "webrtcHTTPSBindPort" => "443",
+      "webrtcUseSSL" => use_ssl?(),
+      "chatHostOverride" => nil,
+      "chatHostAppSpecific" => nil,
+      "extensions" => extensions,
+      "settingsHash" => "open-chat-0.1.0"
     }
   end
 

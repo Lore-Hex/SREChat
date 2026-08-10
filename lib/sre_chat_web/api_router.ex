@@ -10,7 +10,7 @@ defmodule SREChatWeb.ApiRouter do
   plug(:dispatch)
 
   get "/settings" do
-    JSON.ok(conn, Config.settings())
+    JSON.ok(conn, client_settings(conn))
   end
 
   post "/users/:uid/auth_tokens" do
@@ -42,7 +42,7 @@ defmodule SREChatWeb.ApiRouter do
   get "/me" do
     with_user(conn, fn conn, _user, token ->
       case Store.me(token) do
-        {:ok, me} -> JSON.ok(conn, me)
+        {:ok, me} -> JSON.ok(conn, recase_me_settings(conn, me))
         {:error, e} -> JSON.error(conn, e, 401)
       end
     end)
@@ -51,7 +51,7 @@ defmodule SREChatWeb.ApiRouter do
   put "/me" do
     with_user(conn, fn conn, _user, token ->
       case Store.me(token) do
-        {:ok, me} -> JSON.ok(conn, me)
+        {:ok, me} -> JSON.ok(conn, recase_me_settings(conn, me))
         {:error, e} -> JSON.error(conn, e, 401)
       end
     end)
@@ -884,6 +884,27 @@ defmodule SREChatWeb.ApiRouter do
         "for" => %{"entityType" => "group", "entity" => group}
       }
     })
+  end
+
+  # Settings casing is per-client (see Config.ios_settings/0): the iOS SDK's
+  # settings model collides on our dual-cased keys and crashes, so it gets a
+  # camelCase-only object; everyone else keeps the UPPER_SNAKE default.
+  defp client_settings(conn) do
+    if Config.ios_client?(resource_header(conn)),
+      do: Config.ios_settings(),
+      else: Config.settings()
+  end
+
+  defp recase_me_settings(conn, %{"settings" => _} = me) do
+    if Config.ios_client?(resource_header(conn)),
+      do: Map.put(me, "settings", Config.ios_settings()),
+      else: me
+  end
+
+  defp recase_me_settings(_conn, me), do: me
+
+  defp resource_header(conn) do
+    conn |> get_req_header("resource") |> List.first()
   end
 
   defp blank?(v), do: v in [nil, "", false]

@@ -7,11 +7,31 @@ defmodule SREChatWeb.Endpoint do
 
   plug(:cors)
   plug(:security_headers)
+  plug(:collapse_duplicate_version)
   plug(:instrument_request)
   plug(:parse_body)
 
   plug(:match)
   plug(:dispatch)
+
+  # The CometChat iOS SDK is inconsistent about the API-version prefix: it uses
+  # the configured host verbatim for the login/`/me` call but ALSO prepends
+  # `chatAPIVersion` for message calls. With a host that already carries the
+  # version, message fetches arrive as `/v3.0/v3.0/users/.../messages` and match
+  # nothing, so fetch returns 404 and the SDK's callback hangs. Rather than force
+  # every client to a bare host — which breaks the calls that expect the version
+  # baked in — collapse a doubled leading version segment here, so both shapes
+  # resolve to the same route. Idempotent for every well-formed single-version
+  # path.
+  defp collapse_duplicate_version(conn, _opts) do
+    case conn.path_info do
+      [v, v | rest] when v in ["v3.0", "v3"] ->
+        %{conn | path_info: [v | rest]}
+
+      _ ->
+        conn
+    end
+  end
 
   get "/health" do
     send_resp(conn, 200, "ok")
