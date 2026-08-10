@@ -44,8 +44,16 @@ COPYFILE_DISABLE=1 tar czf - lib priv config mix.exs mix.lock Dockerfile agent 2
     test "$dupes" -eq 1 || { echo "ABORT: SREChat.Config defined in $dupes files"; exit 1; }
 
     cd ~/RoachChat
-    for d in lib priv config agent; do rm -rf "$d" && mv ".stage/$d" "$d"; done
-    mv .stage/mix.exs .stage/mix.lock .stage/Dockerfile .
+    # lib/config/agent are only read at build time, so replacing the directory
+    # wholesale is safe and is what removes orphaned files.
+    for d in lib config agent; do rm -rf "$d" && mv ".stage/$d" "$d"; done
+
+    # priv is DIFFERENT: Caddy bind-mounts priv/web to serve the client, and a
+    # bind mount follows the inode. `rm -rf priv` detaches it and every request
+    # to /app 404s until caddy is recreated — the web client went down exactly
+    # this way. Sync the contents in place instead, so the inode survives.
+    mkdir -p priv/web
+    cp -a .stage/priv/. priv/
     rm -rf .stage
     find . -name "._*" -delete
   '
