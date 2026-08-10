@@ -60,6 +60,11 @@
   .row.theirs .bubble { background:var(--theirs); color:var(--theirs-fg); border-bottom-left-radius:5px; }
   .row.mine .bubble { background:var(--mine); color:var(--mine-fg); border-bottom-right-radius:5px; }
   .who { display:block; font-size:11px; opacity:.65; margin-bottom:2px; }
+  /* Timestamp on every message. Small and low-contrast so a wall of chat still
+     reads as chat, but present on each bubble: when an agent pages you, the
+     first question is always "when did this start?" */
+  .ts { display:block; font-size:10px; opacity:.55; margin-top:3px; text-align:right; font-variant-numeric:tabular-nums; }
+  .row.system .ts, .row.alert .ts { text-align:left; }
   .row.system .bubble { background:transparent; color:var(--muted); font-size:13px; max-width:100%; text-align:center; }
   .row.alert .bubble { background:#fff7ed; color:#9a3412; border:1px solid #fdba74; max-width:100%; }
   @media (prefers-color-scheme: dark){ .row.alert .bubble { background:#2a1a0e; color:#fdba74; border-color:#7c3d12; } }
@@ -145,7 +150,24 @@ async function api(method, path, body) {
   return json;
 }
 
-function bubble(text, who, kind) {
+// Messages carry `sentAt` as Unix SECONDS. Anything past ~2001 in milliseconds
+// is over 1e12, so that threshold tells the two apart and a future backend that
+// switches units can't silently render every message as 1970.
+function fmtStamp(sentAt) {
+  const n = Number(sentAt);
+  if (!isFinite(n) || n <= 0) return null;
+  const d = new Date(n > 1e12 ? n : n * 1000);
+  if (isNaN(d.getTime())) return null;
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return time;
+  const opts = d.getFullYear() === now.getFullYear()
+    ? { month: "short", day: "numeric" }
+    : { year: "numeric", month: "short", day: "numeric" };
+  return d.toLocaleDateString([], opts) + ", " + time;
+}
+
+function bubble(text, who, kind, sentAt) {
   const row = document.createElement("div");
   row.className = "row " + kind;                // mine | theirs | system | alert
   const b = document.createElement("div");
@@ -154,6 +176,16 @@ function bubble(text, who, kind) {
     const w = document.createElement("span"); w.className = "who"; w.textContent = who; b.appendChild(w);
   }
   b.appendChild(document.createTextNode(text));
+  const stamp = fmtStamp(sentAt);
+  if (stamp) {
+    const t = document.createElement("span");
+    t.className = "ts";
+    t.textContent = stamp;
+    // Full absolute time on hover/long-press: the short form drops the date for
+    // today's messages, and during an incident you want the exact second.
+    t.title = new Date(Number(sentAt) > 1e12 ? Number(sentAt) : Number(sentAt) * 1000).toString();
+    b.appendChild(t);
+  }
   row.appendChild(b);
   el.log.appendChild(row);
   el.log.scrollTop = el.log.scrollHeight;
@@ -203,7 +235,7 @@ async function primeAlerts() {
         seen[uid] = Math.max(seen[uid] || 0, Number(m.id) || 0);
         const text = (m.data && m.data.text) || "";
         if ((text.startsWith("🔔") || text.startsWith("🧪")) && m.sender !== me) {
-          alerts.push({ text, from: m.sender });
+          alerts.push({ text, from: m.sender, at: Number(m.sentAt) || 0 });
         }
       }
     } catch (e) { /* a peer with no history is fine */ }
@@ -217,7 +249,7 @@ function renderAlerts() {
     bubble("No alerts. You'll see node/agent failures and error spikes here, from whichever cloud is still alive to report them.", "system", "system");
     return;
   }
-  for (const a of alerts.slice(-60)) bubble(a.text, a.from, "alert");
+  for (const a of alerts.slice(-60)) bubble(a.text, a.from, "alert", a.at);
 }
 
 async function loadHistory() {
@@ -238,11 +270,12 @@ async function loadHistory() {
 function renderMessage(m, isHistory) {
   const text = (m.data && m.data.text) || "";
   const from = m.sender;
-  if (from === me) bubble(text, from, "mine");
+  const at = Number(m.sentAt) || 0;
+  if (from === me) bubble(text, from, "mine", at);
   else {
     // A message from an agent that starts with 🔔 is treated as an alert.
     const kind = text.startsWith("🔔") ? "alert" : "theirs";
-    bubble(text, from, kind);
+    bubble(text, from, kind, at);
   }
 }
 
@@ -264,9 +297,9 @@ async function poll() {
         const text = (m.data && m.data.text) || "";
         const isAlert = text.startsWith("🔔") || text.startsWith("🧪");
         if (isAlert && m.sender !== me) {
-          alerts.push({ text, from: m.sender });
+          alerts.push({ text, from: m.sender, at: Number(m.sentAt) || 0 });
           if (peer !== ALERTS_VIEW) { unseenAlerts++; notifyAlert(text, m.sender); }
-          if (peer === ALERTS_VIEW) bubble(text, m.sender, "alert");
+          if (peer === ALERTS_VIEW) bubble(text, m.sender, "alert", Number(m.sentAt) || 0);
         }
         if (uid === peer) renderMessage(m, false);
         else if (m.sender !== me && !isAlert) unread[uid] = (unread[uid] || 0) + 1;
@@ -348,7 +381,7 @@ el.composer.addEventListener("submit", async (e) => {
   const text = el.text.value.trim();
   if (!text || !peer) return;
   el.text.value = "";
-  bubble(text, me, "mine");                 // optimistic
+  bubble(text, me, "mine", Math.floor(Date.now() / 1000));   // optimistic
   try {
     const sent = await api("POST", "/messages", {
       receiver: peer, receiverType: "user", category: "message",
