@@ -23,6 +23,12 @@
   input { flex:1; min-width:0; }
   button { cursor:pointer; }
   #status { padding:8px 16px; font-size:13px; color:var(--muted); }
+  /* Keep the login form near the top, above the flex-grow log. Otherwise it
+     sits at the document bottom and an iOS WKWebView (100vh past the home
+     indicator) clips it, so the sign-in form is invisible in the app. Order
+     only reflows the flex children; post-login the form is hidden and the log
+     + composer take over normally. */
+  #login { order:1; } #log { order:2; } #composer { order:3; }
 </style>
 
 <header>
