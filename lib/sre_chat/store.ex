@@ -1613,7 +1613,16 @@ defmodule SREChat.Store do
             message =
               Entities.message(%{
                 "id" => id,
-                "muid" => params["muid"],
+                # muid must always be present and non-empty. The CometChat iOS
+                # SDK treats BaseMessage.muid as non-optional: it matches a sent
+                # message to its ack by muid (a missing one shows the message as
+                # failed), and force-unwraps it decoding an incoming message (a
+                # missing one stops the message rendering at all). The JS SDK
+                # tolerates its absence, which is why the web client worked and
+                # this stayed hidden. Echo the sender's muid when given (so their
+                # own send is confirmed); otherwise mint a stable server-side one
+                # from the id so every message the iOS SDK receives still decodes.
+                "muid" => muid_or_default(params["muid"], id),
                 "sender" => sender["uid"],
                 "receiver" => to_s(receiver),
                 "receiverType" => receiver_type,
@@ -1920,6 +1929,14 @@ defmodule SREChat.Store do
 
   defp conversation_id_for(uid, receiver_type, receiver),
     do: Conversations.conversation_id_for(uid, receiver_type, receiver)
+
+  # Client muid if it sent a non-empty one, else a stable server id. Never nil.
+  defp muid_or_default(client_muid, id) do
+    case to_s(client_muid) do
+      "" -> "srv-" <> to_string(id)
+      muid -> muid
+    end
+  end
 
   defp user_conversation_id(a, b), do: Conversations.user_conversation_id(a, b)
 
