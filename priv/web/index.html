@@ -232,6 +232,9 @@ function selectPeer(uid) {
   if (uid === ALERTS_VIEW) {
     el.composer.hidden = true;
     unseenAlerts = 0;
+    // Opening the alert feed is the acknowledgement: clear the iOS icon badge
+    // too, not just the in-app count.
+    try { window.webkit.messageHandlers.sreAlertsSeen.postMessage({}); } catch {}
     renderPeers();
     renderAlerts();
     return;
