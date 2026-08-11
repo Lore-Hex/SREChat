@@ -68,6 +68,11 @@ defmodule SREChatWeb.WSHandler do
   @impl true
   def websocket_init(state) do
     Observability.add_gauge("ws.active", 1)
+
+    if System.get_env("SRE_LOG_WS_LIFECYCLE") == "1" do
+      require Logger
+      Logger.info("WS_LIFE open")
+    end
     {:ok, state |> schedule_heartbeat() |> schedule_auth_timeout()}
   end
 
@@ -139,6 +144,18 @@ defmodule SREChatWeb.WSHandler do
     cancel_heartbeat(state)
     cancel_auth_timeout(state)
     Observability.add_gauge("ws.active", -1)
+
+    # Lifecycle only — uid, close reason, whether it ever authenticated. NEVER
+    # frame contents: those carry the credential, and a diagnostic that logs it
+    # writes the access passcode into container logs.
+    if System.get_env("SRE_LOG_WS_LIFECYCLE") == "1" do
+      require Logger
+
+      Logger.info(
+        "WS_LIFE close uid=#{inspect(state[:uid])} authed=#{authenticated?(state)} " <>
+          "reason=#{close_reason(reason)} raw=#{inspect(reason) |> String.slice(0, 80)}"
+      )
+    end
 
     Observability.record_ws("closed", %{
       "reason" => close_reason(reason),
@@ -218,6 +235,11 @@ defmodule SREChatWeb.WSHandler do
         uid = user["uid"]
         Observability.record_auth_attempt("websocket", "ok", present?(token))
         Observability.record_ws("auth_success", %{"credential" => credential_kind(token)})
+
+        if System.get_env("SRE_LOG_WS_LIFECYCLE") == "1" do
+          require Logger
+          Logger.info("WS_LIFE auth_ok uid=#{uid} credential=#{credential_kind(token)}")
+        end
         cancel_auth_timeout(state)
         state = replace_user_subscription(state, uid)
         state = sync_group_subscriptions(%{state | uid: uid})
