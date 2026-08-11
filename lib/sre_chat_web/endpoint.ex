@@ -7,6 +7,7 @@ defmodule SREChatWeb.Endpoint do
 
   plug(:cors)
   plug(:security_headers)
+  plug(:log_request_path)
   plug(:collapse_duplicate_version)
   plug(:instrument_request)
   plug(:parse_body)
@@ -23,6 +24,19 @@ defmodule SREChatWeb.Endpoint do
   # baked in — collapse a doubled leading version segment here, so both shapes
   # resolve to the same route. Idempotent for every well-formed single-version
   # path.
+  # Method and path only, never headers: the CometChat SDK sends its credential
+  # in an `authtoken` header, and that token's claims embed the access
+  # passcode, so a header-logging diagnostic writes the passcode to disk.
+  # Gated by SRE_LOG_PATHS=1 and off by default.
+  defp log_request_path(conn, _opts) do
+    if System.get_env("SRE_LOG_PATHS") == "1" do
+      require Logger
+      Logger.info("REQ #{conn.method} /#{Enum.join(conn.path_info, "/")}")
+    end
+
+    conn
+  end
+
   defp collapse_duplicate_version(conn, _opts) do
     case conn.path_info do
       [v, v | rest] when v in ["v3.0", "v3"] ->
