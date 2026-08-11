@@ -1,6 +1,19 @@
 # Per-region reverse proxy with automatic Let's Encrypt for PUBLIC_HOST.
 # Real cert (not `tls internal`) so the iOS CometChat SDK — which pins HTTPS
 # for overridden hosts and will not accept a self-signed cert — connects.
+{
+  # No HTTP/3. The only reason it was on is that it is Caddy's default, and it
+  # costs us: Caddy advertises it with an Alt-Svc header added to EVERY
+  # response — including the 101 that completes a WebSocket handshake, where a
+  # strict client has no business seeing it. `header_down -Alt-Svc` cannot
+  # remove it, because Caddy cannot rewrite a response whose connection it has
+  # already hijacked for the upgrade. Turning the protocol off is the only way
+  # to keep the handshake response clean.
+  servers {
+    protocols h1 h2
+  }
+}
+
 PUBLIC_HOST_PLACEHOLDER {
   # Static web client, served by this region. Everything else proxies to the
   # app. Listed first so /app doesn't fall through to the catch-all.

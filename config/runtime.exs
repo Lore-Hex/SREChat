@@ -69,6 +69,11 @@ config :sre_chat,
   port: integer_env.("PORT", 4000),
   host: public_host,
   ws_port: System.get_env("PUBLIC_WS_PORT") || System.get_env("PORT") || "4000",
+  # Optional listener that terminates TLS itself, bypassing the reverse proxy
+  # for the WebSocket. Unset = not started.
+  ws_tls_port: System.get_env("WS_TLS_PORT"),
+  ws_tls_certfile: System.get_env("WS_TLS_CERTFILE"),
+  ws_tls_keyfile: System.get_env("WS_TLS_KEYFILE"),
   use_ssl: System.get_env("CHAT_USE_SSL") != "false",
   access_secret: System.get_env("SRE_ACCESS_SECRET"),
   api_host: System.get_env("API_HOST"),

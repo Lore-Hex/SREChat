@@ -115,6 +115,29 @@ defmodule SREChat.Config do
   # localhost:4443:4443 and crash the client's socket URL builder.
   def api_host, do: Application.get_env(:sre_chat, :api_host) || host()
   def ws_port, do: Application.fetch_env!(:sre_chat, :ws_port)
+
+  # Optional direct-TLS listener (see Application.direct_tls_children/0). Unset
+  # means "no second listener", which is the default everywhere.
+  def ws_tls_port do
+    case Application.get_env(:sre_chat, :ws_tls_port) do
+      value when is_integer(value) and value > 0 -> value
+      value when is_binary(value) -> integer_or_nil(value)
+      _ -> nil
+    end
+  end
+
+  def ws_tls_certfile, do: presence(Application.get_env(:sre_chat, :ws_tls_certfile))
+  def ws_tls_keyfile, do: presence(Application.get_env(:sre_chat, :ws_tls_keyfile))
+
+  defp presence(value) when is_binary(value) and value != "", do: value
+  defp presence(_), do: nil
+
+  defp integer_or_nil(value) do
+    case Integer.parse(value) do
+      {int, ""} when int > 0 -> int
+      _ -> nil
+    end
+  end
   # Defaults true so production (behind TLS-terminating Caddy) is unchanged.
   # Set CHAT_USE_SSL=false only for a plain-HTTP local backend, where the
   # client SDKs must be told not to upgrade http/ws to https/wss.

@@ -19,7 +19,7 @@ defmodule SREChat.Application do
         SREChat.RedisBus,
         {Plug.Cowboy,
          scheme: :http, plug: SREChatWeb.Endpoint, options: [port: port, dispatch: dispatch()]}
-      ] ++ replication_children()
+      ] ++ direct_tls_children() ++ replication_children()
 
     case Supervisor.start_link(children, strategy: :one_for_one, name: SREChat.Supervisor) do
       {:ok, _pid} = result ->
@@ -28,6 +28,44 @@ defmodule SREChat.Application do
 
       other ->
         other
+    end
+  end
+
+  # An optional SECOND listener that terminates TLS itself, so a client can
+  # reach the WebSocket without a reverse proxy in the path.
+  #
+  # Caddy injects its own headers into the 101 that completes a WebSocket
+  # handshake (a duplicate `Server`, and `Alt-Svc` when HTTP/3 is on) and
+  # cannot be told not to — `header_down` has no effect on a response whose
+  # connection has already been hijacked for the upgrade. The CometChat iOS
+  # SDK intermittently rejects that handshake and then re-sends the upgrade
+  # request over its own upgraded socket, which is a protocol violation, so
+  # cowboy closes it and the SDK retries into a storm.
+  #
+  # Answering the handshake directly removes every proxy-added header from the
+  # equation. Off unless WS_TLS_PORT is set, so nothing changes for a
+  # deployment that does not want it.
+  defp direct_tls_children do
+    with port when is_integer(port) and port > 0 <- SREChat.Config.ws_tls_port(),
+         cert when is_binary(cert) <- SREChat.Config.ws_tls_certfile(),
+         key when is_binary(key) <- SREChat.Config.ws_tls_keyfile(),
+         true <- File.exists?(cert) and File.exists?(key) do
+      Logger.info("SREChat direct-TLS listener on :#{port}")
+
+      [
+        {Plug.Cowboy,
+         scheme: :https,
+         plug: SREChatWeb.Endpoint,
+         options: [
+           port: port,
+           dispatch: dispatch(),
+           certfile: cert,
+           keyfile: key,
+           otp_app: :sre_chat
+         ]}
+      ]
+    else
+      _ -> []
     end
   end
 
