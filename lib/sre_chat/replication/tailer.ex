@@ -36,7 +36,25 @@ defmodule SREChat.Replication.Tailer do
   # Renewed every tick (250ms), so a leader must miss 60 consecutive
   # renewals before the lease lapses to another node.
   @lease_ms 15_000
-  @batch_count 200
+  # Entries applied per tick. Deliberately small.
+  #
+  # At 200 a single batch takes minutes — it acquires a lock per record it
+  # touches, and ingest runs inside the Store GenServer, so every HTTP request
+  # queues behind it and the deployment answers 502 while it grinds. A region
+  # that fell hours behind therefore stops serving entirely, which is the
+  # opposite of what replication is for.
+  #
+  # Smaller batches do not drain faster in total, but they YIELD: the Store
+  # interleaves ingest with requests and the deployment keeps answering while
+  # it catches up. REPLICATION_BATCH_COUNT tunes it per deployment.
+  @default_batch_count 25
+
+  defp batch_count do
+    case Integer.parse(System.get_env("REPLICATION_BATCH_COUNT") || "") do
+      {value, ""} when value > 0 and value <= 500 -> value
+      _ -> @default_batch_count
+    end
+  end
   @error_backoff_ms 2_000
 
   def start_link(peer) do
@@ -190,7 +208,7 @@ defmodule SREChat.Replication.Tailer do
     case Redix.command(state.conn, [
            "XREAD",
            "COUNT",
-           Integer.to_string(@batch_count),
+           Integer.to_string(batch_count()),
            "STREAMS",
            stream,
            state.cursor
