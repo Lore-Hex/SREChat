@@ -416,6 +416,7 @@ async function signIn(tok, name) {
     await api("PUT", "/me", {});           // validates the token (incl. passcode)
     try { localStorage.setItem("sre_token", token); localStorage.setItem("sre_me", me); } catch {}
     saveAuthNatively(token, me);
+    signInRetryDelay = 0;
     el.who.textContent = me;
     el.status.hidden = true;
     el.login.hidden = true;
@@ -428,14 +429,32 @@ async function signIn(tok, name) {
     selectPeer(ALERTS_VIEW);
     startPolling();
   } catch (e2) {
-    try { localStorage.removeItem("sre_token"); } catch {}
-    if (e2.status === 401 || e2.status === 403) clearAuthNatively();
-    el.login.hidden = false; el.peers.hidden = true; el.log.hidden = true; el.composer.hidden = true;
+    const rejected = e2.status === 401 || e2.status === 403;
+
+    if (rejected) {
+      // The server actually refused these credentials — forget them.
+      try { localStorage.removeItem("sre_token"); } catch {}
+      clearAuthNatively();
+      el.login.hidden = false; el.peers.hidden = true; el.log.hidden = true; el.composer.hidden = true;
+      el.status.hidden = false;
+      el.status.textContent = "Wrong passcode — try again.";
+      return;
+    }
+
+    // Anything else — a 5xx mid-deploy, a dropped connection, a region
+    // restarting — is NOT a reason to throw the credentials away. Discarding
+    // them here is what logged the phone out during a deploy and left it
+    // sitting on the login screen with a passcode it already had. Keep them
+    // and keep trying; the app should ride out a blip on its own.
+    token = null;
     el.status.hidden = false;
-    el.status.textContent = (e2.status === 401 || e2.status === 403)
-      ? "Wrong passcode — try again." : "Sign-in failed: " + (e2.message || e2);
+    el.status.textContent = "Can't reach SREChat — retrying…";
+    signInRetryDelay = Math.min((signInRetryDelay || 1000) * 2, 15000);
+    setTimeout(() => signIn(tok, name), signInRetryDelay);
   }
 }
+
+let signInRetryDelay = 0;
 
 el.login.addEventListener("submit", (e) => {
   e.preventDefault();
