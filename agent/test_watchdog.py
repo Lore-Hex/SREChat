@@ -98,5 +98,56 @@ class ReplicationTierTest(unittest.TestCase):
         self.assertEqual(bad, ["[error] something else entirely broke"])
 
 
+class WatchdogIsolationTest(unittest.TestCase):
+    """The watchdog must not share a failure domain with what it watches."""
+
+    def setUp(self):
+        sre_agent._watch_state.clear()
+        sre_agent._fail_streak.clear()
+
+    def test_slow_ingest_is_detected_from_a_log_line(self):
+        line = "[warning] Store ingest_replicated duration_ms=91362 outcome=ok"
+        self.assertEqual(sre_agent._duration_ms(line), 91362)
+        self.assertGreaterEqual(sre_agent._duration_ms(line), 10_000)
+
+    def test_a_quick_ingest_is_not_an_alert(self):
+        self.assertLess(sre_agent._duration_ms("ingest_replicated duration_ms=812 outcome=ok"), 10_000)
+        self.assertEqual(sre_agent._duration_ms("no duration here"), 0)
+
+    def test_device_tokens_fall_back_to_cache_when_the_api_is_down(self):
+        # The outage that most needs a page is the API being down, which is
+        # exactly when the token lookup fails. The cache is what makes the
+        # pager independent of the thing it reports on.
+        import json, tempfile, os
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump({"cached-token": {"env": "development"}}, fh)
+            path = fh.name
+        old_cache, old_api = sre_agent.DEVICE_CACHE, sre_agent.api
+        try:
+            sre_agent.DEVICE_CACHE = path
+
+            def dead_api(*a, **k):
+                raise OSError("HTTP Error 502: Bad Gateway")
+
+            sre_agent.api = dead_api
+            self.assertEqual(sre_agent.owner_devices(), {"cached-token": {"env": "development"}})
+        finally:
+            sre_agent.DEVICE_CACHE, sre_agent.api = old_cache, old_api
+            os.unlink(path)
+
+    def test_no_cache_and_no_api_returns_empty_rather_than_raising(self):
+        old_cache, old_api = sre_agent.DEVICE_CACHE, sre_agent.api
+        try:
+            sre_agent.DEVICE_CACHE = "/nonexistent/path/devices.json"
+
+            def dead_api(*a, **k):
+                raise OSError("down")
+
+            sre_agent.api = dead_api
+            self.assertEqual(sre_agent.owner_devices(), {})
+        finally:
+            sre_agent.DEVICE_CACHE, sre_agent.api = old_cache, old_api
+
+
 if __name__ == "__main__":
     unittest.main()

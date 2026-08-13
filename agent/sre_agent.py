@@ -607,19 +607,39 @@ def _primary_reporter(target_index: int) -> bool:
     return True
 
 
+DEVICE_CACHE = os.path.expanduser("~/.srechat_devices.json")
+
+
 def owner_devices() -> dict[str, dict]:
     """The owner's registered phones, read from their user metadata.
 
-    Device tokens live on the user record, so they replicate to all three
-    masters: whichever cloud is still alive can page the same phone.
+    Cached to disk, and the cache is used whenever the lookup fails.
+
+    Paging must not depend on the thing being paged about. Reading the tokens
+    goes through our own API, so during the outage that most needs a page —
+    the API answering 502 — the lookup failed and the push was skipped, even
+    though APNs itself was perfectly reachable. The cache makes the pager work
+    when the deployment does not.
     """
     try:
         user = api("GET", f"/users/{OWNER_UID}").get("data", {}) or {}
         tokens = (user.get("metadata") or {}).get("apnsTokens") or {}
+        if isinstance(tokens, dict) and tokens:
+            try:
+                with open(DEVICE_CACHE, "w") as fh:
+                    json.dump(tokens, fh)
+            except OSError as exc:
+                log(f"device cache write failed: {exc}")
+            return tokens
         return tokens if isinstance(tokens, dict) else {}
     except Exception as exc:  # noqa: BLE001
-        log(f"device lookup failed: {exc}")
-        return {}
+        log(f"device lookup failed ({exc}); falling back to cache")
+        try:
+            with open(DEVICE_CACHE) as fh:
+                cached = json.load(fh)
+            return cached if isinstance(cached, dict) else {}
+        except (OSError, ValueError):
+            return {}
 
 
 def push_alert(text: str) -> None:
@@ -659,6 +679,11 @@ def push_alert(text: str) -> None:
                 log(f"unregister failed: {exc}")
         else:
             log(f"push to {token[:12]}… failed: {status} {body[:120]}")
+
+
+def _duration_ms(line: str) -> int:
+    match = re.search(r"duration_ms=(\d+)", line)
+    return int(match.group(1)) if match else 0
 
 
 def alert(text: str) -> None:
@@ -748,7 +773,50 @@ def watch_once() -> None:
         except Exception:  # noqa: BLE001
             pass
 
-    # 4. This region's own container logs. Two tiers: replication problems get a
+    # 4. Restart loops. A container that keeps dying is invisible to a health
+    #    probe between restarts — this deployment reached 1979 restarts on one
+    #    region and 96 on another with nothing ever paging, because each probe
+    #    happened to land while it was briefly up.
+    try:
+        count = _run(["sudo", "docker", "inspect", "--format", "{{.RestartCount}}", "deploy-app-1"])
+        restarts = int(count.strip() or "0")
+        previous = _watch_state.get("restart-count")
+        _watch_state["restart-count"] = restarts
+
+        if previous is not None and isinstance(previous, int) and restarts > previous + 2:
+            alert(
+                f"APP RESTART LOOP in region {REGION_INDEX} ({CLOUD}): container has "
+                f"restarted {restarts - previous} times since the last check "
+                f"({restarts} total). It is crashing, not merely slow."
+            )
+    except (ValueError, TypeError):
+        pass
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 5. Replication ingest that blocks serving. Ingest runs inside the Store,
+    #    so a slow batch queues every HTTP request behind it and the region
+    #    answers 502 while looking "up" to anything that only greps for crashes.
+    #    A batch once took 2205 seconds here and nothing noticed.
+    try:
+        slow = [
+            line
+            for line in _recent_app_logs().splitlines()
+            if "ingest_replicated" in line and _duration_ms(line) >= 10_000
+        ]
+        _transition(
+            "ingest-slow",
+            not slow,
+            f"RECOVERED: replication ingest in region {REGION_INDEX} is quick again.",
+            f"REPLICATION INGEST STALLING in region {REGION_INDEX} ({CLOUD}): a batch "
+            f"took {max((_duration_ms(l) for l in slow), default=0) // 1000}s. Ingest runs "
+            f"inside the Store, so requests queue behind it and this region will start "
+            f"answering 502 while still looking alive.",
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 6. This region's own container logs. Two tiers: replication problems get a
     #    named, specific page (they are silent divergence, the worst failure this
     #    system has), everything else stays one generic errors alert.
     try:
@@ -825,13 +893,30 @@ def main() -> int:
                         continue
                     handle(msg["sender"], text)
 
-            # Watchdog + heartbeat on their own cadence, independent of chat.
-            if time.time() - last_watch >= WATCH_SECONDS:
-                last_watch = time.time()
-                heartbeat()
-                watch_once()
         except Exception as exc:  # noqa: BLE001 — a bot that dies is useless
             log(f"loop error (continuing): {exc}")
+
+        # The watchdog runs OUTSIDE the chat try/except, and each half is
+        # guarded separately.
+        #
+        # It used to sit inside it. A single failing chat poll therefore jumped
+        # straight to the handler and skipped the health checks entirely — so
+        # when two regions started answering 502, the poll raised, the watchdog
+        # never ran, and nothing paged for hours. The outage silenced the thing
+        # whose only job was to report it. Alerting must never share a failure
+        # domain with the thing it watches.
+        if time.time() - last_watch >= WATCH_SECONDS:
+            last_watch = time.time()
+
+            try:
+                heartbeat()
+            except Exception as exc:  # noqa: BLE001
+                log(f"heartbeat failed (continuing): {exc}")
+
+            try:
+                watch_once()
+            except Exception as exc:  # noqa: BLE001
+                log(f"watch failed (continuing): {exc}")
         time.sleep(POLL_SECONDS)
 
 
