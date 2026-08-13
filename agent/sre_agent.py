@@ -861,6 +861,20 @@ def main() -> int:
         f"{'actionable' if ACTIONABLE else 'read-only'}) against {REGION_HOST}, "
         f"model={TR_MODEL} (fallback trustedrouter/auto)")
     api("PUT", "/me", {})     # ensure the bot user exists
+
+    # Warm the device cache NOW, while the deployment is healthy.
+    #
+    # The cache exists so a page can be sent when our own API is down, but it
+    # was only written as a side effect of sending one — so the first outage,
+    # which is exactly the first time a page is needed, would still find it
+    # empty. A fallback that only populates on the path it is meant to replace
+    # is not a fallback.
+    try:
+        warmed = owner_devices()
+        log(f"device cache warmed: {len(warmed)} device(s) for {OWNER_UID}")
+    except Exception as exc:  # noqa: BLE001
+        log(f"device cache warm failed (continuing): {exc}")
+
     seen: dict[str, int] = {}
 
     # Start from "now": don't replay history on boot.
