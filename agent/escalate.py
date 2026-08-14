@@ -54,8 +54,14 @@ HUMAN_PHONE = os.environ.get("HUMAN_PHONE", "").strip()
 TELNYX_API_KEY = os.environ.get("TELNYX_API_KEY", "").strip()
 TELNYX_FROM = os.environ.get("TELNYX_FROM", "").strip()
 
+# Twilio supports two credential styles and they are NOT interchangeable in the
+# URL. An API Key ("SK…") authenticates as SID:SECRET, but the request path must
+# still carry the ACCOUNT sid ("AC…"). Using the SK in both places looks fine
+# against some read endpoints and then fails on send, so they are kept separate.
 TWILIO_SID = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
 TWILIO_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
+TWILIO_KEY_SID = os.environ.get("TWILIO_API_KEY_SID", "").strip()
+TWILIO_KEY_SECRET = os.environ.get("TWILIO_API_KEY_SECRET", "").strip()
 TWILIO_FROM = os.environ.get("TWILIO_FROM", "").strip()
 
 STATE_PATH = os.environ.get("ESCALATE_STATE", os.path.expanduser("~/.srechat_escalations.json"))
@@ -172,12 +178,16 @@ def telnyx_available() -> bool:
 
 
 def twilio_available() -> bool:
-    return bool(TWILIO_SID and TWILIO_TOKEN and TWILIO_FROM and HUMAN_PHONE)
+    has_auth = bool(TWILIO_KEY_SID and TWILIO_KEY_SECRET) or bool(TWILIO_TOKEN)
+    return bool(TWILIO_SID and has_auth and TWILIO_FROM and HUMAN_PHONE)
 
 
 def _twilio_auth() -> dict:
-    raw = f"{TWILIO_SID}:{TWILIO_TOKEN}".encode()
-    return {"Authorization": "Basic " + base64.b64encode(raw).decode()}
+    user, secret = (
+        (TWILIO_KEY_SID, TWILIO_KEY_SECRET) if TWILIO_KEY_SID and TWILIO_KEY_SECRET
+        else (TWILIO_SID, TWILIO_TOKEN)
+    )
+    return {"Authorization": "Basic " + base64.b64encode(f"{user}:{secret}".encode()).decode()}
 
 
 def telnyx_sms(text: str) -> tuple[int, str]:
