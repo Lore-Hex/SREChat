@@ -39,6 +39,18 @@ else
   echo "note: no readable /etc/srechat/apns.env — running without APNs push" >&2
 fi
 
+# Escalation credentials (Telnyx/Twilio/SendGrid/SMTP), if this host has them.
+# Same -r guard as the APNs key: a file that exists but cannot be read must be
+# treated as absent, or a permissions mistake on an OPTIONAL credential
+# crash-loops the agent under `set -e` — which is how the monitoring once died
+# of the feature meant to improve it.
+if [ -r /etc/srechat/notify.env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . /etc/srechat/notify.env
+  set +a
+fi
+
 if [ -z "${TR_API_KEY:-}" ]; then
   echo "warning: no TR_API_KEY (env or ~/.tr_key) — the agent will run tools but not the LLM" >&2
 fi
