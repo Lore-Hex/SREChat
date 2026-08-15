@@ -988,6 +988,16 @@ def alert(text: str) -> None:
     push_alert(text)
 
 
+# A region that goes down and up repeatedly is ONE incident, not many. Region 0
+# crash-looped 12 times in 40 minutes and sent six "RECOVERED" alerts and no
+# "NODE DOWN" — each restart was too brief to trip the failure debounce, and
+# recovery had no debounce at all. Six pieces of good news about an outage in
+# progress is worse than silence: it reads as resolved every time.
+FLAP_WINDOW_SECONDS = float(os.environ.get("SRE_FLAP_WINDOW", "900"))
+FLAPS_TO_REPORT = int(os.environ.get("SRE_FLAPS_TO_REPORT", "3"))
+_flaps: dict[str, list[float]] = {}
+
+
 def _transition(key: str, up: bool, up_msg: str, down_msg: str) -> None:
     now = "up" if up else "down"
     was = _watch_state.get(key)
@@ -996,6 +1006,24 @@ def _transition(key: str, up: bool, up_msg: str, down_msg: str) -> None:
     _watch_state[key] = now
     if was is None:
         return                    # first observation is the baseline, not news
+
+    stamp = time.time()
+    recent = [t for t in _flaps.get(key, []) if stamp - t < FLAP_WINDOW_SECONDS]
+    recent.append(stamp)
+    _flaps[key] = recent
+
+    if len(recent) >= FLAPS_TO_REPORT:
+        # Report the FLAPPING, once, and stay quiet about the individual
+        # transitions until it settles. The escalation leash dedupes by reason,
+        # so repeating this line does not repeatedly page.
+        alert(
+            f"FLAPPING: {key} has changed state {len(recent)} times in the last "
+            f"{int(FLAP_WINDOW_SECONDS / 60)} minutes and is currently {now}. "
+            "Something is restarting rather than staying down — check restart "
+            "counts and logs rather than waiting for it to fail cleanly."
+        )
+        return
+
     alert(up_msg if up else down_msg)
 
 
