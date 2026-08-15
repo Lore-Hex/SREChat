@@ -167,3 +167,49 @@ class TestEvidence:
     def test_an_empty_investigation_says_so(self) -> None:
         # Rather than an empty string that reads like "nothing was wrong".
         assert Investigation("t", "c").evidence == "(no tools were run)"
+
+
+class TestExhaustion:
+    def test_it_states_what_it_found_instead_of_discarding_it(self) -> None:
+        """The first live run repaired the fault on its last step and then
+        reported UNKNOWN, because hitting the budget threw away everything it
+        had learned."""
+        calls = {"n": 0}
+
+        def chat(_messages, schemas):
+            calls["n"] += 1
+            if schemas:  # still allowed tools
+                return {"tool_calls": [_call("containers")]}
+            return {"content": "CAUSE: app container stopped\nEVIDENCE: containers\n"
+                               "ACTION: restarted it\nRESOLVED: yes"}
+
+        result = investigate("x", {"containers": (lambda a: "exited", "c")}, chat, max_steps=2)
+
+        assert result.exhausted
+        assert "app container stopped" in result.conclusion
+        assert is_resolved(result.conclusion)
+
+    def test_the_final_ask_offers_no_tools(self) -> None:
+        # Otherwise it keeps investigating past the budget it just hit.
+        seen_schemas = []
+
+        def chat(_messages, schemas):
+            seen_schemas.append(schemas)
+            if schemas:
+                return {"tool_calls": [_call("containers")]}
+            return {"content": "CAUSE: x\nRESOLVED: no"}
+
+        investigate("x", {"containers": (lambda a: "out", "c")}, chat, max_steps=1)
+
+        assert seen_schemas[-1] == []
+
+    def test_a_silent_model_still_yields_a_report(self) -> None:
+        def chat(_messages, schemas):
+            if schemas:
+                return {"tool_calls": [_call("containers")]}
+            return {"content": ""}
+
+        result = investigate("x", {"containers": (lambda a: "out", "c")}, chat, max_steps=1)
+
+        assert "ran out of steps" in result.conclusion
+        assert not is_resolved(result.conclusion)

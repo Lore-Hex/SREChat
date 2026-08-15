@@ -178,9 +178,27 @@ def investigate(
                 {"role": "tool", "tool_call_id": call.get("id", ""), "content": output}
             )
 
+    # Out of steps, but not out of information. The first live run repaired the
+    # fault on its last step and then reported UNKNOWN, because hitting the
+    # budget threw away everything it had learned. Ask once more with no tools:
+    # the model cannot look further, only state what it already found.
     result.exhausted = True
-    result.conclusion = (
-        f"CAUSE: UNKNOWN\nEVIDENCE: ran out of steps after {max_steps} tool calls "
+    messages.append({
+        "role": "user",
+        "content": (
+            "You are out of investigation steps. Do not request any more tools. "
+            "State your conclusion now from what you already saw, in the required "
+            "format. If you repaired something, say so in ACTION."
+        ),
+    })
+    try:
+        final = chat(messages, [])
+        stated = (final.get("content") or "").strip()
+    except Exception:  # noqa: BLE001
+        stated = ""
+
+    result.conclusion = stated or (
+        f"CAUSE: UNKNOWN\nEVIDENCE: ran out of steps after {max_steps} rounds "
         f"({', '.join(result.tools_used)})\nACTION: NONE\nRESOLVED: no"
     )
     return result

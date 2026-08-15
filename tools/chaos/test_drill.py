@@ -69,9 +69,37 @@ class TestDiagnosisScoring:
         assert not drill.scored_diagnosis(activity, self._fault("disk-nearly-full"))
 
     def test_scoring_is_case_insensitive(self) -> None:
-        activity = "CAUSE: The REDIS container was STOPPED"
+        activity = "self-repair: cause='The REDIS container was STOPPED'"
 
         assert drill.scored_diagnosis(activity, self._fault("redis-stopped"))
+
+    def test_keywords_elsewhere_in_the_log_do_not_count(self) -> None:
+        # The first live drill scored a pass this way: the agent's own shell
+        # commands contained "docker stop" and "deploy-app-1" while its actual
+        # conclusion was UNKNOWN. Matching anywhere in the journal measures
+        # that the agent typed a word, not that it diagnosed anything.
+        activity = (
+            "[sre-agent] shell: sudo docker stop deploy-app-1\n"
+            "[sre-agent] shell: sudo docker start deploy-app-1\n"
+            "[sre-agent] self-repair: cause='UNKNOWN' action='NONE' resolved='no'"
+        )
+
+        assert not drill.scored_diagnosis(activity, self._fault("app-container-stopped"))
+
+    def test_an_explicit_unknown_never_scores(self) -> None:
+        activity = "self-repair: cause='UNKNOWN' action='NONE'"
+        for fault in drill.FAULTS:
+            assert not drill.scored_diagnosis(activity, fault)
+
+    def test_the_latest_conclusion_wins(self) -> None:
+        # A drill run after an earlier one must not read the older verdict.
+        activity = (
+            "self-repair: cause='the caddy proxy was stopped'\n"
+            "self-repair: cause='the redis container was stopped'"
+        )
+
+        assert drill.scored_diagnosis(activity, self._fault("redis-stopped"))
+        assert not drill.scored_diagnosis(activity, self._fault("caddy-stopped"))
 
 
 class TestPassCriteria:

@@ -161,16 +161,36 @@ def agent_activity(since_epoch: float) -> str:
     return out
 
 
-def scored_diagnosis(activity: str, fault: Fault) -> bool:
-    """Did the agent NAME the fault, not merely notice something was wrong?
+CONCLUSION_MARKER = "self-repair: cause="
 
-    Keyword matching is crude and deliberately generous: the goal is to catch
-    an agent that said "redis is down" when redis was down, and to fail one
-    that only said "region unhealthy". Anything subtler than that belongs in a
-    human reading the transcript, which is why the transcript is recorded.
+
+def stated_cause(activity: str) -> str:
+    """The agent's CONCLUSION, not everything it typed along the way.
+
+    The first drill scored a pass by matching keywords anywhere in the journal
+    — and matched the agent's own shell commands (`docker stop`,
+    `deploy-app-1`) while its actual conclusion was UNKNOWN. Reading the
+    conclusion line is the difference between measuring a diagnosis and
+    measuring that the agent typed the word "container" at some point.
     """
-    haystack = activity.lower()
-    hits = sum(1 for word in fault.keywords if word in haystack)
+    for line in reversed(activity.splitlines()):
+        if CONCLUSION_MARKER in line:
+            return line.split(CONCLUSION_MARKER, 1)[1].strip()
+    return ""
+
+
+def scored_diagnosis(activity: str, fault: Fault) -> bool:
+    """Did the agent NAME the fault in its conclusion?
+
+    Keyword matching is crude and deliberately generous — "redis is down" when
+    redis was down should pass — but it is applied ONLY to what the agent
+    concluded. An explicit UNKNOWN never counts, however much the surrounding
+    log happens to mention.
+    """
+    cause = stated_cause(activity).lower()
+    if not cause or "unknown" in cause:
+        return False
+    hits = sum(1 for word in fault.keywords if word in cause)
     return hits >= 2
 
 
@@ -228,7 +248,11 @@ def main() -> int:
     result.agent_said = activity[-4000:]
     result.detected = result.detected or "investigating:" in activity
     result.diagnosed = scored_diagnosis(activity, fault)
-    result.notified = "sent:" in activity or "push sent" in activity
+    # Scored from the page's own recorded result, so "suppressed by the leash"
+    # and "never attempted" are different findings rather than one silence.
+    page_lines = [ln for ln in activity.splitlines() if "self-repair page:" in ln]
+    result.notify_detail = page_lines[-1].split("self-repair page:", 1)[1].strip() if page_lines else ""
+    result.notified = " sent:" in result.notify_detail
     if not result.repaired_by_agent:
         # Rule 3: never leave the region broken, whatever the agent did.
         code, out = run(fault.restore, timeout=120)

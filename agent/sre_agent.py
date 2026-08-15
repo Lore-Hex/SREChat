@@ -1042,12 +1042,18 @@ def watch_once() -> None:
                 # Escalate WITH the diagnosis. A page that says only "region
                 # down" makes the human start the investigation from nothing,
                 # which is the work the agent just did.
-                escalate.push_notify_human(
+                page = escalate.push_notify_human(
                     f"region {REGION_INDEX} ({CLOUD}) went down. "
                     f"Cause: {fields['cause'] or 'unknown'}. "
                     f"Action: {fields['action'] or 'none'}. "
                     f"Resolved: {fields['resolved'] or 'no'}."
                 )
+                # Logged, not discarded. An unlogged page cannot be told apart
+                # from a page that was never sent — which is how the first
+                # drill scored "notified: false" with no way to know whether
+                # the notification failed, was suppressed, or simply was not
+                # recorded.
+                log(f"self-repair page: {page}")
             except Exception as exc:  # noqa: BLE001 — never let this kill the watch
                 log(f"self-investigation failed: {exc}")
     elif REGION_INDEX not in down_regions:
