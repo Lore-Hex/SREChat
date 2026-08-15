@@ -566,6 +566,11 @@ _ESCALATION_TOOLS = {
     ),
 }
 
+# The containers a healthy region runs. Checked directly because /health does
+# not exercise them: a drill stopped redis and the endpoint went on answering
+# 200 while the region could not commit a write.
+EXPECTED_CONTAINERS = ("deploy-app-1", "deploy-redis-1", "deploy-caddy-1")
+
 SHELL_TIMEOUT = 60
 SHELL_AUDIT = os.path.expanduser("~/.srechat-shell-audit.log")
 
@@ -1021,6 +1026,22 @@ def watch_once() -> None:
             f"Reported by {AGENT_UID} on {CLOUD}.",
         )
 
+    # 1a0. Local containers. A chaos drill found this gap: stopping redis left
+    #      /health answering 200, because the health endpoint does not touch it.
+    #      The region could not commit a single write and looked perfectly well.
+    #      A liveness check that does not exercise the dependency is not a
+    #      liveness check, so the expected containers are checked directly.
+    local_missing: list[str] = []
+    if FULL_POWER:
+        try:
+            running = tool_local_containers("")
+            local_missing = [name for name in EXPECTED_CONTAINERS if name not in running]
+        except Exception as exc:  # noqa: BLE001
+            log(f"container check failed: {exc}")
+        if local_missing and REGION_INDEX not in down_regions:
+            down_regions.append(REGION_INDEX)
+            log(f"local containers missing: {local_missing}")
+
     # 1a. If OUR OWN region is the broken one and we hold a shell, do not just
     #     report it — work it. This is the only path on which the model chooses
     #     tools, and it is reachable only from a condition measured here, never
@@ -1033,9 +1054,13 @@ def watch_once() -> None:
         if _watch_state.get("self-investigation") != "running":
             _watch_state["self-investigation"] = "running"
             try:
-                finding = investigate_anomaly(
-                    f"region {REGION_INDEX} ({CLOUD}) is failing its own health check"
+                trigger = (
+                    f"containers not running on region {REGION_INDEX} ({CLOUD}): "
+                    f"{', '.join(local_missing)}"
+                    if local_missing
+                    else f"region {REGION_INDEX} ({CLOUD}) is failing its own health check"
                 )
+                finding = investigate_anomaly(trigger)
                 fields = investigate_mod.parse_conclusion(finding.conclusion)
                 log(f"self-repair: cause={fields['cause']!r} action={fields['action']!r} "
                     f"resolved={fields['resolved']!r}")

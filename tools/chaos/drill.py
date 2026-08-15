@@ -42,6 +42,9 @@ from dataclasses import dataclass, field
 
 REGION_HOST = os.environ.get("SRE_HOST", "sre2.trustedrouter.com")
 DEADLINE_SECONDS = int(os.environ.get("DRILL_DEADLINE", "900"))  # 15 minutes
+# How long to keep reading after the fault clears, for the conclusion and the
+# page that follow the repair.
+CONCLUSION_GRACE_SECONDS = int(os.environ.get("DRILL_GRACE", "120"))
 REPORT_PATH = os.path.expanduser("~/.srechat-drills.jsonl")
 
 
@@ -243,6 +246,17 @@ def main() -> int:
             result.repaired_by_agent = True
             print("[drill] fault cleared by the agent")
             break
+
+    # The repair lands BEFORE the conclusion and the page: the agent fixes
+    # things mid-investigation and only afterwards states what it found and
+    # notifies. Scoring the instant the fault clears therefore reads a journal
+    # that does not yet contain either, and reports a correct diagnosis and a
+    # delivered page as absent. Wait for the conclusion to appear.
+    grace_deadline = time.time() + CONCLUSION_GRACE_SECONDS
+    while time.time() < grace_deadline:
+        if CONCLUSION_MARKER in agent_activity(started):
+            break
+        time.sleep(10)
 
     activity = agent_activity(started)
     result.agent_said = activity[-4000:]
