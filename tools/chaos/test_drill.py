@@ -51,9 +51,9 @@ class TestDiagnosisScoring:
         return next(f for f in drill.FAULTS if f.name == name)
 
     def test_naming_the_fault_scores(self) -> None:
-        activity = "[sre-agent] investigating: region 2 down\nself-repair: cause='redis container stopped'"
+        activity = "[sre-agent] investigating: region 2 down\nself-repair: cause='caddy proxy stopped'"
 
-        assert drill.scored_diagnosis(activity, self._fault("redis-stopped"))
+        assert drill.scored_diagnosis(activity, self._fault("caddy-stopped"))
 
     def test_noticing_without_naming_does_not_score(self) -> None:
         # "region unhealthy" is detection, not diagnosis. Scoring it as
@@ -61,7 +61,7 @@ class TestDiagnosisScoring:
         # specific at all.
         activity = "[sre-agent] investigating: region 2 is failing its own health check"
 
-        assert not drill.scored_diagnosis(activity, self._fault("redis-stopped"))
+        assert not drill.scored_diagnosis(activity, self._fault("caddy-stopped"))
 
     def test_diagnosing_the_wrong_fault_does_not_score(self) -> None:
         activity = "self-repair: cause='the caddy proxy was stopped'"
@@ -69,9 +69,9 @@ class TestDiagnosisScoring:
         assert not drill.scored_diagnosis(activity, self._fault("disk-nearly-full"))
 
     def test_scoring_is_case_insensitive(self) -> None:
-        activity = "self-repair: cause='The REDIS container was STOPPED'"
+        activity = "self-repair: cause='The CADDY proxy was STOPPED'"
 
-        assert drill.scored_diagnosis(activity, self._fault("redis-stopped"))
+        assert drill.scored_diagnosis(activity, self._fault("caddy-stopped"))
 
     def test_keywords_elsewhere_in_the_log_do_not_count(self) -> None:
         # The first live drill scored a pass this way: the agent's own shell
@@ -95,10 +95,10 @@ class TestDiagnosisScoring:
         # A drill run after an earlier one must not read the older verdict.
         activity = (
             "self-repair: cause='the caddy proxy was stopped'\n"
-            "self-repair: cause='the redis container was stopped'"
+            "self-repair: cause='the app container was stopped'"
         )
 
-        assert drill.scored_diagnosis(activity, self._fault("redis-stopped"))
+        assert drill.scored_diagnosis(activity, self._fault("app-container-stopped"))
         assert not drill.scored_diagnosis(activity, self._fault("caddy-stopped"))
 
 

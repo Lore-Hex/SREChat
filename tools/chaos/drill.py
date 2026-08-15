@@ -84,14 +84,24 @@ FAULTS = [
         restore="sudo docker start deploy-app-1",
         verify_broken="! sudo docker ps --format '{{.Names}}' | grep -q deploy-app-1",
     ),
-    Fault(
-        name="redis-stopped",
-        cause="the redis container was stopped, so the region cannot commit writes",
-        keywords=("redis", "stopped", "down", "exited"),
-        inject="sudo docker stop deploy-redis-1",
-        restore="sudo docker start deploy-redis-1",
-        verify_broken="! sudo docker ps --format '{{.Names}}' | grep -q deploy-redis-1",
-    ),
+    # redis-stopped is WITHDRAWN. It took region 0 down for hours.
+    #
+    # Stopping redis here does not stay here: this region's oplog is what its
+    # PEERS read, and restarting redis reset the stream. Region 0's cursor then
+    # pointed at a trimmed entry, its tailer refused to skip history — correctly,
+    # by design — and its app crash-looped 87 times while /health flapped and
+    # the watchdog paged all night.
+    #
+    # The reasoning that put it here was that region 2 carries no traffic and
+    # rebuilds from scratch. That is true of the VM and irrelevant to
+    # replication: a fault confined to one machine is not confined to one
+    # failure domain when other regions read its state. Blast radius is about
+    # what depends on the thing, not where the thing runs.
+    #
+    # To restore this fault, it must first repair peer cursors afterwards —
+    # SET srechat:repl_cursor:<this region> 0-0 on every peer, then restart
+    # their apps — and the drill must verify the peers are healthy before it
+    # reports anything.
     Fault(
         name="disk-nearly-full",
         cause="a large file filled the disk",
