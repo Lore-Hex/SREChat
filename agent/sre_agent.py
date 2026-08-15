@@ -802,6 +802,69 @@ def chat_with_tools(messages: list[dict], schemas: list[dict]) -> dict:
     return message
 
 
+# How long to wait for a human to say something in chat before ringing their
+# phone. An unanswered page is an unhandled incident: the agent has no way to
+# tell "seen and being handled" from "asleep" except by asking louder.
+ACK_TIMEOUT_SECONDS = float(os.environ.get("SRE_ACK_TIMEOUT", "600"))
+_awaiting_ack: dict[str, dict] = {}
+
+
+def opening_email(trigger: str) -> str:
+    """Sent the moment the agent starts working, before it knows anything.
+
+    Deliberately cheap and early. The after-action report is the useful one,
+    but it only exists once the work is done — and an agent quietly taking
+    action on production with no trace until it finishes is the thing that
+    makes an autonomous agent hard to trust. This says "I am touching your
+    infrastructure, right now, because of this."
+    """
+    return "\n".join([
+        f"[{CLOUD}] investigating: {trigger[:120]}",
+        "",
+        f"Agent:   {AGENT_UID} on {CLOUD} (region {REGION_INDEX})",
+        f"Trigger: {trigger}",
+        f"Started: {time.strftime('%Y-%m-%d %H:%M:%SZ', time.gmtime())}",
+        "",
+        "It is investigating now and will repair what it can. A full report with "
+        "the evidence and everything it changed follows when it finishes.",
+        "",
+        f"  chat    https://{REGION_HOST}/app/",
+        f"  region  https://{REGION_HOST}/health",
+    ])
+
+
+def note_awaiting_ack(key: str, summary: str) -> None:
+    """Start the clock on a human answering."""
+    _awaiting_ack[key] = {"at": time.time(), "summary": summary}
+
+
+def acknowledge_all(who: str) -> None:
+    """Any message from the owner counts as acknowledgement.
+
+    Not a specific command: a human who replies at all is a human who has seen
+    it, and requiring a keyword would ring the phone of someone already typing.
+    """
+    if who == OWNER_UID and _awaiting_ack:
+        log(f"acknowledged by {who}: {len(_awaiting_ack)} incident(s) no longer awaiting a reply")
+        _awaiting_ack.clear()
+
+
+def escalate_unacknowledged() -> None:
+    """Ring the phone for anything unresolved that nobody answered."""
+    now = time.time()
+    for key, pending in list(_awaiting_ack.items()):
+        if now - pending["at"] < ACK_TIMEOUT_SECONDS:
+            continue
+        del _awaiting_ack[key]
+        minutes = int(ACK_TIMEOUT_SECONDS / 60)
+        try:
+            log(escalate.call_human(
+                f"No reply in chat for {minutes} minutes. {pending['summary']}"
+            ))
+        except Exception as exc:  # noqa: BLE001 — never let paging kill the watch
+            log(f"unacknowledged escalation failed: {exc}")
+
+
 def incident_report(finding: investigate_mod.Investigation) -> str:
     """The after-action email: what broke, what was done, and where to look.
 
@@ -1188,6 +1251,12 @@ def watch_once() -> None:
                     if local_missing
                     else f"region {REGION_INDEX} ({CLOUD}) is failing its own health check"
                 )
+                # Before it touches anything: a note that it is about to.
+                try:
+                    log(f"opening note: {escalate.email_human(opening_email(trigger))}")
+                except Exception as exc:  # noqa: BLE001
+                    log(f"opening note failed: {exc}")
+
                 finding = investigate_anomaly(trigger)
                 fields = investigate_mod.parse_conclusion(finding.conclusion)
                 log(f"self-repair: cause={fields['cause']!r} action={fields['action']!r} "
@@ -1216,6 +1285,16 @@ def watch_once() -> None:
                 # the notification failed, was suppressed, or simply was not
                 # recorded.
                 log(f"self-repair page: {page}")
+
+                # Only an UNRESOLVED incident waits for a human. Ringing
+                # someone at 3am about a fault the agent already repaired is
+                # what teaches people to silence the pager.
+                if not investigate_mod.is_resolved(finding.conclusion):
+                    note_awaiting_ack(
+                        f"region-{REGION_INDEX}",
+                        f"Region {REGION_INDEX} ({CLOUD}): {fields['cause'] or 'unknown cause'}. "
+                        f"The agent could not resolve it.",
+                    )
             except Exception as exc:  # noqa: BLE001 — never let this kill the watch
                 log(f"self-investigation failed: {exc}")
     elif REGION_INDEX not in down_regions:
@@ -1422,6 +1501,10 @@ def main() -> int:
                     if text.startswith(HEARTBEAT_PREFIX):
                         _agent_seen[msg["sender"]] = time.time()
                         continue
+                    # Any word from the owner stops the phone from ringing —
+                    # recorded BEFORE handling, so a slow reply is still an
+                    # answer.
+                    acknowledge_all(msg["sender"])
                     handle(msg["sender"], text)
 
         except Exception as exc:  # noqa: BLE001 — a bot that dies is useless
@@ -1448,6 +1531,14 @@ def main() -> int:
                 watch_once()
             except Exception as exc:  # noqa: BLE001
                 log(f"watch failed (continuing): {exc}")
+
+            # Guarded separately from watch_once: a watchdog that raises must
+            # not also swallow the escalation for an incident nobody answered,
+            # which is the failure mode that made the pager silent before.
+            try:
+                escalate_unacknowledged()
+            except Exception as exc:  # noqa: BLE001
+                log(f"ack check failed (continuing): {exc}")
         time.sleep(POLL_SECONDS)
 
 
