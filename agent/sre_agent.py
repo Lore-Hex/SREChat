@@ -246,15 +246,45 @@ def uid_token(uid: str) -> str:
     return f"uid:{uid}" + (f"|{ACCESS_SECRET}" if ACCESS_SECRET else "")
 
 
+def api_hosts() -> list[str]:
+    """This region first, then its peers.
+
+    The agent used to talk ONLY to its own region, which put a single point of
+    failure in the layer built to survive one. When region 0's app went down,
+    its agent could not fetch conversations at all — so it lost sight of the
+    peer heartbeats arriving from AWS and Azure and reported two healthy
+    regions as silent. One region's outage became three regions' worth of
+    alerts.
+
+    Any master can serve: that is the whole design. Reads work from any region,
+    and a message written to a peer replicates back, so failing over costs
+    nothing but the extra request.
+    """
+    peers = [r["host"] for r in REGIONS if r["host"] != REGION_HOST]
+    return [REGION_HOST, *peers]
+
+
 def api(method: str, path: str, body: dict | None = None, uid: str = AGENT_UID) -> dict:
-    url = f"https://{REGION_HOST}/v3.0{path}"
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Authorization", f"Bearer {uid_token(uid)}")
-    if data:
-        req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        return json.loads(resp.read().decode() or "{}")
+    last_error: Exception | None = None
+
+    for host in api_hosts():
+        req = urllib.request.Request(f"https://{host}/v3.0{path}", data=data, method=method)
+        req.add_header("Authorization", f"Bearer {uid_token(uid)}")
+        if data:
+            req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                if host != REGION_HOST:
+                    # Worth a line: the agent is now reporting on the fleet
+                    # through somebody else's master, which is a fact about
+                    # this region that its own health probe also covers.
+                    log(f"api via peer {host} (own region unreachable)")
+                return json.loads(resp.read().decode() or "{}")
+        except Exception as exc:  # noqa: BLE001 — try the next master
+            last_error = exc
+
+    raise last_error if last_error else RuntimeError("no api host configured")
 
 
 def send(to_uid: str, text: str) -> None:
