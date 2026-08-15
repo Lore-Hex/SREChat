@@ -214,6 +214,8 @@ def test_sms_and_calls_open_with_the_brand(monkeypatch):
     assert sent, "nothing was sent"
     for text in sent:
         assert text.startswith("Trusted Router: "), text
+    # _try_carriers is below the leash, so this one needs no isolated state —
+    # but anything calling sms_human/call_human does.
 
 
 def test_branding_is_not_applied_twice():
@@ -233,10 +235,16 @@ def test_the_brand_is_spoken_as_a_sentence_not_a_colon():
     assert spoken.count("disk full") == 2
 
 
-def test_sms_human_does_not_stack_a_second_prefix(monkeypatch):
+def test_sms_human_does_not_stack_a_second_prefix(monkeypatch, tmp_path):
     """It used to prefix "SREChat: " itself, which now reads as
-    "Trusted Router: SREChat: ..." once branding moved to the choke point."""
-    import escalate
+    "Trusted Router: SREChat: ..." once branding moved to the choke point.
+
+    Runs against an isolated leash state. Using the real one made this pass on a
+    clean machine and fail on the second run, because the dedupe correctly
+    suppressed a reason the previous run had already sent — a test that depends
+    on machine state reports on the machine, not the code.
+    """
+    escalate = load_escalate(ESCALATE_STATE=str(tmp_path / "leash.json"))
 
     sent = []
     monkeypatch.setattr(escalate, "telnyx_available", lambda: True)

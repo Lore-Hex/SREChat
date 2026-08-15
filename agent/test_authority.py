@@ -119,6 +119,34 @@ class TestInvestigationTools:
         assert "shell" in agent.INVESTIGATION_TOOLS
 
 
+class TestFullPowerStopsAtThisVM:
+    """The two grants are different and must not be conflated.
+
+    FULL_POWER is root on THIS box. ACTIONABLE is authority over OTHER systems:
+    the GCP tools, the region-0 restart, and tr_rollback, which moves
+    TrustedRouter production traffic. Granting Azure both — which is what
+    happened on the first rollout — hands the chaos target the ability to roll
+    back the product it is not even running.
+    """
+
+    def test_full_power_alone_grants_nothing_beyond_this_vm(self) -> None:
+        agent = _agent(SRE_REGION_INDEX="2", SRE_ALLOW_ACTIONS="true",
+                       SRE_FULL_POWER_REGIONS="2")
+
+        assert agent.FULL_POWER
+        assert not agent.ACTIONABLE
+        assert "shell" in agent.TOOLS
+        for reaching_elsewhere in ("gcp_instances", "gcp_dns", "restart", "tr_rollback",
+                                   "tr_status", "sentry"):
+            assert reaching_elsewhere not in agent.TOOLS, reaching_elsewhere
+
+    def test_the_two_grants_are_independent(self) -> None:
+        # Actionable without full power: region 0 today.
+        agent = _agent(SRE_REGION_INDEX="0", SRE_ALLOW_ACTIONS="true",
+                       SRE_ACTIONABLE_REGIONS="0")
+        assert agent.ACTIONABLE and not agent.FULL_POWER
+
+
 class TestShellTool:
     @pytest.fixture
     def agent(self):

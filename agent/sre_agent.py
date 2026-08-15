@@ -1167,9 +1167,16 @@ HEARTBEAT_PREFIX = "::heartbeat::"
 
 
 def main() -> int:
-    log(f"starting as {AGENT_UID} on the {CLOUD} master (region {REGION_INDEX}, "
-        f"{'actionable' if ACTIONABLE else 'read-only'}) against {REGION_HOST}, "
-        f"model={TR_MODEL} (fallback trustedrouter/auto)")
+    # Report the mode precisely. "actionable" alone could not distinguish a
+    # monitor from an agent holding a root shell, so there was no way to confirm
+    # from the logs what a rollout had actually granted.
+    mode = ", ".join(
+        [m for m in ("full-power(shell)" if FULL_POWER else "",
+                     "actionable" if ACTIONABLE else "") if m]
+    ) or "read-only"
+    log(f"starting as {AGENT_UID} on the {CLOUD} master (region {REGION_INDEX}, {mode}) "
+        f"against {REGION_HOST}, model={TR_MODEL} (fallback trustedrouter/auto), "
+        f"tools={sorted(TOOLS)}")
     api("PUT", "/me", {})     # ensure the bot user exists
 
     # Warm the device cache NOW, while the deployment is healthy.
