@@ -96,6 +96,28 @@ DEPLOY_DIR = os.environ.get("SRE_DEPLOY_DIR") or next(
     (d for d in (os.path.expanduser("~/SREChat"), os.path.expanduser("~/RoachChat"))
      if os.path.isdir(d)), os.path.expanduser("~/SREChat"))
 TR_BASE = os.environ.get("TR_BASE_URL", "https://api.trustedrouter.com/v1")
+# TrustedRouter serves the same API from three clouds. Every agent used the GCP
+# gateway, so one gateway outage took all three brains at once — the agents
+# were independent in every respect except the one that makes them able to
+# think. Each now prefers the gateway in its OWN cloud and falls back to the
+# others, so a regional TR failure costs one agent its first choice rather than
+# costing the fleet its judgement.
+_TR_GATEWAYS = {
+    0: "https://api.trustedrouter.com/v1",
+    1: "https://api-aws.trustedrouter.com/v1",
+    2: "https://api-azure.trustedrouter.com/v1",
+}
+
+
+def tr_bases() -> list[str]:
+    """This region's gateway first, then the others as fallbacks."""
+    if os.environ.get("TR_BASE_URL"):
+        # An explicit override is a deliberate choice; do not second-guess it,
+        # but still allow the others as a last resort.
+        preferred = [os.environ["TR_BASE_URL"]]
+    else:
+        preferred = [_TR_GATEWAYS.get(REGION_INDEX, _TR_GATEWAYS[0])]
+    return preferred + [g for g in _TR_GATEWAYS.values() if g not in preferred]
 TR_KEY = os.environ.get("TR_API_KEY", "")
 # Pick a model per region: e.g. Kimi K3 on GCP, GLM 5.2-Fast on AWS, DeepSeek
 # 0731 on Azure. Defaults to the cheap auto pool if unset.
@@ -708,15 +730,8 @@ def ask_llm(question: str, tool_output: str) -> str:
         # it spent the lot thinking and returned empty content.
         "max_tokens": 2000,
     }
-    req = urllib.request.Request(
-        f"{TR_BASE}/chat/completions",
-        data=json.dumps(payload).encode(),
-        method="POST",
-        headers={"Authorization": f"Bearer {TR_KEY}", "Content-Type": "application/json"},
-    )
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            body = json.loads(resp.read().decode())
+        body = _tr_post(payload)
         msg = body["choices"][0]["message"]
         # Reasoning models can return empty `content` with the substance in
         # `reasoning_content`. An empty string would silently look like a
@@ -729,6 +744,31 @@ def ask_llm(question: str, tool_output: str) -> str:
         return f"(LLM error {exc.code}: {exc.read().decode()[:200]})"
     except Exception as exc:  # noqa: BLE001
         return f"(LLM unavailable: {exc})"
+
+
+def _tr_post(payload: dict) -> dict:
+    """POST to TrustedRouter, trying this region's gateway then the others.
+
+    Model-level fallback (`models: [...]`) already covers a bad model. This
+    covers a bad GATEWAY, which model fallback cannot: if the endpoint is
+    unreachable, there is nothing to reroute to inside it.
+    """
+    last_error: Exception | None = None
+    for base in tr_bases():
+        req = urllib.request.Request(
+            f"{base}/chat/completions",
+            data=json.dumps(payload).encode(),
+            method="POST",
+            headers={"Authorization": f"Bearer {TR_KEY}", "Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                if base != tr_bases()[0]:
+                    log(f"TR via fallback gateway {base}")
+                return json.loads(resp.read().decode())
+        except Exception as exc:  # noqa: BLE001 — try the next cloud
+            last_error = exc
+    raise last_error if last_error else RuntimeError("no TR gateway configured")
 
 
 def chat_with_tools(messages: list[dict], schemas: list[dict]) -> dict:
@@ -752,14 +792,7 @@ def chat_with_tools(messages: list[dict], schemas: list[dict]) -> dict:
         "tool_choice": "auto",
         "max_tokens": 2000,
     }
-    req = urllib.request.Request(
-        f"{TR_BASE}/chat/completions",
-        data=json.dumps(payload).encode(),
-        method="POST",
-        headers={"Authorization": f"Bearer {TR_KEY}", "Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        body = json.loads(resp.read().decode())
+    body = _tr_post(payload)
     message = body["choices"][0]["message"]
     if not (message.get("content") or "").strip() and not message.get("tool_calls"):
         # Reasoning models can leave content empty with the substance in
@@ -767,6 +800,43 @@ def chat_with_tools(messages: list[dict], schemas: list[dict]) -> dict:
         # conclusion.
         message["content"] = (message.get("reasoning_content") or "").strip()
     return message
+
+
+def incident_report(finding: investigate_mod.Investigation) -> str:
+    """The after-action email: what broke, what was done, and where to look.
+
+    First line is the subject. The evidence is included in full rather than
+    summarised, because the point of this message is to let a human check the
+    agent's reasoning rather than take it on trust — a conclusion without its
+    working is exactly what an agent should not be believed on.
+    """
+    fields = investigate_mod.parse_conclusion(finding.conclusion)
+    resolved = fields["resolved"].strip().lower().startswith("y")
+    headline = "resolved" if resolved else "NOT resolved"
+
+    links = [
+        f"  region      https://{REGION_HOST}/health",
+        f"  chat        https://{REGION_HOST}/app/",
+        f"  fleet       " + ", ".join(f"https://{r['host']}/health" for r in REGIONS),
+    ]
+    return "\n".join([
+        f"[{CLOUD}] {fields['cause'] or 'unknown cause'} — {headline}",
+        "",
+        f"Trigger:   {finding.trigger}",
+        f"Cause:     {fields['cause'] or 'UNKNOWN'}",
+        f"Action:    {fields['action'] or 'none taken'}",
+        f"Resolved:  {fields['resolved'] or 'no'}",
+        f"Agent:     {AGENT_UID} on {CLOUD} (region {REGION_INDEX})",
+        f"Tools:     {len(finding.steps)} calls — {', '.join(finding.tools_used) or 'none'}",
+        "",
+        "Links",
+        *links,
+        "",
+        "=" * 60,
+        "EVIDENCE — every tool call, in order",
+        "=" * 60,
+        finding.evidence,
+    ])
 
 
 def investigate_anomaly(trigger: str) -> investigate_mod.Investigation:
@@ -1125,6 +1195,15 @@ def watch_once() -> None:
                 # Escalate WITH the diagnosis. A page that says only "region
                 # down" makes the human start the investigation from nothing,
                 # which is the work the agent just did.
+                # The written record, sent whatever the outcome. A page is a
+                # sentence; this is what a human needs an hour later to check
+                # the agent's work — the evidence it acted on, and the links to
+                # go look for themselves.
+                try:
+                    log(f"self-repair report: {escalate.email_human(incident_report(finding))}")
+                except Exception as exc:  # noqa: BLE001 — the page still matters
+                    log(f"self-repair report failed: {exc}")
+
                 page = escalate.push_notify_human(
                     f"region {REGION_INDEX} ({CLOUD}) went down. "
                     f"Cause: {fields['cause'] or 'unknown'}. "

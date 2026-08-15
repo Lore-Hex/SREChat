@@ -413,6 +413,48 @@ def call_human(reason: str) -> str:
     return _escalate("call", reason, lambda text: _try_carriers("call", text))
 
 
+TR_BASE_URL = os.environ.get("TR_BASE_URL", "https://api.trustedrouter.com/v1")
+TR_API_KEY = os.environ.get("TR_API_KEY", "")
+
+
+def tr_notify_available() -> bool:
+    return bool(TR_API_KEY)
+
+
+def tr_notify(channel: str, subject: str, body: str) -> tuple[int, str]:
+    """Reach the owner through TrustedRouter's own notify API.
+
+    TR resolves the destination from the api key to the workspace owner, so
+    this agent never holds the address it is writing to — and never holds an
+    email credential either. The reply says whether it was DELIVERED, which is
+    the fact worth logging; "accepted" has misled us on this project before.
+    """
+    payload = json.dumps({"channel": channel, "subject": subject[:120], "body": body}).encode()
+    req = urllib.request.Request(
+        f"{TR_BASE_URL.rstrip('/')}/notify",
+        data=payload,
+        method="POST",
+        headers={"Authorization": f"Bearer {TR_API_KEY}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            answer = json.loads(resp.read().decode() or "{}")
+        delivered = bool(answer.get("delivered"))
+        detail = f"{answer.get('carrier') or channel}: {answer.get('detail') or ''}".strip()
+        return (200 if delivered else 502), detail
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode()[:200]
+        # A refusal is the caller's to fix (verify a phone, attach an email);
+        # say which, rather than reporting a bare status nobody can act on.
+        return exc.code, raw
+    except Exception as exc:  # noqa: BLE001
+        return 0, f"{type(exc).__name__}: {exc}"
+
+
+def tr_notify_email(subject: str, body: str) -> tuple[int, str]:
+    return tr_notify("email", subject, body)
+
+
 def email_human(text: str, attachments: str = "") -> str:
     """Quiet, detailed, and for the record — an after-action report.
 
@@ -437,6 +479,11 @@ def email_human(text: str, attachments: str = "") -> str:
 
     attempts = []
     for name, available, send in (
+        # TrustedRouter first. It sends through SES from the alert identity
+        # using credentials that live in TR, so no email secret has to sit on
+        # these VMs at all — and a credential nobody has to place is a
+        # credential nobody has to remember to rotate or delete.
+        ("trustedrouter", tr_notify_available, tr_notify_email),
         ("sendgrid", sendgrid_available, sendgrid_email),
         ("smtp", smtp_available, smtp_email),
     ):

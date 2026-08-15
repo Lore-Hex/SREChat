@@ -256,3 +256,56 @@ def test_sms_human_does_not_stack_a_second_prefix(monkeypatch, tmp_path):
     assert sent, "nothing was sent"
     assert sent[0].startswith("Trusted Router: ")
     assert "SREChat:" not in sent[0]
+
+
+def test_email_prefers_trustedrouter_over_a_local_credential(monkeypatch, tmp_path):
+    """TR sends through SES with credentials that live in TR, so no email
+    secret has to sit on these VMs — and a credential nobody places is one
+    nobody has to remember to rotate or delete."""
+    escalate = load_escalate(ESCALATE_STATE=str(tmp_path / "leash.json"))
+
+    tried = []
+    monkeypatch.setattr(escalate, "tr_notify_available", lambda: True)
+    monkeypatch.setattr(escalate, "sendgrid_available", lambda: True)
+    monkeypatch.setattr(
+        escalate, "tr_notify_email",
+        lambda subject, body: (tried.append("tr"), (200, "ses: sent"))[1],
+    )
+    monkeypatch.setattr(
+        escalate, "sendgrid_email",
+        lambda subject, body: (tried.append("sendgrid"), (200, "ok"))[1],
+    )
+
+    result = escalate.email_human("region 2 down\nrestarted redis")
+
+    assert tried == ["tr"], "a local credential was used while TR was available"
+    assert "sent via trustedrouter" in result
+
+
+def test_email_falls_back_when_trustedrouter_refuses(monkeypatch, tmp_path):
+    # A 409 from TR means something the owner must fix (verify a phone). The
+    # report should still reach them by any other configured route.
+    escalate = load_escalate(ESCALATE_STATE=str(tmp_path / "leash.json"))
+
+    monkeypatch.setattr(escalate, "tr_notify_available", lambda: True)
+    monkeypatch.setattr(escalate, "tr_notify_email", lambda s, b: (409, "phone_not_verified"))
+    monkeypatch.setattr(escalate, "sendgrid_available", lambda: True)
+    monkeypatch.setattr(escalate, "sendgrid_email", lambda s, b: (200, "ok"))
+
+    result = escalate.email_human("region 2 down\nrestarted redis")
+
+    assert "sent via sendgrid" in result
+
+
+def test_a_tr_refusal_is_reported_with_its_reason(monkeypatch, tmp_path):
+    # "email FAILED: trustedrouter=409" alone tells nobody what to do.
+    escalate = load_escalate(ESCALATE_STATE=str(tmp_path / "leash.json"))
+
+    monkeypatch.setattr(escalate, "tr_notify_available", lambda: True)
+    monkeypatch.setattr(escalate, "tr_notify_email", lambda s, b: (409, "phone_not_verified"))
+    monkeypatch.setattr(escalate, "sendgrid_available", lambda: False)
+    monkeypatch.setattr(escalate, "smtp_available", lambda: False)
+
+    result = escalate.email_human("region 2 down\nrestarted redis")
+
+    assert "phone_not_verified" in result
