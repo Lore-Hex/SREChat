@@ -1021,6 +1021,38 @@ def watch_once() -> None:
             f"Reported by {AGENT_UID} on {CLOUD}.",
         )
 
+    # 1a. If OUR OWN region is the broken one and we hold a shell, do not just
+    #     report it — work it. This is the only path on which the model chooses
+    #     tools, and it is reachable only from a condition measured here, never
+    #     from a chat message.
+    #
+    #     Gated on transition, not on state: re-investigating every cycle would
+    #     spend a model call every few seconds for the whole duration of an
+    #     outage, and would relitigate a cause already found.
+    if FULL_POWER and REGION_INDEX in down_regions:
+        if _watch_state.get("self-investigation") != "running":
+            _watch_state["self-investigation"] = "running"
+            try:
+                finding = investigate_anomaly(
+                    f"region {REGION_INDEX} ({CLOUD}) is failing its own health check"
+                )
+                fields = investigate_mod.parse_conclusion(finding.conclusion)
+                log(f"self-repair: cause={fields['cause']!r} action={fields['action']!r} "
+                    f"resolved={fields['resolved']!r}")
+                # Escalate WITH the diagnosis. A page that says only "region
+                # down" makes the human start the investigation from nothing,
+                # which is the work the agent just did.
+                escalate.push_notify_human(
+                    f"region {REGION_INDEX} ({CLOUD}) went down. "
+                    f"Cause: {fields['cause'] or 'unknown'}. "
+                    f"Action: {fields['action'] or 'none'}. "
+                    f"Resolved: {fields['resolved'] or 'no'}."
+                )
+            except Exception as exc:  # noqa: BLE001 — never let this kill the watch
+                log(f"self-investigation failed: {exc}")
+    elif REGION_INDEX not in down_regions:
+        _watch_state["self-investigation"] = "idle"
+
     # 1b. Autonomous severity. The watchdog is deterministic code, not the LLM:
     #     overnight, with nobody chatting, the model never runs and cannot decide
     #     to escalate. So the one case nobody would want to sleep through — more
