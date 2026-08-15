@@ -51,6 +51,48 @@ defmodule SREChatWeb.Endpoint do
     send_resp(conn, 200, "ok")
   end
 
+  # Voice call instructions, fetched by Telnyx TeXML when a call connects.
+  #
+  # Deliberately public and unauthenticated: the carrier fetches it from its own
+  # infrastructure with no credential of ours, so there is nothing to
+  # authenticate with. It is safe because it is a pure function of the query
+  # string — it reads no state and reveals nothing — and the only thing an
+  # attacker gains by calling it is a sentence of their own text read back.
+  #
+  # XML metacharacters are stripped rather than escaped: a malformed document
+  # is a call that connects and says nothing, which is indistinguishable from a
+  # page that never arrived.
+  get "/texml" do
+    params = conn.query_params
+    # `text` is what we send; `msg` is what an older deployed agent sends. A
+    # caller using the wrong name would otherwise get a call that connects and
+    # reads the generic line, which looks like success and carries no incident.
+    text =
+      (Map.get(params, "text") || Map.get(params, "msg") || "")
+      |> to_string()
+      |> String.slice(0, 400)
+      |> String.replace(~r/[<>&]/, " ")
+
+    # Same brand the SMS path uses: an unrecognized number reading an
+    # unattributed sentence at 3am gets hung up on.
+    stripped = String.replace(text, ~r/^\s*trusted router:?\s*/i, "")
+
+    spoken =
+      if stripped == "",
+        do: "Trusted Router notification.",
+        else: "Trusted Router notification. #{stripped}"
+
+    conn
+    |> Plug.Conn.put_resp_content_type("application/xml")
+    |> send_resp(
+      200,
+      # Said twice: a ringing phone is answered mid-sentence, so the first pass
+      # is usually half heard.
+      ~s(<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="alice">) <>
+        spoken <> ". Again. " <> spoken <> "</Say></Response>"
+    )
+  end
+
   get "/v3/observability" do
     observability(conn)
   end

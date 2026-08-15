@@ -261,7 +261,13 @@ def _spoken(text: str) -> str:
     """What the phone call actually says. Repeated once — a ringing phone is
     answered mid-sentence, so the first pass is usually half heard."""
     body = text[:400].replace("&", " and ").replace("<", " ").replace(">", " ")
-    return f"S R E Chat escalation. {body}. Again. {body}."
+    # Spoken, not written: the colon is silent, so the brand becomes a sentence
+    # rather than "Trusted Router colon disk full".
+    if body.lower().startswith(BRAND.lower() + ":"):
+        body = body[len(BRAND) + 1:].strip()
+    elif body.lower().startswith(BRAND.lower()):
+        body = body[len(BRAND):].strip()
+    return f"{BRAND} notification. {body}. Again. {body}."
 
 
 def twilio_call(text: str) -> tuple[int, str]:
@@ -280,21 +286,53 @@ def telnyx_call(text: str) -> tuple[int, str]:
     # inline, so this points at the deployment's own /texml endpoint. That is a
     # real dependency, which is exactly why Twilio is tried first for voice.
     base = os.environ.get("TEXML_BASE", "https://sre0.trustedrouter.com").rstrip("/")
-    url = f"{base}/texml?msg=" + urllib.parse.quote(text[:300])
+    url = f"{base}/texml?text=" + urllib.parse.quote(text[:300])
+    # NOT the number's connection id and NOT the TeXML application id: Telnyx
+    # wants the ORGANIZATION id here, which /v2/whoami reports.
     account = os.environ.get("TELNYX_ACCOUNT_ID", "").strip()
-    if not account:
-        return 0, "TELNYX_ACCOUNT_ID not set (Telnyx voice goes through TeXML)"
+    # A TeXML application supplies the outbound voice profile that authorizes
+    # origination. Without it the API answers 422 Missing ApplicationSid, and
+    # with an app that has no profile attached, 403 D38.
+    application = os.environ.get("TELNYX_TEXML_APP_ID", "").strip()
+    if not account or not application:
+        return 0, "TELNYX_ACCOUNT_ID and TELNYX_TEXML_APP_ID are both required for Telnyx voice"
     return _post(
         f"https://api.telnyx.com/v2/texml/Accounts/{account}/Calls",
-        {"From": TELNYX_FROM, "To": HUMAN_PHONE, "Url": url},
+        {
+            "From": TELNYX_FROM,
+            "To": HUMAN_PHONE,
+            "Url": url,
+            "ApplicationSid": application,
+        },
         {"Authorization": f"Bearer {TELNYX_API_KEY}"},
     )
 
 
 # ----------------------------------------------------------------- channels
 
+BRAND = "Trusted Router"
+
+
+def branded(text: str) -> str:
+    """Every SMS and call opens by naming who is calling.
+
+    An unrecognized number reading an unattributed sentence at 3am is
+    indistinguishable from a scam, and gets hung up on — the page the agent
+    escalated is the one that gets ignored. Idempotent, so text that already
+    carries the brand is not branded twice.
+    """
+    body = (text or "").strip()
+    if body.lower().startswith(BRAND.lower()):
+        return body
+    return f"{BRAND}: {body}"
+
+
 def _try_carriers(kind: str, text: str) -> tuple[bool, str]:
     """Try each configured carrier in order; report which one delivered."""
+    # Branded here, at the one path both channels and every caller pass
+    # through, so no carrier method or future channel can skip it.
+    text = branded(text)
+
     if kind == "sms":
         chain = [("telnyx", telnyx_available, telnyx_sms), ("twilio", twilio_available, twilio_sms)]
     else:
@@ -361,7 +399,9 @@ def push_notify_human(reason: str) -> str:
 
 def sms_human(reason: str) -> str:
     """Middle escalation: a text message, through Telnyx or Twilio."""
-    return _escalate("sms", reason, lambda text: _try_carriers("sms", f"SREChat: {text}"))
+    # No prefix here: _try_carriers brands every channel identically, and a
+    # second prefix would read "Trusted Router: SREChat: ...".
+    return _escalate("sms", reason, lambda text: _try_carriers("sms", text))
 
 
 def call_human(reason: str) -> str:

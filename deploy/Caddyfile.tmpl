@@ -31,5 +31,8 @@ PUBLIC_HOST_PLACEHOLDER {
   reverse_proxy /ws 127.0.0.1:4000
   reverse_proxy /socket 127.0.0.1:4000
   reverse_proxy /health 127.0.0.1:4000
+  # Voice call instructions. Carriers fetch this when a call connects, so it
+  # must be reachable without a credential — see the route for why that is safe.
+  reverse_proxy /texml 127.0.0.1:4000
   reverse_proxy / 127.0.0.1:4000
 }

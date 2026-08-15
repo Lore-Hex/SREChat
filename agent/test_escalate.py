@@ -194,3 +194,57 @@ class SpokenTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------- branding
+
+def test_sms_and_calls_open_with_the_brand(monkeypatch):
+    """An unrecognized number reading an unattributed sentence gets hung up on."""
+    import escalate
+
+    sent = []
+    monkeypatch.setattr(escalate, "telnyx_available", lambda: True)
+    monkeypatch.setattr(escalate, "twilio_available", lambda: False)
+    monkeypatch.setattr(escalate, "telnyx_sms", lambda text: (sent.append(text), (200, "ok"))[1])
+    monkeypatch.setattr(escalate, "telnyx_call", lambda text: (sent.append(text), (200, "ok"))[1])
+
+    escalate._try_carriers("sms", "disk full")
+    escalate._try_carriers("voice", "disk full")
+
+    assert sent, "nothing was sent"
+    for text in sent:
+        assert text.startswith("Trusted Router: "), text
+
+
+def test_branding_is_not_applied_twice():
+    import escalate
+
+    assert escalate.branded("Trusted Router: disk full").lower().count("trusted router") == 1
+
+
+def test_the_brand_is_spoken_as_a_sentence_not_a_colon():
+    """"Trusted Router colon disk full" is what a naive prefix would say."""
+    import escalate
+
+    spoken = escalate._spoken(escalate.branded("disk full"))
+
+    assert spoken.startswith("Trusted Router notification.")
+    assert ":" not in spoken
+    assert spoken.count("disk full") == 2
+
+
+def test_sms_human_does_not_stack_a_second_prefix(monkeypatch):
+    """It used to prefix "SREChat: " itself, which now reads as
+    "Trusted Router: SREChat: ..." once branding moved to the choke point."""
+    import escalate
+
+    sent = []
+    monkeypatch.setattr(escalate, "telnyx_available", lambda: True)
+    monkeypatch.setattr(escalate, "twilio_available", lambda: False)
+    monkeypatch.setattr(escalate, "telnyx_sms", lambda text: (sent.append(text), (200, "ok"))[1])
+
+    escalate.sms_human("disk full")
+
+    assert sent, "nothing was sent"
+    assert sent[0].startswith("Trusted Router: ")
+    assert "SREChat:" not in sent[0]
