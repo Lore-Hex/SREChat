@@ -98,9 +98,43 @@ read GCP and restart its own containers, opt in with one env var:
 SRE_ALLOW_ACTIONS=true ./run-agent.sh 0
 ```
 
-Then it will answer *show the GCP instances / DNS* and *restart the app*. This
-only has any effect on region 0 (where `gcloud` and `docker` are reachable); the
-AWS and Azure agents ignore it and stay read-only monitors on purpose.
+Then it will answer *show the GCP instances / DNS* and *restart the app*.
+
+Which regions may act is configuration, not a hardcoded index:
+
+```bash
+SRE_ALLOW_ACTIONS=true          # the master switch — nothing acts without it
+SRE_ACTIONABLE_REGIONS=0        # GCP reads, region-0 restart, TR triage
+SRE_FULL_POWER_REGIONS=2        # an unrestricted shell on THIS VM
+```
+
+**These two grants are different and must not be conflated.** `FULL_POWER` is
+root on the agent's own box. `ACTIONABLE` is authority over *other* systems —
+including `tr_rollback`, which moves TrustedRouter production traffic. Granting
+both to the chaos-target region hands it the ability to roll back the product;
+`test_authority.py` asserts a full-power agent holds none of the tools that
+reach elsewhere.
+
+**Keep at least one region out of both sets.** AWS is a pure monitor on purpose:
+an agent that can break every failure domain deletes the property the
+architecture exists to provide.
+
+The full-power shell has no command blocklist, deliberately — the point of the
+grant is repairing faults nobody anticipated, and a blocklist only rules out the
+repairs whoever wrote it imagined while implying the grant is bounded. What
+bounds it is *where* it is enabled: a region with no production traffic that
+rebuilds from `deploy/provision.sh`. Every command is logged to
+`~/.srechat-shell-audit.log` before it runs.
+
+The startup line names the mode and lists the tools, so you can read from the
+logs exactly what a rollout granted:
+
+```
+starting as sre-agent-2 on the Azure ... master (region 2, full-power(shell)) ...
+```
+
+Design rationale, escalation policy, and drill rules:
+**[../docs/sre-agent-design.md](../docs/sre-agent-design.md)**
 
 ## Configuration (environment variables)
 
@@ -110,7 +144,12 @@ AWS and Azure agents ignore it and stay read-only monitors on purpose.
 | `TR_MODEL` | `trustedrouter/cheap` | primary model; **always** falls back to `trustedrouter/auto` |
 | `SRE_HOST` | `sre0.trustedrouter.com` | which master's API to talk to (region is inferred from `sreN`) |
 | `SRE_REGION_INDEX` | inferred from host | force the region |
-| `SRE_ALLOW_ACTIONS` | `false` (read-only) | opt in to GCP reads + region-0 restarts (region 0 only) |
+| `SRE_ALLOW_ACTIONS` | `false` (read-only) | master switch; nothing below has any effect without it |
+| `SRE_ACTIONABLE_REGIONS` | `0` | regions granted GCP reads, region-0 restart, TR triage |
+| `SRE_FULL_POWER_REGIONS` | *(none)* | regions granted an unrestricted shell on their own VM |
+| `SRE_ACK_TIMEOUT` | `600` | seconds of chat silence on an unresolved incident before it calls you |
+| `SRE_FLAP_WINDOW` | `900` | rolling window for flap detection |
+| `SRE_FLAPS_TO_REPORT` | `3` | state changes in that window before it reports FLAPPING instead of each transition |
 | `SRE_AGENT_UID` | `sre-agent-<region>` | the agent's chat identity |
 | `SRE_DEPLOY_DIR` | auto (`~/SREChat` or `~/RoachChat`) | deploy dir the region-0 restart tool drives |
 | `SRE_POLL_SECONDS` | `3` | chat poll interval |

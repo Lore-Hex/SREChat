@@ -118,9 +118,50 @@ export TR_API_KEY=sk-tr-...
 
 Every agent is **read-only by default** — safe to DM, it can't change anything.
 Chat content is untrusted input, and the tool allowlist is enforced in code, so
-no message can make it do more than look. (Restarting region 0's own containers
-is an opt-in you can enable in config.) Full setup, per-region models, systemd
+no message can make it do more than look. Full setup, per-region models, systemd
 unit, and configuration: **[agent/README.md](agent/README.md)**.
+
+### They diagnose and repair, not just report
+
+Given authority, an agent works its own outage: it forms a hypothesis, runs a
+tool, and lets what it sees decide what to look at next — then repairs what it
+can and re-checks to confirm the repair held. Two live chaos drills on Azure
+were detected in 21s and 41s, diagnosed correctly, and self-repaired; one worked
+out unprompted that `restart: unless-stopped` does not auto-restart an explicit
+stop, so the container stayed `Exited(0)`.
+
+Authority is per region and deliberately uneven — GCP acts, **AWS stays a pure
+monitor** so one failure domain is always beyond the agents' reach, and Azure
+(no production traffic, rebuildable) holds a full root shell. Model-chosen tools
+exist **only** on the watchdog path; chat keeps keyword routing, so a persuasive
+message still cannot reach a tool.
+
+### It tells you, and escalates if you don't answer
+
+| When | Channel | Condition |
+|---|---|---|
+| starts acting | email | any action |
+| working | chat | as it goes |
+| finishes | email | cause, actions, **full evidence**, links |
+| 10 min, no reply | phone call | only if unresolved |
+
+An unanswered page is an unhandled incident, so silence escalates on a clock.
+Any message from you counts as an answer. A fault the agent already fixed never
+rings your phone.
+
+### Chaos drills prove it
+
+`tools/chaos/drill.py` breaks something at random on the unused region and
+scores whether the agent **detected**, **diagnosed**, and **fixed** it — telling
+it nothing, verifying the fault actually landed, and always restoring.
+
+The drills keep finding real defects: a `/health` that answered 200 while redis
+was stopped and the region could not commit a write; a crash loop reported as six
+"RECOVERED" alerts and no failure; one region's outage making its agent report
+two healthy peers as silent.
+
+**Design, escalation policy, drill rules, and the incidents behind each decision:
+[docs/sre-agent-design.md](docs/sre-agent-design.md).**
 
 ## Important compatibility note
 
