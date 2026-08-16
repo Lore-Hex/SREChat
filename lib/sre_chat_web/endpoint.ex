@@ -43,11 +43,26 @@ defmodule SREChatWeb.Endpoint do
   # Everything this region needs in order to serve, checked directly. Returns
   # the problems rather than a boolean so the response can name what is wrong —
   # "degraded" with no detail sends an operator to read logs on three machines.
+  # SERVING problems only — the things that stop this region answering
+  # correctly. Replication is deliberately NOT here; see health_warnings/0.
   def health_problems do
-    Enum.filter(
-      [redis_problem(), replication_problem(), disk_problem()],
-      &is_binary/1
-    )
+    Enum.filter([redis_problem(), disk_problem()], &is_binary/1)
+  end
+
+  @doc false
+  # Real, worth alerting on, and NOT a reason to fail health.
+  #
+  # SREChat is partition-tolerant on purpose: during a partition every region
+  # keeps accepting reads and writes, and converges on heal. A region that
+  # cannot reach a peer is therefore still serving correctly — failing health
+  # would pull it out of its load balancer and turn a replication problem into
+  # an availability one, which is the opposite of what the architecture exists
+  # to provide.
+  #
+  # Deploying this as a hard failure took a healthy AWS region out of rotation
+  # within seconds, which is how the distinction got drawn.
+  def health_warnings do
+    Enum.filter([replication_problem()], &is_binary/1)
   end
 
   defp redis_problem do
@@ -141,14 +156,23 @@ defmodule SREChatWeb.Endpoint do
   # Kept cheap on purpose — a PING and in-memory state, no writes — because
   # every load balancer in three clouds calls it constantly.
   get "/health" do
-    case health_problems() do
-      [] ->
+    case {health_problems(), health_warnings()} do
+      {[], []} ->
         send_resp(conn, 200, "ok")
 
-      problems ->
+      {[], warnings} ->
+        # Still serving, and something is wrong that a human should chase. 200
+        # keeps it in rotation; the body is what the agent and an operator read.
+        send_resp(conn, 200, "ok (warning: " <> Enum.join(warnings, "; ") <> ")")
+
+      {problems, warnings} ->
         # 503, not 500: this region is unable to serve, which is a different
         # thing from having crashed, and load balancers treat them differently.
-        send_resp(conn, 503, "degraded: " <> Enum.join(problems, "; "))
+        send_resp(
+          conn,
+          503,
+          "degraded: " <> Enum.join(problems ++ warnings, "; ")
+        )
     end
   end
 

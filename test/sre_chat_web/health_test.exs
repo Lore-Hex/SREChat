@@ -31,6 +31,23 @@ defmodule SREChatWeb.HealthTest do
     assert body =~ "disk 97%"
   end
 
+  test "a replication gap warns but does NOT fail health" do
+    # SREChat keeps serving during a partition on purpose — that is the entire
+    # architecture. Failing health for a replication gap pulls a correctly
+    # serving region out of its load balancer and turns a replication problem
+    # into an availability one. Deployed as a hard failure, this took a healthy
+    # AWS region out of rotation within seconds.
+    assert is_list(Endpoint.health_warnings())
+    refute Enum.any?(Endpoint.health_problems(), &String.contains?(&1, "replication"))
+  end
+
+  test "a warning still reaches the reader in the body" do
+    # Warning silently would recreate the original bug in a politer form.
+    conn = Plug.Test.conn(:get, "/health") |> Endpoint.call([])
+    assert conn.status in [200, 503]
+    assert is_binary(conn.resp_body)
+  end
+
   test "a degraded region answers 503, not 500 or 200" do
     # 200 hides it from every load balancer in three clouds. 500 says the
     # process crashed, which is a different thing an operator responds to
