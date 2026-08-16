@@ -623,6 +623,23 @@ _ESCALATION_TOOLS = {
 # 200 while the region could not commit a write.
 EXPECTED_CONTAINERS = ("deploy-app-1", "deploy-redis-1", "deploy-caddy-1")
 
+# Above this, the region is close enough to unable-to-write that a human should
+# know. A drill filled the disk and every existing signal stayed green.
+DISK_ALERT_PERCENT = int(os.environ.get("SRE_DISK_ALERT_PERCENT", "85"))
+
+
+def _disk_percent_used(path: str = "/") -> int:
+    """Percent of the filesystem in use, as df reports it."""
+    stat = os.statvfs(path)
+    total = stat.f_blocks
+    if not total:
+        return 0
+    # f_bavail, not f_bfree: reserved blocks are not available to us, so
+    # counting them as free would report headroom nobody can spend.
+    used = total - stat.f_bavail
+    return int(round(100.0 * used / total))
+
+
 SHELL_TIMEOUT = 60
 SHELL_AUDIT = os.path.expanduser("~/.srechat-shell-audit.log")
 
@@ -1223,15 +1240,33 @@ def watch_once() -> None:
     #      A liveness check that does not exercise the dependency is not a
     #      liveness check, so the expected containers are checked directly.
     local_missing: list[str] = []
+    local_trouble = ""
     if FULL_POWER:
         try:
             running = tool_local_containers("")
             local_missing = [name for name in EXPECTED_CONTAINERS if name not in running]
         except Exception as exc:  # noqa: BLE001
             log(f"container check failed: {exc}")
-        if local_missing and REGION_INDEX not in down_regions:
+
+        # Disk. A chaos drill filled the disk and NOTHING noticed: containers
+        # keep running and /health keeps answering 200 right up until a write
+        # fails, so every signal the watchdog had stayed green while the region
+        # was minutes from being unable to accept a message.
+        #
+        # This is the third blind spot of the same shape — health that does not
+        # exercise the thing it depends on. Checked directly, like the
+        # containers.
+        try:
+            used = _disk_percent_used()
+            if used >= DISK_ALERT_PERCENT:
+                local_trouble = f"disk is {used}% full on region {REGION_INDEX}"
+                log(local_trouble)
+        except Exception as exc:  # noqa: BLE001
+            log(f"disk check failed: {exc}")
+        if (local_missing or local_trouble) and REGION_INDEX not in down_regions:
             down_regions.append(REGION_INDEX)
-            log(f"local containers missing: {local_missing}")
+            if local_missing:
+                log(f"local containers missing: {local_missing}")
 
     # 1a. If OUR OWN region is the broken one and we hold a shell, do not just
     #     report it — work it. This is the only path on which the model chooses
@@ -1245,12 +1280,15 @@ def watch_once() -> None:
         if _watch_state.get("self-investigation") != "running":
             _watch_state["self-investigation"] = "running"
             try:
-                trigger = (
-                    f"containers not running on region {REGION_INDEX} ({CLOUD}): "
-                    f"{', '.join(local_missing)}"
-                    if local_missing
-                    else f"region {REGION_INDEX} ({CLOUD}) is failing its own health check"
-                )
+                if local_missing:
+                    trigger = (
+                        f"containers not running on region {REGION_INDEX} ({CLOUD}): "
+                        f"{', '.join(local_missing)}"
+                    )
+                elif local_trouble:
+                    trigger = local_trouble
+                else:
+                    trigger = f"region {REGION_INDEX} ({CLOUD}) is failing its own health check"
                 # Before it touches anything: a note that it is about to.
                 try:
                     log(f"opening note: {escalate.email_human(opening_email(trigger))}")
