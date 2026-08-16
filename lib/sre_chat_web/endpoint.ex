@@ -37,6 +37,87 @@ defmodule SREChatWeb.Endpoint do
     conn
   end
 
+  @disk_alert_percent 90
+
+  @doc false
+  # Everything this region needs in order to serve, checked directly. Returns
+  # the problems rather than a boolean so the response can name what is wrong —
+  # "degraded" with no detail sends an operator to read logs on three machines.
+  def health_problems do
+    Enum.filter(
+      [redis_problem(), replication_problem(), disk_problem()],
+      &is_binary/1
+    )
+  end
+
+  defp redis_problem do
+    # A region whose Redis is gone cannot commit a single write, and this is
+    # exactly the case that answered 200 while a drill held redis stopped.
+    #
+    # "Never configured" and "configured but dead" must not look alike. A
+    # deployment with no redis_url genuinely does not use Redis (dev, tests) and
+    # is not degraded; a deployment that HAS one and cannot reach it is an
+    # outage. Treating them the same either cries wolf in development or, far
+    # worse, reports a dead connection as fine in production.
+    cond do
+      is_nil(SREChat.Config.redis_url()) or SREChat.Config.redis_url() == "" ->
+        nil
+
+      true ->
+        case SREChat.Store.RedisPersistence.ping() do
+          :ok -> nil
+          {:error, reason} -> "redis unreachable (#{inspect(reason)})"
+        end
+    end
+  rescue
+    error -> "redis check failed (#{inspect(error)})"
+  catch
+    :exit, reason -> "redis check exited (#{inspect(reason)})"
+  end
+
+  defp replication_problem do
+    # A tailer in :degraded has REFUSED to continue — usually a cursor past the
+    # peer's trim horizon. It backs off and logs, and nothing else notices;
+    # AWS and Azure sat broken in both directions for hours that way.
+    degraded =
+      for peer <- SREChat.Config.peer_regions(),
+          status = SREChat.Replication.Tailer.status(peer.index),
+          status[:mode] == :degraded or status[:state] == :down,
+          do: "region #{peer.index} (#{status[:last_error] || status[:state]})"
+
+    case degraded do
+      [] -> nil
+      peers -> "replication not running from " <> Enum.join(peers, ", ")
+    end
+  rescue
+    error -> "replication check failed (#{inspect(error)})"
+  end
+
+  defp disk_problem do
+    # A full disk stops writes without stopping the process, so nothing else
+    # here would notice until a commit fails.
+    case System.cmd("df", ["--output=pcent", "/"], stderr_to_stdout: true) do
+      {output, 0} ->
+        used =
+          output
+          |> String.split("\n", trim: true)
+          |> List.last()
+          |> to_string()
+          |> String.replace(~r/[^0-9]/, "")
+          |> Integer.parse()
+
+        case used do
+          {percent, _} when percent >= @disk_alert_percent -> "disk #{percent}% full"
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
+  end
+
   defp collapse_duplicate_version(conn, _opts) do
     case conn.path_info do
       [v, v | rest] when v in ["v3.0", "v3"] ->
@@ -47,8 +128,28 @@ defmodule SREChatWeb.Endpoint do
     end
   end
 
+  # Liveness AND readiness. This used to be `send_resp(conn, 200, "ok")` — a
+  # literal that checked nothing, which is how a series of real outages stayed
+  # invisible: redis stopped, the disk filled to 93%, and replication from a
+  # peer sat degraded for hours, and every one of them answered 200.
+  #
+  # A health check that does not exercise what the region needs in order to
+  # serve is not a health check; it only proves the HTTP listener is accepting
+  # sockets. So this now touches the things a region actually cannot work
+  # without, and says which one is wrong.
+  #
+  # Kept cheap on purpose — a PING and in-memory state, no writes — because
+  # every load balancer in three clouds calls it constantly.
   get "/health" do
-    send_resp(conn, 200, "ok")
+    case health_problems() do
+      [] ->
+        send_resp(conn, 200, "ok")
+
+      problems ->
+        # 503, not 500: this region is unable to serve, which is a different
+        # thing from having crashed, and load balancers treat them differently.
+        send_resp(conn, 503, "degraded: " <> Enum.join(problems, "; "))
+    end
   end
 
   # Voice call instructions, fetched by Telnyx TeXML when a call connects.

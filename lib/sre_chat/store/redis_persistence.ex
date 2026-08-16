@@ -118,6 +118,29 @@ defmodule SREChat.Store.RedisPersistence do
 
   def enabled?, do: Process.whereis(@reader_name) != nil
 
+  @doc """
+  Round-trip Redis, for the health endpoint.
+
+  Public because /health has to be able to ask: a region whose Redis is gone
+  cannot commit a single write, and reaching into this module's private
+  connection lookup from the web layer would couple them for no reason.
+  """
+  def ping do
+    if enabled?() do
+      case RedisClient.command(@reader_name, ["PING"]) do
+        {:ok, "PONG"} -> :ok
+        {:ok, other} -> {:error, {:unexpected, other}}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, :not_running}
+    end
+  rescue
+    error -> {:error, error}
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+  end
+
   def configured? do
     case Config.redis_url() do
       url when is_binary(url) -> url != ""
