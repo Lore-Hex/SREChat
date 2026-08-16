@@ -415,6 +415,13 @@ def call_human(reason: str) -> str:
 
 TR_BASE_URL = os.environ.get("TR_BASE_URL", "https://api.trustedrouter.com/v1")
 TR_API_KEY = os.environ.get("TR_API_KEY", "")
+# NOT the inference gateway. TrustedRouter runs two planes: api.trustedrouter.com
+# serves attested inference and answers /notify with 404 "route not found", while
+# the control plane at trustedrouter.com owns account-scoped APIs. Notify lives
+# on the control plane deliberately — message bodies must never enter the
+# attested inference path, or zero-retention stops being a statement about
+# inference alone.
+TR_NOTIFY_BASE_URL = os.environ.get("TR_NOTIFY_BASE_URL", "https://trustedrouter.com/v1")
 
 
 def tr_notify_available() -> bool:
@@ -431,7 +438,7 @@ def tr_notify(channel: str, subject: str, body: str) -> tuple[int, str]:
     """
     payload = json.dumps({"channel": channel, "subject": subject[:120], "body": body}).encode()
     req = urllib.request.Request(
-        f"{TR_BASE_URL.rstrip('/')}/notify",
+        f"{TR_NOTIFY_BASE_URL.rstrip('/')}/notify",
         data=payload,
         method="POST",
         headers={"Authorization": f"Bearer {TR_API_KEY}", "Content-Type": "application/json"},

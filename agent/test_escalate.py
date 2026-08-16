@@ -309,3 +309,23 @@ def test_a_tr_refusal_is_reported_with_its_reason(monkeypatch, tmp_path):
     result = escalate.email_human("region 2 down\nrestarted redis")
 
     assert "phone_not_verified" in result
+
+
+def test_notify_goes_to_the_control_plane_not_the_inference_gateway(monkeypatch, tmp_path):
+    """api.trustedrouter.com answers /notify with 404 "route not found": it is
+    the attested inference gateway, and notify lives on the control plane so
+    message bodies never enter the attested path."""
+    escalate = load_escalate(ESCALATE_STATE=str(tmp_path / "leash.json"))
+
+    assert "api.trustedrouter.com" not in escalate.TR_NOTIFY_BASE_URL
+    assert escalate.TR_NOTIFY_BASE_URL.startswith("https://trustedrouter.com")
+
+    seen = []
+    monkeypatch.setattr(
+        escalate.urllib.request, "urlopen",
+        lambda req, timeout=None: seen.append(req.full_url) or (_ for _ in ()).throw(
+            RuntimeError("stop here")),
+    )
+    escalate.tr_notify("email", "s", "b")
+
+    assert seen and seen[0].startswith("https://trustedrouter.com/v1/notify")
