@@ -1289,6 +1289,17 @@ def watch_once() -> None:
                     trigger = local_trouble
                 else:
                     trigger = f"region {REGION_INDEX} ({CLOUD}) is failing its own health check"
+                # Say it in the room first. The chat is where a human goes to
+                # look, and it is the only channel they can REPLY on — a page
+                # that lands in a phone banner with no matching message leaves
+                # them nothing to answer. The disk drill produced two emails and
+                # a push and complete silence in chat, which is how this was
+                # found.
+                try:
+                    send(OWNER_UID, f"🔧 Working on it: {trigger}")
+                except Exception as exc:  # noqa: BLE001 — chat is not the pager
+                    log(f"chat opening note failed: {exc}")
+
                 # Before it touches anything: a note that it is about to.
                 try:
                     log(f"opening note: {escalate.email_human(opening_email(trigger))}")
@@ -1310,6 +1321,19 @@ def watch_once() -> None:
                     log(f"self-repair report: {escalate.email_human(incident_report(finding))}")
                 except Exception as exc:  # noqa: BLE001 — the page still matters
                     log(f"self-repair report failed: {exc}")
+
+                # And the finding, in the room, where it can be replied to.
+                try:
+                    verdict = "resolved" if investigate_mod.is_resolved(finding.conclusion) else "NOT resolved"
+                    send(OWNER_UID, "\n".join([
+                        f"🔧 {verdict}: {fields['cause'] or 'unknown cause'}",
+                        f"Action: {fields['action'] or 'none taken'}",
+                        f"Looked at {len(finding.steps)} thing(s): "
+                        f"{', '.join(finding.tools_used) or 'nothing'}",
+                        "Full evidence is in the email.",
+                    ]))
+                except Exception as exc:  # noqa: BLE001
+                    log(f"chat finding failed: {exc}")
 
                 page = escalate.push_notify_human(
                     f"region {REGION_INDEX} ({CLOUD}) went down. "
