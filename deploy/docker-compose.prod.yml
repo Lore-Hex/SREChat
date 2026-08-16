@@ -43,8 +43,26 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     # Reachable locally AND from peer regions over WireGuard, nowhere else.
-    command: ["redis-server", "--bind", "127.0.0.1 ${WG_IP}", "--protected-mode", "no", "--save", "", "--appendonly", "no"]
+    #
+    # PERSISTENCE IS REQUIRED, not an optimisation. This ran with `--save ""
+    # --appendonly no`, which is a reasonable choice for a cache and a wrong one
+    # here: the oplog stream in this Redis is the replication source of truth,
+    # and every peer region stores a cursor pointing into it.
+    #
+    # Losing it on restart does not cost a cache warm-up — it strands every
+    # peer. The peer's cursor then names an entry that no longer exists, its
+    # tailer refuses to continue (correctly — it cannot know what it missed),
+    # and replication stops silently until someone resets the cursor and
+    # replays everything. That happened three times in one night from three
+    # unrelated restarts.
+    #
+    # appendfsync everysec: at most one second of oplog loss on an unclean
+    # stop, which peers recover from by reading on, versus losing the whole
+    # stream and needing a full resync.
+    command: ["redis-server", "--bind", "127.0.0.1 ${WG_IP}", "--protected-mode", "no", "--save", "900 1 300 10 60 10000", "--appendonly", "yes", "--appendfsync", "everysec", "--dir", "/data"]
     network_mode: host
+    volumes:
+      - redis-data:/data
 
   caddy:
     image: caddy:2-alpine
@@ -57,6 +75,7 @@ services:
       - caddy-config:/config
 
 volumes:
+  redis-data:
   caddy-data:
   caddy-config:
   uploads:
