@@ -42,8 +42,19 @@ class TestFaultCatalogue:
         # Sized as a share of what is free, so it cannot fill a small disk
         # completely and turn a drill into a real outage.
         disk = next(f for f in drill.FAULTS if f.name == "disk-nearly-full")
-        assert "avail" in disk.inject
-        assert "80 / 100" in disk.inject
+        assert "avail" in disk.inject, "must be sized from free space, not total"
+        assert "92 / 100" in disk.inject
+
+    def test_the_disk_fault_actually_produces_a_nearly_full_disk(self) -> None:
+        # At 80% of free it left the disk at 83% used — under the agent's alarm,
+        # so the agent correctly said nothing and the drill scored a miss. The
+        # wrong fix is lowering the alarm until the drill passes; a fault named
+        # "disk nearly full" has to produce one.
+        disk = next(f for f in drill.FAULTS if f.name == "disk-nearly-full")
+        share = 92
+        for starting_used in (10, 15, 30, 50):
+            resulting = starting_used + (100 - starting_used) * share // 100
+            assert resulting >= 90, (starting_used, resulting)
 
 
 class TestDiagnosisScoring:

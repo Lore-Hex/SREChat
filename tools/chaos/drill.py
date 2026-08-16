@@ -108,10 +108,18 @@ FAULTS = [
         keywords=("disk", "space", "full", "storage"),
         # Sized as a share of what is FREE, so this cannot fill a small disk
         # completely and take the box down for real.
+        #
+        # 92%, not 80%. At 80% of free the first live run left the disk at 83%
+        # used — under the agent's 85% alarm, so it correctly said nothing and
+        # the drill scored a miss. The tempting fix was to lower the alarm until
+        # the drill passed, which tunes the alarm to fit the test rather than to
+        # what an operator needs. A fault named "disk nearly full" should
+        # produce a nearly full disk; the threshold is set by operations, not by
+        # this file.
         inject=(
             "free=$(df --output=avail -m / | tail -1); "
-            "fallocate -l $((free * 80 / 100))M /var/tmp/drill-ballast || "
-            "dd if=/dev/zero of=/var/tmp/drill-ballast bs=1M count=$((free * 80 / 100))"
+            "fallocate -l $((free * 92 / 100))M /var/tmp/drill-ballast || "
+            "dd if=/dev/zero of=/var/tmp/drill-ballast bs=1M count=$((free * 92 / 100))"
         ),
         restore="rm -f /var/tmp/drill-ballast",
         verify_broken="test -f /var/tmp/drill-ballast",
