@@ -211,6 +211,37 @@ that gets skipped when something goes wrong.
 **A drill the agent can read is not a test of the agent.** The chaos harness lives
 on the target box, and the agent found `drill.py` and named the fault from it.
 
+Measured on a live run: the agent detected a 94%-full disk in **43 seconds**,
+repaired it and verified within **2m39s**, emailed a report and sent a push — all
+real. Then the log showed how it got the cause:
+
+```
+shell: sudo grep -n "disk-nearly-full\|ballast\|/var/tmp" .../tools/chaos/drill.py
+       sudo tail -5 /home/roach/.srechat-drills.jsonl
+```
+
+It read the answer key twice, and reported the cause as `the region-2 chaos drill
+(drill.py "disk-nearly-full")`. Detection and repair were credited; the diagnosis
+was reading comprehension. Three separate leaks made it possible, and all three
+are the same mistake:
+
+- the artifact was called `/var/tmp/drill-ballast` — **the fault announced what
+  it was**, which is what prompted the grep. Now `/var/log/srechat-audit.log.1`,
+  named like the runaway log it is imitating.
+- `tools/chaos/drill.py` sits in the checkout on the target, and the agent has
+  root. Nothing on that box can be hidden from it, so the harness must not run
+  there: `tools/chaos/drill-remote.sh` drives the whole drill from a workstation
+  and puts nothing on the box.
+- the drill wrote its own history to `~/.srechat-drills.jsonl` **on the target**.
+  A drill journal is an answer key.
+
+The scoreboard was lying in the other direction too: it read `tail -60` of the
+journal, so the `investigating:` line from 43 seconds in had already scrolled
+away and detection scored **NO** on a run where the log plainly showed detection.
+A scoreboard that contradicts the evidence it is reading is worse than no
+scoreboard. It now greps the whole window, and reports "answer key read" as its
+own line rather than quietly counting a lookup as a pass.
+
 **Score the conclusion, not the transcript.** Keyword-matching the whole journal
 matched the agent's own shell commands, so a drill passed while the agent had
 diagnosed nothing. Read the conclusion line only, and never count `UNKNOWN`.

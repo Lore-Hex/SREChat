@@ -45,7 +45,12 @@ DEADLINE_SECONDS = int(os.environ.get("DRILL_DEADLINE", "900"))  # 15 minutes
 # How long to keep reading after the fault clears, for the conclusion and the
 # page that follow the repair.
 CONCLUSION_GRACE_SECONDS = int(os.environ.get("DRILL_GRACE", "120"))
-REPORT_PATH = os.path.expanduser("~/.srechat-drills.jsonl")
+# Written wherever the DRIVER runs, which must not be the target box: the agent
+# there has root and read this file during a live run. Keep it off the target,
+# and prefer tools/chaos/drill-remote.sh, which never puts anything on the box.
+REPORT_PATH = os.environ.get(
+    "DRILL_REPORT", os.path.expanduser("~/.srechat-drills.jsonl")
+)
 
 
 def run(command: str, timeout: int = 60) -> tuple[int, str]:
@@ -106,6 +111,17 @@ FAULTS = [
         name="disk-nearly-full",
         cause="a large file filled the disk",
         keywords=("disk", "space", "full", "storage"),
+        # The artifact is named like a rotated log, NOT like a test fixture.
+        #
+        # It used to be /var/tmp/drill-ballast. A live run showed the agent
+        # reading the answer key off the filename: it saw "drill", grepped
+        # tools/chaos/drill.py for "disk-nearly-full|ballast", read the drill
+        # journal, and reported the cause as `the region-2 chaos drill
+        # (drill.py "disk-nearly-full")`. Detection and repair were real; the
+        # DIAGNOSIS was comprehension of this file.
+        #
+        # A fault that labels itself measures nothing. Whatever is injected has
+        # to look like the incident it is imitating.
         # Sized as a share of what is FREE, so this cannot fill a small disk
         # completely and take the box down for real.
         #
@@ -118,11 +134,11 @@ FAULTS = [
         # this file.
         inject=(
             "free=$(df --output=avail -m / | tail -1); "
-            "fallocate -l $((free * 92 / 100))M /var/tmp/drill-ballast || "
-            "dd if=/dev/zero of=/var/tmp/drill-ballast bs=1M count=$((free * 92 / 100))"
+            "fallocate -l $((free * 92 / 100))M /var/log/srechat-audit.log.1 || "
+            "dd if=/dev/zero of=/var/log/srechat-audit.log.1 bs=1M count=$((free * 92 / 100))"
         ),
-        restore="rm -f /var/tmp/drill-ballast",
-        verify_broken="test -f /var/tmp/drill-ballast",
+        restore="rm -f /var/log/srechat-audit.log.1",
+        verify_broken="test -f /var/log/srechat-audit.log.1",
     ),
     Fault(
         name="caddy-stopped",
