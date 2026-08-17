@@ -146,6 +146,22 @@ defmodule SREChat.Config do
   # matching "|<passcode>" suffix, so only holders of the passcode get in. nil
   # (default) keeps the deployment open, as for dev/test.
   def access_secret, do: Application.get_env(:sre_chat, :access_secret)
+
+  # Shared secret for POST /hooks/<source>. nil (default) makes the endpoint
+  # refuse everything: an open webhook that posts to your pager is worse than a
+  # missing one, so it fails closed rather than open.
+  def webhook_secret, do: Application.get_env(:sre_chat, :webhook_secret)
+
+  # Who inbound alerts are addressed to. Same default as the agents use, so a
+  # deployment that never sets it still lands them somewhere a human reads.
+  def owner_uid, do: presence(Application.get_env(:sre_chat, :owner_uid)) || "joseph"
+
+  # This region's SRE agent. Inbound signals go to the owner AND to the agent:
+  # the owner so an error is visible even if the agent is dead, the agent so
+  # something triages it without waiting for a human to read chat.
+  def agent_uid do
+    presence(Application.get_env(:sre_chat, :agent_uid)) || "sre-agent-#{region_index()}"
+  end
   def extension_domain, do: Application.fetch_env!(:sre_chat, :extension_domain)
   def upload_dir, do: Application.fetch_env!(:sre_chat, :upload_dir)
 

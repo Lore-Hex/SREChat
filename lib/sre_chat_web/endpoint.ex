@@ -218,6 +218,95 @@ defmodule SREChatWeb.Endpoint do
     )
   end
 
+  # Anything with a webhook can put a line in the chat: Sentry, GCP alerting,
+  # Stripe, CI, SES inbound mail forwarded from help@. One endpoint turns all of
+  # those from code into configuration.
+  #
+  #   POST /hooks/<source>?token=<secret>
+  #
+  # UNTRUSTED INPUT. A Sentry issue title is attacker-influenced — anyone who
+  # can cause an exception picks most of the text — so it is rendered as data
+  # here and never parsed for meaning.
+  #
+  # It is delivered to TWO recipients, and the split is the design:
+  #
+  #   * the owner, so an error is visible in chat even when the agent is dead —
+  #     the moment you most want to see it;
+  #   * this region's agent, so something triages it in seconds instead of
+  #     whenever a human next opens the app.
+  #
+  # Reaching the agent means untrusted text reaches a tool-calling loop, so the
+  # containment is on that side and it is structural, not a prompt request: a
+  # signal-triggered investigation is handed the READ-ONLY tool table, so no
+  # schema for shell/restart/rollback is ever sent to the model and a name it
+  # invents resolves to nothing. An error whose message says to run a command
+  # gets logs read and the owner told; acting still requires either the owner's
+  # word or a condition the agent measured itself.
+  #
+  # The token is a shared secret in the query string rather than a header
+  # because several senders (Sentry's legacy webhook among them) cannot set
+  # headers. That makes the URL itself the credential: it will appear in the
+  # sender's config and in our access logs, so it is a low-value secret whose
+  # only power is posting a chat message, and it is rotatable by changing one
+  # env var.
+  post "/hooks/:source" do
+    secret = SREChat.Config.webhook_secret()
+    given = conn.query_params["token"] || ""
+
+    cond do
+      is_nil(secret) or secret == "" ->
+        # Refuse rather than accept anything when unconfigured. An open
+        # endpoint that posts to your pager is worse than a broken one.
+        send_resp(conn, 503, "webhooks not configured")
+
+      not Plug.Crypto.secure_compare(given, secret) ->
+        send_resp(conn, 403, "bad token")
+
+      true ->
+        text = SREChatWeb.Webhook.render(source, conn.body_params)
+
+        results =
+          Enum.map(
+            [SREChat.Config.owner_uid(), SREChat.Config.agent_uid()],
+            &{&1, post_signal(&1, text)}
+          )
+
+        case Enum.filter(results, fn {_to, result} -> match?({:error, _}, result) end) do
+          [] ->
+            send_resp(conn, 200, "ok")
+
+          failures ->
+            require Logger
+
+            for {to, {:error, reason}} <- failures do
+              Logger.error("webhook #{source} could not post to #{to}: #{inspect(reason)}")
+            end
+
+            # 500 on ANY failed recipient so the sender retries: Sentry and GCP
+            # both back off and retry, and a dropped alert is the failure this
+            # endpoint exists to prevent. Retrying may duplicate the delivery
+            # that did succeed, which is the right way round — a line you read
+            # twice beats an outage nobody was told about.
+            send_resp(conn, 500, "could not post")
+        end
+    end
+  end
+
+  defp post_signal(receiver, text) do
+    SREChat.Store.send_message(
+      "webhook",
+      %{
+        "receiver" => receiver,
+        "receiverType" => "user",
+        "type" => "text",
+        "category" => "message",
+        "data" => %{"text" => text}
+      },
+      [],
+      admin?: true
+    )
+  end
+
   get "/v3/observability" do
     observability(conn)
   end

@@ -28,6 +28,11 @@ services:
       # host networking: reach the local redis on loopback, not a compose DNS name.
       REDIS_URL: "redis://127.0.0.1:6379/0"
       REDIS_KEY_PREFIX: "srechat"
+      # Inbound webhooks (Sentry, GCP alerting, CI, forwarded help@). Unset
+      # makes /hooks refuse everything, which is the right default: an open
+      # endpoint that posts to a pager is worse than a missing one.
+      SRE_WEBHOOK_SECRET: "${SRE_WEBHOOK_SECRET}"
+      SRE_OWNER_UID: "${SRE_OWNER_UID:-joseph}"
       ID_ALLOCATOR: "region"
       REGION_INDEX: "${REGION_INDEX}"
       REPLICATION_MODE: "multi_master"

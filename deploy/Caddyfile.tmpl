@@ -34,5 +34,8 @@ PUBLIC_HOST_PLACEHOLDER {
   # Voice call instructions. Carriers fetch this when a call connects, so it
   # must be reachable without a credential — see the route for why that is safe.
   reverse_proxy /texml 127.0.0.1:4000
+  # Inbound webhooks: Sentry, GCP alerting, CI, forwarded help@ mail. The
+  # token in the query string is the credential, checked by the app.
+  reverse_proxy /hooks/* 127.0.0.1:4000
   reverse_proxy / 127.0.0.1:4000
 }
