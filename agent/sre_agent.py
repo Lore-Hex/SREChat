@@ -894,10 +894,17 @@ def incident_report(finding: investigate_mod.Investigation) -> str:
     resolved = fields["resolved"].strip().lower().startswith("y")
     headline = "resolved" if resolved else "NOT resolved"
 
+    # One URL per line, nothing after it, no leading indent.
+    #
+    # These were indented and comma-separated, which breaks them in a mail
+    # client: autolinking swallows the trailing comma into the href, so the
+    # link 404s, and the leading spaces stop some clients linking at all. A
+    # link in an incident report that does not open is worse than no link —
+    # it is read as "the region is gone".
     links = [
-        f"  region      https://{REGION_HOST}/health",
-        f"  chat        https://{REGION_HOST}/app/",
-        f"  fleet       " + ", ".join(f"https://{r['host']}/health" for r in REGIONS),
+        f"health, this region: https://{REGION_HOST}/health",
+        f"chat: https://{REGION_HOST}/app/",
+        *(f"health, region {r['index']}: https://{r['host']}/health" for r in REGIONS),
     ]
     return "\n".join([
         f"[{CLOUD}] {fields['cause'] or 'unknown cause'} — {headline}",

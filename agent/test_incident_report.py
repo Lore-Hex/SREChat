@@ -91,6 +91,23 @@ class TestBody:
 
         assert "https://sre2.trustedrouter.com/health" in body
         assert "/app/" in body
+
+    def test_no_url_has_anything_after_it_on_the_line(self, agent) -> None:
+        # Mail clients autolink to end-of-token, so a trailing comma lands
+        # inside the href and the link 404s. A link in an incident report that
+        # does not open reads as "the region is gone".
+        for line in agent.incident_report(_finding(RESOLVED)).splitlines():
+            if "https://" in line:
+                url = line.split("https://", 1)[1]
+                assert not url.endswith(","), line
+                assert " " not in url.strip(), f"more than one url on a line: {line}"
+
+    def test_urls_are_not_indented(self, agent) -> None:
+        # Leading whitespace stops some clients linking at all.
+        body = agent.incident_report(_finding(RESOLVED))
+        for line in body.splitlines():
+            if "https://" in line:
+                assert line == line.lstrip(), repr(line)
         # Every region, so a reader can see whether this was one region or the
         # fleet without going to look it up.
         for region in agent.REGIONS:
