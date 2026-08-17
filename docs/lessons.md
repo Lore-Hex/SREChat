@@ -153,6 +153,43 @@ emails, a push, and complete silence in chat.
 
 ---
 
+## Secrets in the repo
+
+**A private SSH key sat in this public repo for months.** `.gitignore` covered
+`*.pem`; `.roach-azure-key` has no extension, so it walked straight past the
+pattern and into commit `98dfee5`. It authorized **root**, and `sshd` was
+listening — the only thing standing in the way was Azure's NSG having no inbound
+SSH rule. One firewall-rule change from full compromise.
+
+**Ignore by prefix, not just by extension.** `*.pem` plus `.roach-*` now. Any
+pattern that only matches a *suffix* will miss the file someone names without one.
+
+**The filename lies about the blast radius.** The key was named `azure`, and it
+was also authorized on region 0 (GCP). Sweep every host for the fingerprint; do
+not reason from what the file is called.
+
+**Revoke by fingerprint, not by matching key text.** The same key can be stored
+with a different comment or an options prefix, and a text match misses it:
+
+```bash
+fp=$(printf '%s\n' "$line" | ssh-keygen -lf - | awk '{print $2}')
+```
+
+**Rotation is the fix; history rewriting is cosmetic.** After
+`git filter-branch` and a force push, a fresh clone is clean — and the orphaned
+blob is *still served* by SHA (`/git/blobs/<sha>` returns it, and the commit's web
+page returns 200) until GitHub garbage-collects, which needs a Support request.
+Forks and existing clones keep it regardless. So the key had to be treated as
+compromised no matter what the history says.
+
+**A temporary widening must be closed by the same command that opened it.**
+Force-pushing needed `allow_force_pushes` on a protected branch. Read the whole
+protection config first, build the restore payload from it, and put the restore in
+a `trap ... EXIT` so it runs on a failed push too — the closing step is the one
+that gets skipped when something goes wrong.
+
+---
+
 ## Scoring your own work
 
 **A drill the agent can read is not a test of the agent.** The chaos harness lives
