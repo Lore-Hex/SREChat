@@ -152,6 +152,13 @@ defmodule SREChat.Config do
   # missing one, so it fails closed rather than open.
   def webhook_secret, do: Application.get_env(:sre_chat, :webhook_secret)
 
+  # Sentry internal-integration client secret. Sentry signs each webhook body
+  # with it, so a valid signature authenticates the payload and no shared token
+  # has to be configured on Sentry's side. nil disables signature auth; the
+  # shared-secret path is unaffected.
+  def sentry_client_secret,
+    do: presence(Application.get_env(:sre_chat, :sentry_client_secret))
+
   # Who inbound alerts are addressed to. Same default as the agents use, so a
   # deployment that never sets it still lands them somewhere a human reads.
   def owner_uid, do: presence(Application.get_env(:sre_chat, :owner_uid)) || "joseph"

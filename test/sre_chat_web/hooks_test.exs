@@ -90,6 +90,88 @@ defmodule SREChatWeb.HooksTest do
     end
   end
 
+  describe "sentry signature auth" do
+    @client_secret "sentry-client-secret-abc123"
+
+    setup do
+      previous = Application.get_env(:sre_chat, :sentry_client_secret)
+      Application.put_env(:sre_chat, :sentry_client_secret, @client_secret)
+      on_exit(fn -> Application.put_env(:sre_chat, :sentry_client_secret, previous) end)
+      :ok
+    end
+
+    defp signed(body, secret \\ @client_secret) do
+      digest = :crypto.mac(:hmac, :sha256, secret, body) |> Base.encode16(case: :lower)
+
+      Plug.Test.conn(:post, "/hooks/sentry", body)
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Plug.Conn.put_req_header("sentry-hook-signature", digest)
+      |> Endpoint.call([])
+    end
+
+    test "a correctly signed payload is accepted with NO token at all" do
+      # The whole point: Sentry holds the key, so nothing has to be pasted into
+      # its UI and no shared secret needs to exist on that side.
+      conn = signed(Jason.encode!(%{"message" => "signed probe #{unique()}"}))
+      assert conn.status == 200
+    end
+
+    test "a payload signed with the wrong secret is refused" do
+      conn = signed(Jason.encode!(%{"message" => "boom"}), "not-the-secret")
+      assert conn.status == 403
+    end
+
+    test "a tampered body fails even with a signature that was once valid" do
+      # This is what signing buys over a bearer token: the digest covers the
+      # BODY, so replaying a captured header against different content fails.
+      original = Jason.encode!(%{"message" => "original"})
+      digest = :crypto.mac(:hmac, :sha256, @client_secret, original) |> Base.encode16(case: :lower)
+
+      conn =
+        Plug.Test.conn(:post, "/hooks/sentry", Jason.encode!(%{"message" => "tampered"}))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Plug.Conn.put_req_header("sentry-hook-signature", digest)
+        |> Endpoint.call([])
+
+      assert conn.status == 403
+    end
+
+    test "a malformed digest is invalid, not a crash" do
+      for bogus <- ["", "zz", "not-hex-at-all", String.duplicate("a", 63)] do
+        conn =
+          Plug.Test.conn(:post, "/hooks/sentry", Jason.encode!(%{"message" => "x"}))
+          |> Plug.Conn.put_req_header("content-type", "application/json")
+          |> Plug.Conn.put_req_header("sentry-hook-signature", bogus)
+          |> Endpoint.call([])
+
+        assert conn.status == 403, "digest #{inspect(bogus)} did not 403"
+      end
+    end
+
+    test "signature auth does not disable the shared-secret path" do
+      conn =
+        Plug.Test.conn(:post, "/hooks/gcp", Jason.encode!(%{"message" => "boom"}))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Plug.Conn.put_req_header("authorization", "Bearer #{@secret}")
+        |> Endpoint.call([])
+
+      assert conn.status == 200
+    end
+
+    test "with NO client secret configured a signature proves nothing" do
+      # Otherwise an unconfigured deployment would accept any request that
+      # merely carried a signature header.
+      Application.put_env(:sre_chat, :sentry_client_secret, nil)
+      conn = signed(Jason.encode!(%{"message" => "boom"}))
+      assert conn.status == 403
+    end
+
+    test "an unsigned request still needs a token even when signing is enabled" do
+      conn = post("/hooks/sentry", %{"message" => "boom"})
+      assert conn.status == 403
+    end
+  end
+
   describe "delivery" do
     test "a valid signal is accepted" do
       conn = post("/hooks/sentry?token=#{@secret}", %{"message" => "ArgumentError: boom"})

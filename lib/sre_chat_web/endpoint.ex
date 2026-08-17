@@ -261,6 +261,12 @@ defmodule SREChatWeb.Endpoint do
     given = bearer_token(conn) || conn.query_params["token"] || ""
 
     cond do
+      # A valid Sentry signature is proof on its own, and it is checked BEFORE
+      # the shared-secret branch so a signing sender needs no secret configured
+      # here at all. Sentry holds the key; nobody has to copy it into a form.
+      sentry_signature_valid?(conn) ->
+        deliver_signal(conn, source)
+
       is_nil(secret) or secret == "" ->
         # Refuse rather than accept anything when unconfigured. An open
         # endpoint that posts to your pager is worse than a broken one.
@@ -270,32 +276,62 @@ defmodule SREChatWeb.Endpoint do
         send_resp(conn, 403, "bad token")
 
       true ->
-        text = SREChatWeb.Webhook.render(source, conn.body_params)
+        deliver_signal(conn, source)
+    end
+  end
 
-        results =
-          Enum.map(
-            [SREChat.Config.owner_uid(), SREChat.Config.agent_uid()],
-            &{&1, post_signal(&1, text)}
-          )
+  defp deliver_signal(conn, source) do
+    text = SREChatWeb.Webhook.render(source, conn.body_params)
 
-        case Enum.filter(results, fn {_to, result} -> match?({:error, _}, result) end) do
-          [] ->
-            send_resp(conn, 200, "ok")
+    results =
+      Enum.map(
+        [SREChat.Config.owner_uid(), SREChat.Config.agent_uid()],
+        &{&1, post_signal(&1, text)}
+      )
 
-          failures ->
-            require Logger
+    case Enum.filter(results, fn {_to, result} -> match?({:error, _}, result) end) do
+      [] ->
+        send_resp(conn, 200, "ok")
 
-            for {to, {:error, reason}} <- failures do
-              Logger.error("webhook #{source} could not post to #{to}: #{inspect(reason)}")
-            end
+      failures ->
+        require Logger
 
-            # 500 on ANY failed recipient so the sender retries: Sentry and GCP
-            # both back off and retry, and a dropped alert is the failure this
-            # endpoint exists to prevent. Retrying may duplicate the delivery
-            # that did succeed, which is the right way round — a line you read
-            # twice beats an outage nobody was told about.
-            send_resp(conn, 500, "could not post")
+        for {to, {:error, reason}} <- failures do
+          Logger.error("webhook #{source} could not post to #{to}: #{inspect(reason)}")
         end
+
+        # 500 on ANY failed recipient so the sender retries: Sentry and GCP
+        # both back off and retry, and a dropped alert is the failure this
+        # endpoint exists to prevent. Retrying may duplicate the delivery
+        # that did succeed, which is the right way round — a line you read
+        # twice beats an outage nobody was told about.
+        send_resp(conn, 500, "could not post")
+    end
+  end
+
+  # Sentry signs every webhook body with the integration's client secret, so a
+  # valid signature authenticates the PAYLOAD, not merely the sender — strictly
+  # stronger than a shared bearer token, and it needs no secret pasted into
+  # Sentry's UI because Sentry already holds the key.
+  #
+  # Returns false, never raises, on every missing or malformed piece: no secret
+  # configured, no header, an odd-length or non-hex digest, or a body too large
+  # to have been cached.
+  defp sentry_signature_valid?(conn) do
+    with secret when is_binary(secret) and secret != "" <-
+           SREChat.Config.sentry_client_secret(),
+         [signature | _] <- get_req_header(conn, "sentry-hook-signature"),
+         body when is_binary(body) <- conn.assigns[:raw_body] do
+      expected =
+        :crypto.mac(:hmac, :sha256, secret, body)
+        |> Base.encode16(case: :lower)
+
+      # secure_compare requires equal sizes; a wrong-length digest is simply
+      # invalid rather than a crash.
+      byte_size(signature) == byte_size(expected) and
+        Plug.Crypto.secure_compare(String.downcase(signature), expected)
+    else
+      _ -> false
     end
   end
 
@@ -367,6 +403,39 @@ defmodule SREChatWeb.Endpoint do
     Plug.Parsers.call(conn, parser_opts())
   end
 
+  @raw_body_limit 1_000_000
+
+  @doc """
+  Body reader for `Plug.Parsers` that keeps the raw bytes for signature checks.
+
+  Only `/hooks/*` needs them, and only up to a cap: holding every upload in
+  memory to verify a signature nobody checks would be a memory leak with extra
+  steps. Anything larger reads normally and simply cannot be signature-verified.
+  """
+  def read_and_cache_body(conn, opts) do
+    case Plug.Conn.read_body(conn, opts) do
+      {:ok, body, conn} ->
+        {:ok, body, maybe_cache_body(conn, body)}
+
+      # {:more, ...} means the body exceeded the read chunk. Pass it through
+      # untouched: partial bytes would produce a WRONG digest, which is worse
+      # than no digest because it looks like a failed check.
+      other ->
+        other
+    end
+  end
+
+  defp maybe_cache_body(conn, body) do
+    if hooks_path?(conn.path_info) and byte_size(body) <= @raw_body_limit do
+      Plug.Conn.assign(conn, :raw_body, body)
+    else
+      conn
+    end
+  end
+
+  defp hooks_path?(["hooks" | _]), do: true
+  defp hooks_path?(_), do: false
+
   defp instrument_request(conn, _opts) do
     start = System.monotonic_time()
 
@@ -394,7 +463,12 @@ defmodule SREChatWeb.Endpoint do
             parsers: [:urlencoded, :multipart, :json],
             pass: ["*/*"],
             json_decoder: Jason,
-            length: SREChat.Config.request_body_limit()
+            length: SREChat.Config.request_body_limit(),
+            # HMAC is over the bytes as sent, and the JSON parser consumes them.
+            # Re-encoding the parsed map does NOT reproduce them (key order and
+            # whitespace differ), so the raw body has to be captured on the way
+            # past or signature checks silently never match.
+            body_reader: {__MODULE__, :read_and_cache_body, []}
           )
 
         :persistent_term.put(@parser_opts_key, opts)
