@@ -105,6 +105,22 @@ exists in production.
 **Don't patch a shared singleton in a test.** Patching `reserve` on the shared
 `STORE` polluted 32 unrelated tests. Bind the stub to the module under test.
 
+**A flaky test can be three bugs wearing one coat.** The publisher-lane test
+failed ~1 run in 8 and looked like a teardown crash. It was: a wall-clock
+assertion timing the *polling loop* rather than the publish; a teardown that
+caught only `:noproc` so the busy process's stop timeout surfaced as the visible
+failure, hiding which assertion broke; and a `wait_until_stopped` that returned
+`:ok` on exhaustion, so it never actually decided anything. Fix the innermost
+one and the outer two stop lying.
+
+**Time the operation, not your own polling.** `elapsed_ms < 100` around a
+50-iteration poll loop measures the machine's load. The per-lane histograms in
+the same test measure the publish inside the bus — same property, no flake.
+
+**Verify the mutation applied.** Two mutation checks here silently changed
+nothing (string didn't match) and "passed", which reads exactly like a proven
+assertion. `assert s != before` before writing the file.
+
 **Review until clean, not once.** Rounds one through three each found real
 defects in a suite that was already green.
 
