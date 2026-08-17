@@ -160,8 +160,26 @@ was stopped and the region could not commit a write; a crash loop reported as si
 "RECOVERED" alerts and no failure; one region's outage making its agent report
 two healthy peers as silent.
 
-**Design, escalation policy, drill rules, and the incidents behind each decision:
-[docs/sre-agent-design.md](docs/sre-agent-design.md).**
+### Outside signals come in the same door
+
+`POST /hooks/<source>` lets anything with a webhook put a line in the chat —
+Sentry, GCP alerting, CI, `help@` mail. Auth is `Authorization: Bearer
+$SRE_WEBHOOK_SECRET`, or `?token=` for senders that cannot set headers;
+unconfigured is 503, never 200.
+
+Each signal goes to **you and to that region's agent**: to you so the error is
+visible even when the agent is dead, to the agent so something triages it in
+seconds. The agent verifies the alert against what it can measure itself,
+answers in chat either way, and emails a report only when the problem is real and
+ongoing. Nothing here can ring your phone, and repeats are collapsed so one
+flapping issue is one alert.
+
+Untrusted text reaching a tool-calling loop is contained structurally, not by
+asking nicely: signal-triggered investigations are handed a read-only allowlist,
+so `shell`, `restart` and `tr_rollback` are never even offered to the model.
+
+**Design, escalation policy, drill rules, the signal pipeline, and the incidents
+behind each decision: [docs/sre-agent-design.md](docs/sre-agent-design.md).**
 
 ## Important compatibility note
 
