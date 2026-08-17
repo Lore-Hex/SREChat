@@ -34,6 +34,55 @@ defmodule SREChatWeb.WebhookTest do
       assert line =~ "error"
     end
 
+    test "an ALERT RULE action renders, not just an issue webhook" do
+      # This is the shape production actually sends. Sentry's alert-rule action
+      # puts the payload under data.event rather than data.issue, so the issue
+      # clause alone fell through to the generic JSON dump — a line you can read
+      # only if you already know what you are looking at.
+      payload = %{
+        "action" => "triggered",
+        "installation" => %{"uuid" => "abc"},
+        "data" => %{
+          "event" => %{
+            "event_id" => "c49541c747cb4d8aa3efb70ca5aba243",
+            "title" => "TimeoutError: upstream provider timed out",
+            "culprit" => "trusted_router.gateway.forward/2",
+            "level" => "error",
+            "web_url" => "https://lore-hex-corp.sentry.io/issues/999/events/c495/"
+          },
+          "triggered_rule" => "Send a notification for high priority issues"
+        }
+      }
+
+      line = Webhook.render("sentry", payload)
+
+      assert line =~ "TimeoutError: upstream provider timed out"
+      assert line =~ "trusted_router.gateway.forward/2"
+      assert line =~ "error"
+      # Which rule fired: two alerts on one service are usually two questions.
+      assert line =~ "Send a notification for high priority issues"
+      # A clickable page, on its own line.
+      assert line =~ "https://lore-hex-corp.sentry.io/issues/999/events/c495/"
+      refute line =~ "installation", "internal plumbing leaked into the chat line"
+    end
+
+    test "the REST issue_url is never offered as the link" do
+      # It 404s in a browser without a token. A link that cannot be opened is
+      # worse than no link, because it looks like the answer.
+      line =
+        Webhook.render("sentry", %{
+          "data" => %{
+            "event" => %{
+              "event_id" => "abc",
+              "title" => "boom",
+              "issue_url" => "https://sentry.io/api/0/issues/123/"
+            }
+          }
+        })
+
+      refute line =~ "api/0/issues"
+    end
+
     test "the occurrence count is included" do
       # "happened once" and "happening constantly" are different incidents, and
       # the count is what separates reading it now from reading it later.

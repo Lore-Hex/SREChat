@@ -32,23 +32,36 @@ defmodule SREChatWeb.Webhook do
 
   # -- Sentry ---------------------------------------------------------------
 
+  # Sentry has more than one webhook shape and we receive at least two:
+  #
+  #   * issue webhooks put the payload under data.issue
+  #   * an ALERT RULE action puts it under data.event, with the rule's name
+  #     alongside it
+  #
+  # The alert-rule shape is the one wired in production, because subscribing to
+  # every issue in every project posts noise while an alert rule posts what
+  # somebody already decided was worth being told about.
   defp sentry?(%{"data" => %{"issue" => _}}), do: true
+  defp sentry?(%{"data" => %{"event" => _}}), do: true
   defp sentry?(%{"culprit" => _}), do: true
   defp sentry?(%{"event" => %{"event_id" => _}}), do: true
   defp sentry?(_), do: false
 
   defp sentry(payload) do
-    issue = get_in(payload, ["data", "issue"]) || payload
-    event = payload["event"] || %{}
+    data = payload["data"] || %{}
+    issue = data["issue"] || payload
+    event = data["event"] || payload["event"] || %{}
 
     title =
       issue["title"] || event["title"] || payload["message"] || issue["metadata"]["value"] ||
-        "unknown issue"
+        event["metadata"]["value"] || "unknown issue"
 
     culprit = issue["culprit"] || event["culprit"] || payload["culprit"]
     level = issue["level"] || event["level"] || "error"
     count = issue["count"]
-    url = payload["url"] || issue["web_url"] || issue["permalink"]
+    # web_url points at the event or issue page a human can open; issue_url is
+    # the REST resource, which is useless to click, so it is never a fallback.
+    url = payload["url"] || issue["web_url"] || issue["permalink"] || event["web_url"]
 
     [
       "#{level}: #{title}",
@@ -56,6 +69,9 @@ defmodule SREChatWeb.Webhook do
       # Occurrence count separates "happened once" from "happening constantly",
       # which is the difference between reading it now and reading it later.
       count && "seen #{count}x",
+      # Which rule fired. Two alerts on one service are usually two different
+      # questions, and the rule name is the cheapest way to tell them apart.
+      data["triggered_rule"] && "[rule: #{data["triggered_rule"]}]",
       # The link last and on its own, so a mail or chat client does not swallow
       # trailing punctuation into the href.
       url && "\n#{url}"

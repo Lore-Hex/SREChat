@@ -243,15 +243,22 @@ defmodule SREChatWeb.Endpoint do
   # gets logs read and the owner told; acting still requires either the owner's
   # word or a condition the agent measured itself.
   #
-  # The token is a shared secret in the query string rather than a header
-  # because several senders (Sentry's legacy webhook among them) cannot set
-  # headers. That makes the URL itself the credential: it will appear in the
-  # sender's config and in our access logs, so it is a low-value secret whose
-  # only power is posting a chat message, and it is rotatable by changing one
-  # env var.
+  # The same shared secret is accepted two ways, and which one a sender uses is
+  # a privacy question rather than a security one:
+  #
+  #   Authorization: Bearer <secret>   preferred — Sentry masks saved header
+  #                                    values, and a header stays out of URLs,
+  #                                    referrers and our own access logs
+  #   ?token=<secret>                  fallback — several senders (Sentry's
+  #                                    legacy webhook plugin, some CI systems)
+  #                                    cannot set headers at all
+  #
+  # In the query form the URL itself is the credential and will sit in the
+  # sender's config and in access logs, so this stays a low-value secret whose
+  # only power is posting a chat message, rotatable by changing one env var.
   post "/hooks/:source" do
     secret = SREChat.Config.webhook_secret()
-    given = conn.query_params["token"] || ""
+    given = bearer_token(conn) || conn.query_params["token"] || ""
 
     cond do
       is_nil(secret) or secret == "" ->
@@ -289,6 +296,17 @@ defmodule SREChatWeb.Endpoint do
             # twice beats an outage nobody was told about.
             send_resp(conn, 500, "could not post")
         end
+    end
+  end
+
+  # nil rather than "" when absent, so the caller can fall through to ?token=
+  # instead of comparing the empty string and reporting a bad token for a sender
+  # that simply used the other form.
+  defp bearer_token(conn) do
+    case get_req_header(conn, "authorization") do
+      ["Bearer " <> token | _] -> String.trim(token)
+      ["bearer " <> token | _] -> String.trim(token)
+      _ -> nil
     end
   end
 

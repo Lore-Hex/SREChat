@@ -40,6 +40,41 @@ defmodule SREChatWeb.HooksTest do
       assert conn.status == 403
     end
 
+    test "a bearer header authenticates, so the secret stays out of the URL" do
+      # Sentry masks saved header values and a header never reaches our access
+      # logs, so this is the form production uses.
+      conn =
+        Plug.Test.conn(:post, "/hooks/sentry", Jason.encode!(%{"message" => "boom"}))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Plug.Conn.put_req_header("authorization", "Bearer #{@secret}")
+        |> Endpoint.call([])
+
+      assert conn.status == 200
+    end
+
+    test "a wrong bearer header is refused" do
+      conn =
+        Plug.Test.conn(:post, "/hooks/sentry", Jason.encode!(%{"message" => "boom"}))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Plug.Conn.put_req_header("authorization", "Bearer nope")
+        |> Endpoint.call([])
+
+      assert conn.status == 403
+    end
+
+    test "an unrelated authorization header does not shadow a valid ?token=" do
+      # The header must fall THROUGH when it is not a bearer token, or adding a
+      # proxy that stamps its own Authorization silently breaks every sender
+      # using the query form.
+      conn =
+        Plug.Test.conn(:post, "/hooks/sentry?token=#{@secret}", Jason.encode!(%{"message" => "b"}))
+        |> Plug.Conn.put_req_header("content-type", "application/json")
+        |> Plug.Conn.put_req_header("authorization", "Basic dXNlcjpwYXNz")
+        |> Endpoint.call([])
+
+      assert conn.status == 200
+    end
+
     test "an unconfigured deployment fails CLOSED" do
       # An open endpoint that posts to your pager is worse than a broken one.
       Application.put_env(:sre_chat, :webhook_secret, nil)
