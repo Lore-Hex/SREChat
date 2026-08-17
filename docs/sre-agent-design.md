@@ -213,9 +213,31 @@ code into configuration.
 
 ```
 POST https://sre<N>.trustedrouter.com/hooks/<source>
-Authorization: Bearer <SRE_WEBHOOK_SECRET>      # preferred
-     ...or...  ?token=<SRE_WEBHOOK_SECRET>      # senders that cannot set headers
+
+sentry-hook-signature: <hmac-sha256(client_secret, raw_body)>   # strongest
+Authorization: Bearer <SRE_WEBHOOK_SECRET>                      # preferred
+?token=<SRE_WEBHOOK_SECRET>                                     # last resort
 ```
+
+**Signature (Sentry).** Sentry HMACs every webhook body with its internal
+integration's client secret. Verifying that is strictly stronger than a shared
+token — it authenticates the **payload**, so a captured header replayed against
+different content fails — and it needs nothing configured on Sentry's side, since
+Sentry already holds the key. Set `SRE_SENTRY_CLIENT_SECRET` on the region with
+`tools/set-sentry-secret.sh`; unset simply disables this path.
+
+The HMAC is over the bytes **as sent**. Re-encoding the parsed JSON does not
+reproduce them (key order and whitespace differ), so `Plug.Parsers` uses a
+`body_reader` that caches the raw body — for `/hooks/*` only, and only up to 1 MB,
+because holding every upload in memory to verify a signature nobody checks would
+be a memory leak with extra steps. An over-length read passes through uncached: a
+digest over partial bytes is worse than no digest, because it looks like a failed
+check rather than an absent one.
+
+Signature auth is checked **first**, and fails closed on every missing or
+malformed piece — no secret configured, no header, non-hex or wrong-length digest.
+In particular an unconfigured deployment must not accept a request merely for
+carrying a signature header.
 
 Both forms carry the same shared secret; which one a sender uses is a privacy
 question, not a security one. A header stays out of URLs, referrers and access

@@ -657,14 +657,24 @@ defmodule SREChat.RedisMockTest do
     refute slow_connection == fast_connection
     MockRedis.force_command({:sleep_apply, 200}, slow_connection)
 
-    started_at = System.monotonic_time(:millisecond)
     assert :ok = SREChat.PubSub.broadcast({:group, slow_room}, slow_event)
     assert :ok = SREChat.PubSub.broadcast({:group, fast_room}, fast_event)
 
     assert [{_channel, fast_payload}] = wait_for_published(1, fast_connection)
-    elapsed_ms = System.monotonic_time(:millisecond) - started_at
 
-    assert elapsed_ms < 100
+    # No wall-clock assertion here on purpose. This used to be
+    # `assert elapsed_ms < 100`, timing wait_for_published/2 — 50 iterations that
+    # cost ~10ms idle and ~20ms on a loaded machine — so it failed about one run
+    # in ten for reasons that had nothing to do with publisher lanes. Worse, when
+    # it did, the still-busy publisher also outlived GenServer.stop's 1s timeout
+    # and the crash surfaced from on_exit, hiding which assertion actually broke.
+    #
+    # The isolation property is asserted at the bottom of this test instead, from
+    # the per-lane `redis.publish.duration_ms` histograms: the slow lane records
+    # >=200ms while the fast lane records <100ms. Those measure the publish
+    # operation inside the bus rather than this process's scheduling, which is
+    # what makes them the honest statement of "one slow room did not delay an
+    # unrelated one".
     assert Jason.decode!(fast_payload)["event"]["body"]["data"]["text"] == "fast"
     assert [{_channel, slow_payload}] = wait_for_published(1, slow_connection)
     assert Jason.decode!(slow_payload)["event"]["body"]["data"]["text"] == "slow"
@@ -871,21 +881,39 @@ defmodule SREChat.RedisMockTest do
     |> Enum.each(&stop_name/1)
   end
 
+  # Teardown asserts the OUTCOME — this named process is not running — not that
+  # `GenServer.stop/3` happened to return :ok.
+  #
+  # Every exit reason is tolerated because each one is a benign race with a
+  # process that is going away anyway: :noproc if it died first, :shutdown if its
+  # supervisor got there while we were terminating it, :timeout if it was one of
+  # the deliberately SLOW publishers this file exists to test. Only two of those
+  # were caught before, so the publisher-lane test failed in on_exit roughly one
+  # run in eight — after it had already passed.
+  #
+  # This cannot mask a stuck process: wait_until_stopped/1 is what actually
+  # decides, and it is reached on every path.
   defp stop_name(name) do
     if pid = Process.whereis(name) do
       try do
         GenServer.stop(pid, :normal, 1_000)
       catch
-        :exit, {:noproc, _} -> :ok
-        :exit, :noproc -> :ok
+        :exit, _reason -> :ok
       end
 
       wait_until_stopped(name)
     end
   end
 
-  defp wait_until_stopped(name, attempts \\ 20)
-  defp wait_until_stopped(_name, 0), do: :ok
+  # Budget raised from 200ms to 2s and made STRICT. It used to return :ok on
+  # exhaustion, so "wait until stopped" quietly meant "wait a bit and hope" —
+  # which, combined with swallowing every exit above, would let a genuinely stuck
+  # process leak into the next test as a mystery failure somewhere else.
+  defp wait_until_stopped(name, attempts \\ 200)
+
+  defp wait_until_stopped(name, 0) do
+    raise "#{inspect(name)} was still running 2s after being asked to stop"
+  end
 
   defp wait_until_stopped(name, attempts) do
     if Process.whereis(name) do

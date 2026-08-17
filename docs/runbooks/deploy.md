@@ -148,6 +148,17 @@ actually passes it into the container.
 over between them. It is a low-value secret whose only power is posting a chat
 message, rotatable by changing one env var and redeploying.
 
+`SRE_SENTRY_CLIENT_SECRET` enables Sentry signature verification on a region.
+Set it with `tools/set-sentry-secret.sh`, which prompts with hidden input and
+pipes the value over stdin — never through `--command`, which would expose it in
+`ps` on both machines. Empty or unset disables signature auth and changes nothing
+else. Sentry reveals the client secret only briefly; if it reads `hidden`, press
+"Rotate client secret" (nothing else consumes it, so rotating is safe).
+
+To verify signature auth without the real secret, set a throwaway one, sign a body
+with it from the box, and clear it — all in a single execution with the cleanup in
+a `trap`, so a failure part-way cannot leave a stray secret configured.
+
 **Host SSH keys must never be committed.** `.gitignore` covers `*.pem` and
 `.roach-*`; a key with no extension slipped past the first pattern once, into a
 public repo. If it happens again, treat the key as compromised and rotate it —
