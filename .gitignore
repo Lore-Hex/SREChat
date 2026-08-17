@@ -22,3 +22,7 @@ __pycache__/
 
 # Apple signing keys must never become git objects.
 *.p8
+
+# Host SSH keys. *.pem already covered; these have no extension and were
+# committed once into a PUBLIC repo as a result.
+.roach-*

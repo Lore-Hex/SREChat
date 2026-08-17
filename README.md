@@ -178,8 +178,14 @@ Untrusted text reaching a tool-calling loop is contained structurally, not by
 asking nicely: signal-triggered investigations are handed a read-only allowlist,
 so `shell`, `restart` and `tr_rollback` are never even offered to the model.
 
-**Design, escalation policy, drill rules, the signal pipeline, and the incidents
-behind each decision: [docs/sre-agent-design.md](docs/sre-agent-design.md).**
+### Documentation
+
+| | |
+|---|---|
+| [docs/sre-agent-design.md](docs/sre-agent-design.md) | agent authority per region, the investigation loop, the escalation ladder, chaos drill rules, the inbound-signal pipeline — and the incident behind each decision |
+| [docs/lessons.md](docs/lessons.md) | every defect that shipped or nearly shipped here, grouped by the shape of the mistake: signals that reported success without measuring, fallbacks that needed the primary, untrusted input reaching something powerful, tests that passed for the wrong reason |
+| [docs/runbooks/deploy.md](docs/runbooks/deploy.md) | how to reach each cloud (all three differ), how to deploy, and the several ways a deploy lies about having happened |
+| [docs/runbooks/multi-master.md](docs/runbooks/multi-master.md) | adding and replacing regions, replication lag, gap recovery |
 
 ## Important compatibility note
 

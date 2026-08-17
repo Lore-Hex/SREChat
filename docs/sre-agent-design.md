@@ -304,34 +304,19 @@ in a browser, which is worse than no link because it looks like the answer.
 
 ## Recurring lessons
 
-**Configured is not working.** Voice escalation had never once placed a call:
-four defects stacked (missing `ApplicationSid`, wrong account id, no outbound
-voice profile, `?msg=` vs `?text=`), every test passed, config was present. It
-took placing a real call to find out.
+Moved to **[docs/lessons.md](lessons.md)** — every defect that shipped or nearly
+shipped on this system, grouped by the shape of the mistake rather than the
+subsystem, because the shape is what repeats.
 
-**Delivered is not sent.** SMS returned `201 accepted` then
-`delivery_failed / 40010`. Check the receipt, never the submission.
+The four that explain most of the design decisions above:
 
-**A fallback that only works when the primary works is not a fallback.** The
-on-disk device cache exists so a page can be sent when our own API is down. When
-Caddy was stopped — exactly that case — push failed with "no registered device".
-Still open.
+- **Configured is not working.** Voice escalation had never once placed a call
+  while every test passed and every setting was present.
+- **A truthful 200 can still mean the feature does nothing.** The first webhook
+  delivery succeeded, into a thread nobody reads.
+- **Prompt instructions are a request, not a control.** Containment of untrusted
+  input has to be structural — an allowlist the model is never offered.
+- **A fallback that depends on the thing it replaces is not a fallback.**
 
-**Watch the outcome, not the job.** A queued deploy can be displaced by a newer
-push; watching a run id reported "cancelled" when the question was whether the
-bytes were live. Poll the thing you actually care about.
-
-**A truthful 200 can still mean the feature does nothing.** The first webhook
-delivery genuinely succeeded — into a thread nobody reads, addressed to nobody
-who could act on it. `send_message` returning `{:ok, _}` answers "did the write
-land", which is not the question. Assert the message is where the *reader* is.
-
-**A hand-picked file list is a dependency you did not declare.** Deploying
-`endpoint.ex` without `redis_persistence.ex` left region 0 serving 503 on an
-undefined `ping/0` for three minutes — and it passed locally, and on Azure, which
-already had the missing file from an earlier deploy. Ship whole directories.
-
-**Deploy tooling fails silently at size limits.** The same script that worked at
-65 KB produced no output at 590 KB (`az vm run-command` caps script size) and the
-region kept serving the old build. The only reason it was caught is that the
-next step asserted the new behaviour was live, rather than reading "deployed".
+Deploy mechanics, per-cloud access paths, and the ways a deploy lies about having
+happened: **[docs/runbooks/deploy.md](runbooks/deploy.md)**.
