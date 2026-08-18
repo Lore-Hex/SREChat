@@ -10,16 +10,56 @@
 #
 set -uo pipefail
 export PATH="/opt/homebrew/bin:/usr/bin:/bin:$PATH"
-SP="$(cd "$(dirname "$0")" && pwd)"
 RG=roach-rg
 VM=roach-azure
 
-FAULT=$(/usr/bin/python3 -c "import json;print(json.load(open('$SP/fault.json'))['name'])")
-CAUSE=$(/usr/bin/python3 -c "import json;print(json.load(open('$SP/fault.json'))['cause'])")
-INJECT=$(/usr/bin/python3 -c "import json;print(json.load(open('$SP/fault.json'))['inject'])")
-RESTORE=$(/usr/bin/python3 -c "import json;print(json.load(open('$SP/fault.json'))['restore'])")
-BROKEN=$(/usr/bin/python3 -c "import json;print(json.load(open('$SP/fault.json'))['broken'])")
-KW=$(/usr/bin/python3 -c "import json;print(json.load(open('$SP/fault.json'))['kw'])")
+# The fault catalogue lives HERE, not on the target and not in a side file: a
+# scheduled run starts with nothing staged, and anything staged on the box is
+# something the agent can read. `--fault <name>` forces one; otherwise pick at
+# random, which is what a drill is for.
+read -r -d '' FAULTS <<'JSON' || true
+{
+ "app-container-stopped": {
+   "cause": "the app container was stopped",
+   "inject": "sudo docker stop deploy-app-1",
+   "restore": "sudo docker start deploy-app-1",
+   "broken": "! sudo docker ps --format '{{.Names}}' | grep -q deploy-app-1",
+   "kw": "app container stopped down exited"},
+ "disk-nearly-full": {
+   "cause": "a large file filled the disk",
+   "inject": "free=$(df --output=avail -m / | tail -1); sudo fallocate -l $((free * 92 / 100))M /var/log/srechat-audit.log.1",
+   "restore": "sudo rm -f /var/log/srechat-audit.log.1",
+   "broken": "test -f /var/log/srechat-audit.log.1",
+   "kw": "disk space full storage"},
+ "caddy-stopped": {
+   "cause": "the caddy reverse proxy was stopped",
+   "inject": "sudo docker stop deploy-caddy-1",
+   "restore": "sudo docker start deploy-caddy-1",
+   "broken": "! sudo docker ps --format '{{.Names}}' | grep -q deploy-caddy-1",
+   "kw": "caddy proxy tls stopped down"},
+ "replication-blackholed": {
+   "cause": "outbound replication to peers was blocked by a firewall rule",
+   "inject": "sudo iptables -I OUTPUT -p udp --dport 51820 -j DROP",
+   "restore": "sudo iptables -D OUTPUT -p udp --dport 51820 -j DROP || true",
+   "broken": "sudo iptables -C OUTPUT -p udp --dport 51820 -j DROP",
+   "kw": "replication peer network firewall wireguard converge"}
+}
+JSON
+
+SEL=$(printf '%s' "$FAULTS" | WANT="${1:-}" /usr/bin/python3 -c "
+import json,os,random,sys
+f=json.load(sys.stdin); want=os.environ.get('WANT','')
+name = want if want in f else random.choice(sorted(f))
+d=f[name]
+print(name); print(d['cause']); print(d['inject']); print(d['restore']); print(d['broken']); print(d['kw'])
+")
+FAULT=$(printf '%s' "$SEL" | sed -n 1p)
+CAUSE=$(printf '%s' "$SEL" | sed -n 2p)
+INJECT=$(printf '%s' "$SEL" | sed -n 3p)
+RESTORE=$(printf '%s' "$SEL" | sed -n 4p)
+BROKEN=$(printf '%s' "$SEL" | sed -n 5p)
+KW=$(printf '%s' "$SEL" | sed -n 6p)
+[ -n "$FAULT" ] || { echo "FAIL: could not select a fault"; exit 1; }
 
 # az wraps the script's output in "Enable succeeded:", "[stdout]" and "[stderr]"
 # markers. Strip them and return only what the script printed — piping this
