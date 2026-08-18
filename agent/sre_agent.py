@@ -881,9 +881,20 @@ def opening_email(trigger: str) -> str:
     ])
 
 
-def note_awaiting_ack(key: str, summary: str) -> None:
-    """Start the clock on a human answering."""
-    _awaiting_ack[key] = {"at": time.time(), "summary": summary}
+def note_awaiting_ack(key: str, summary: str, still_broken=None) -> None:
+    """Start the clock on a human answering.
+
+    `still_broken` is a zero-argument predicate re-evaluated just before the
+    phone rings. Without it an escalation fires purely on silence, which rang
+    Joseph at 19:34 about a caddy outage this same agent had logged as RECOVERED
+    at 19:25 — nine minutes earlier. Silence is not the question; "is it still
+    broken" is.
+    """
+    _awaiting_ack[key] = {
+        "at": time.time(),
+        "summary": summary,
+        "still_broken": still_broken,
+    }
 
 
 def acknowledge_all(who: str) -> None:
@@ -898,12 +909,35 @@ def acknowledge_all(who: str) -> None:
 
 
 def escalate_unacknowledged() -> None:
-    """Ring the phone for anything unresolved that nobody answered."""
+    """Ring the phone for anything STILL BROKEN that nobody answered."""
     now = time.time()
     for key, pending in list(_awaiting_ack.items()):
         if now - pending["at"] < ACK_TIMEOUT_SECONDS:
             continue
         del _awaiting_ack[key]
+
+        # Re-check before dialling. An incident can resolve itself during the
+        # ack window — a peer comes back, a container restarts, an operator
+        # fixes it — and a phone call about something that is already better is
+        # the purest form of the alert people learn to ignore.
+        #
+        # A predicate that RAISES is treated as still broken: failing to prove
+        # recovery is not proof of recovery, and the safe direction for a pager
+        # is to ring.
+        check = pending.get("still_broken")
+        if check is not None:
+            try:
+                if not check():
+                    log(f"not calling about {key}: it recovered before the ack window ran out")
+                    try:
+                        send(OWNER_UID, f"✅ {key} recovered on its own before I called you. "
+                                        f"No phone call sent.")
+                    except Exception:  # noqa: BLE001 — chat is not the pager
+                        pass
+                    continue
+            except Exception as exc:  # noqa: BLE001
+                log(f"recovery re-check for {key} failed ({exc}); calling anyway")
+
         minutes = int(ACK_TIMEOUT_SECONDS / 60)
         try:
             log(escalate.call_human(
@@ -1503,6 +1537,11 @@ def watch_once() -> None:
                         f"region-{REGION_INDEX}",
                         f"Region {REGION_INDEX} ({CLOUD}): {fields['cause'] or 'unknown cause'}. "
                         f"The agent could not resolve it.",
+                        # Asked again just before the phone would ring: if this
+                        # region is serving by then, the call is cancelled.
+                        # probe_region hits this region's own /health, which
+                        # is the same signal that raised the incident.
+                        still_broken=lambda: not probe_region(REGIONS[REGION_INDEX]),
                     )
             except Exception as exc:  # noqa: BLE001 — never let this kill the watch
                 log(f"self-investigation failed: {exc}")

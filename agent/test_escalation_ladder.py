@@ -66,6 +66,60 @@ class TestUnacknowledgedEscalation:
         assert "redis down" in calls[0]
         assert "No reply in chat" in calls[0]
 
+    def test_it_does_NOT_call_about_something_that_recovered(self, agent, calls) -> None:
+        """The one that rang Joseph for nothing.
+
+        A caddy outage was armed at 19:23, this agent logged RECOVERED at 19:25,
+        and it still placed a call at 19:34 — because escalation fired on silence
+        alone and never asked whether the thing was still broken.
+        """
+        sent: list[str] = []
+        agent.send = lambda who, text: sent.append(text)
+        agent.note_awaiting_ack(
+            "region-2", "Region 2: caddy down.", still_broken=lambda: False
+        )
+        agent._awaiting_ack["region-2"]["at"] -= agent.ACK_TIMEOUT_SECONDS + 1
+
+        agent.escalate_unacknowledged()
+
+        assert not calls, f"called about an incident that had recovered: {calls}"
+        assert any("recovered on its own" in t for t in sent), (
+            "cancelled the call but told nobody, so the incident just vanishes"
+        )
+
+    def test_it_still_calls_when_the_fault_persists(self, agent, calls) -> None:
+        # The re-check must not become a way to never ring the phone.
+        agent.note_awaiting_ack(
+            "region-2", "Region 2: caddy down.", still_broken=lambda: True
+        )
+        agent._awaiting_ack["region-2"]["at"] -= agent.ACK_TIMEOUT_SECONDS + 1
+
+        agent.escalate_unacknowledged()
+
+        assert calls, "a still-broken region did not ring the phone"
+
+    def test_a_failing_recheck_calls_anyway(self, agent, calls) -> None:
+        # Failing to PROVE recovery is not proof of recovery. For a pager the
+        # safe direction is to ring.
+        def explode() -> bool:
+            raise RuntimeError("health endpoint unreachable")
+
+        agent.note_awaiting_ack("region-2", "Region 2: caddy down.", still_broken=explode)
+        agent._awaiting_ack["region-2"]["at"] -= agent.ACK_TIMEOUT_SECONDS + 1
+
+        agent.escalate_unacknowledged()
+
+        assert calls, "an unprovable re-check silenced the pager"
+
+    def test_no_recheck_still_calls(self, agent, calls) -> None:
+        # Callers that arm without a predicate keep the old behaviour.
+        agent.note_awaiting_ack("region-2", "Region 2: redis down.")
+        agent._awaiting_ack["region-2"]["at"] -= agent.ACK_TIMEOUT_SECONDS + 1
+
+        agent.escalate_unacknowledged()
+
+        assert calls
+
     def test_it_waits_before_ringing(self, agent, calls) -> None:
         # Calling instantly would make the chat message pointless.
         agent.note_awaiting_ack("region-2", "something")
