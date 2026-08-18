@@ -262,5 +262,19 @@ diagnosed nothing. Read the conclusion line only, and never count `UNKNOWN`.
 **Read the result after the work finishes.** Scoring "diagnosis absent" before the
 agent had concluded is measuring latency and calling it accuracy.
 
+**Deleting the answer key is not enough; prove it is unreadable.** After the
+harness moved off-box, the agent still ran `tail -20 ~/.srechat-drills.jsonl` out
+of habit — a learned reflex from when the file existed. The scorer flagged that as
+"read the answer key" and condemned a diagnosis actually earned from waagent
+run-command logs. Reference and read are different states: check whether the files
+EXIST at scoring time before crediting or condemning.
+
+**Do not run drills back to back on the same target.** The second caddy drill
+concluded `resolved: no, action: NONE` because the agent read its own shell audit
+log, saw the previous drill's restart being undone by a fresh stop, and correctly
+declined to fight what looked like an adversary. Sound reasoning, useless as a
+test. Leave enough gap that the previous drill has aged out of what the agent
+reads.
+
 **Blast radius is about what depends on the thing.** Stopping redis on region 0 as
 a "drill" took the region down for 87 crash cycles. That fault is withdrawn.

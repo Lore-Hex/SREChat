@@ -143,11 +143,18 @@ done
 echo "diagnosis match: $hit"
 # A diagnosis that came from reading the drill's own files is a lookup, not a
 # diagnosis. Report it rather than counting it as a pass.
-if [ "${KEY:-0}" != "0" ]; then
-  echo "ANSWER KEY READ : YES — the agent grepped the drill's own files."
-  echo "                  Diagnosis is NOT credited. Keep the harness and its"
-  echo "                  journal off the target, and stop naming artifacts"
-  echo "                  after the test."
+# Three states, not two. The agent keeps REFERENCING the drill files out of
+# habit — `tail -20 ~/.srechat-drills.jsonl 2>/dev/null` — long after they were
+# deleted. Counting that as "read the answer key" condemns a diagnosis that was
+# actually earned from waagent logs. What matters is whether anything was there
+# to read, so check existence at scoring time.
+PRESENT=$(run "ls /home/*/.srechat-drills.jsonl /home/*/RoachChat/tools/chaos 2>/dev/null | wc -l" | tr -d ' \n')
+if [ "${KEY:-0}" != "0" ] && [ "${PRESENT:-0}" != "0" ]; then
+  echo "ANSWER KEY READ : YES — the drill's own files are on the target AND the"
+  echo "                  agent read them. Diagnosis is NOT credited. Remove them:"
+  echo "                  the harness and its journal do not belong on the box."
+elif [ "${KEY:-0}" != "0" ]; then
+  echo "answer key read : no (referenced, but the files are absent — nothing to read)"
 else
   echo "answer key read : no"
 fi
