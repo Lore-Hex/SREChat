@@ -103,20 +103,29 @@ run "printf 'disk now: '; df -h / | tail -1 | awk '{print \$5}'" | tail -1
 detected=""; concluded=""; action=""
 for round in $(seq 1 4); do
   sleep 70
-  # No tail: the whole journal since injection. `tail -60` dropped the earliest
-  # lines, so on a run where the agent detected the fault in 43 seconds the
-  # "investigating:" line had already scrolled away and detection scored NO —
-  # the scoreboard contradicting the log it was reading.
-  LOG=$(run "sudo journalctl -u sre-agent --since '$SINCE' --no-pager 2>/dev/null \
-             | grep -vE 'sudo\[|pam_unix' | grep -iE 'ALERT|investigat|self-repair|cause=|resolved'")
-  echo "--- round $round ---"
-  echo "$LOG" | grep -iE "ALERT|investigating|self-repair|signal |resolved|cause=" | tail -4
+  # Ask for ONE LINE PER QUESTION, filtered on the box.
+  #
+  # Fetching the whole journal and grepping it here does not work: az
+  # run-command truncates its output and keeps the TAIL, so as the journal grows
+  # the EARLIEST lines silently vanish — and detection is the earliest line
+  # there is. That is how a run whose log plainly showed "investigating:" at
+  # +43s scored `detected: NO`, twice: I removed my own `tail -60` and Azure
+  # quietly applied its own.
+  #
+  # Small, targeted queries cannot be truncated into a wrong answer.
+  DET=$(run "sudo journalctl -u sre-agent --since '$SINCE' --no-pager 2>/dev/null \
+             | grep -m1 -oE 'investigating:.*|ALERT ->.*' | cut -c1-140")
+  CON=$(run "sudo journalctl -u sre-agent --since '$SINCE' --no-pager 2>/dev/null \
+             | grep -oE 'cause=.*' | tail -1 | cut -c1-600")
+  KEY=$(run "sudo journalctl -u sre-agent --since '$SINCE' --no-pager 2>/dev/null \
+             | grep -c -E 'drill\.py|srechat-drills|chaos/drill' || true")
 
-  [ -z "$detected" ] && echo "$LOG" | grep -qiE "ALERT ->|investigating:" && detected="round $round"
-  if [ -z "$concluded" ]; then
-    C=$(echo "$LOG" | grep -oE "cause=[^|]*" | tail -1)
-    [ -n "$C" ] && concluded="$C"
-  fi
+  echo "--- round $round ---"
+  [ -n "$DET" ] && echo "  detect : $DET"
+  [ -n "$CON" ] && echo "  cause  : $(printf '%s' "$CON" | cut -c1-120)"
+
+  [ -z "$detected" ] && [ -n "$DET" ] && detected="round $round"
+  [ -z "$concluded" ] && [ -n "$CON" ] && concluded="$CON"
   [ -n "$concluded" ] && break
 done
 
@@ -134,7 +143,7 @@ done
 echo "diagnosis match: $hit"
 # A diagnosis that came from reading the drill's own files is a lookup, not a
 # diagnosis. Report it rather than counting it as a pass.
-if echo "$LOG" | grep -qiE "drill\.py|srechat-drills|chaos/drill"; then
+if [ "${KEY:-0}" != "0" ]; then
   echo "ANSWER KEY READ : YES — the agent grepped the drill's own files."
   echo "                  Diagnosis is NOT credited. Keep the harness and its"
   echo "                  journal off the target, and stop naming artifacts"

@@ -242,6 +242,19 @@ A scoreboard that contradicts the evidence it is reading is worse than no
 scoreboard. It now greps the whole window, and reports "answer key read" as its
 own line rather than quietly counting a lookup as a pass.
 
+**Your remote-exec tool has its own `tail`.** The scoreboard reported
+`detected: NO` on two consecutive drills whose journals plainly showed
+`investigating:` 43 seconds in. First fix was wrong — I removed my own
+`tail -60`. The real cause: `az vm run-command` TRUNCATES its output and keeps
+the tail, so as the journal grew the earliest lines silently vanished, and
+detection is the earliest line there is. On the box: 25 matching lines. Received:
+20, missing exactly the first five.
+
+Fetch one line per question, filtered on the remote side, instead of hauling a
+log back and grepping locally. A small targeted query cannot be truncated into a
+wrong answer. Two rounds of "the scoreboard contradicts its own evidence" came
+from assuming the transport was lossless.
+
 **Score the conclusion, not the transcript.** Keyword-matching the whole journal
 matched the agent's own shell commands, so a drill passed while the agent had
 diagnosed nothing. Read the conclusion line only, and never count `UNKNOWN`.
