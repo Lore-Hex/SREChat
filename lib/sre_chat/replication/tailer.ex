@@ -55,6 +55,7 @@ defmodule SREChat.Replication.Tailer do
       _ -> @default_batch_count
     end
   end
+
   @error_backoff_ms 2_000
 
   def start_link(peer) do
@@ -65,7 +66,7 @@ defmodule SREChat.Replication.Tailer do
 
   @doc "Current status, for tests and operators."
   def status(peer_index) do
-    GenServer.call(name(peer_index), :status)
+    GenServer.call(name(peer_index), :status, 100)
   catch
     :exit, _reason -> %{state: :down}
   end

@@ -33,6 +33,8 @@ defmodule SREChat.Replication.Applier do
   alias SREChat.Replication.Ingest
   alias SREChat.Store.RedisPersistence
 
+  @default_apply_chunk_size 100
+
   @doc """
   Decode a raw stream entry payload and apply it via the Store.
 
@@ -49,8 +51,39 @@ defmodule SREChat.Replication.Applier do
         # misconfigured tailer is reading its own stream.
         {:error, :own_origin}
       else
-        Store.ingest_replicated(entry.ops, entry.origin, entry.ts, stream_id)
+        entry.ops
+        |> Replication.source_ops()
+        |> apply_in_chunks(entry.origin, entry.ts, stream_id)
       end
+    end
+  end
+
+  defp apply_in_chunks([], _origin, _ts, _stream_id), do: {:ok, 0}
+
+  defp apply_in_chunks(ops, origin, ts, stream_id) do
+    chunk_size = apply_chunk_size()
+
+    if length(ops) > chunk_size do
+      Logger.warning(
+        "chunking replication entry origin=#{origin} stream_id=#{stream_id} " <>
+          "op_count=#{length(ops)} chunk_size=#{chunk_size}"
+      )
+    end
+
+    ops
+    |> Enum.chunk_every(chunk_size)
+    |> Enum.reduce_while({:ok, 0}, fn chunk, {:ok, applied} ->
+      case Store.ingest_replicated(chunk, origin, ts, stream_id) do
+        {:ok, count} -> {:cont, {:ok, applied + count}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp apply_chunk_size do
+    case Integer.parse(System.get_env("REPLICATION_APPLY_CHUNK_SIZE") || "") do
+      {value, ""} when value > 0 and value <= 1_000 -> value
+      _other -> @default_apply_chunk_size
     end
   end
 

@@ -37,7 +37,6 @@ defmodule SREChat.Replication do
     reactions
     blocks
     banned
-    message_muids
     presence
   )
 
@@ -84,7 +83,7 @@ defmodule SREChat.Replication do
   def entry_for(ops) do
     with true <- enabled?(),
          false <- applying?(),
-         [_ | _] = filtered <- filter_ops(ops) do
+         [_ | _] = filtered <- source_ops(ops) do
       Jason.encode!(%{
         "v" => 1,
         "origin" => Config.region_index(),
@@ -94,6 +93,17 @@ defmodule SREChat.Replication do
     else
       _ -> nil
     end
+  end
+
+  @doc "Return only source-of-truth operations that may cross regions."
+  def source_ops(ops) do
+    ops
+    |> List.wrap()
+    |> Enum.filter(fn
+      {:put, bucket, _id, _value} -> bucket in @replicated_buckets
+      {:delete, bucket, _id} -> bucket in @replicated_buckets
+      _other -> false
+    end)
   end
 
   @doc """
@@ -136,16 +146,6 @@ defmodule SREChat.Replication do
       _other ->
         {:error, :malformed_oplog_entry}
     end
-  end
-
-  defp filter_ops(ops) do
-    ops
-    |> List.wrap()
-    |> Enum.filter(fn
-      {:put, bucket, _id, _value} -> bucket in @replicated_buckets
-      {:delete, bucket, _id} -> bucket in @replicated_buckets
-      _other -> false
-    end)
   end
 
   defp encode_op({:put, bucket, id, value}), do: ["put", bucket, id, value]

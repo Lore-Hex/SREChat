@@ -701,7 +701,7 @@ defmodule SREChat.Store.RedisPersistence do
       |> Enum.flat_map(fn {bucket, id} -> state |> get_in([bucket, id]) |> List.wrap() end)
       |> Enum.map(&{"messages", to_s(&1)})
       |> Enum.reject(fn {_bucket, id} -> id == "" end)
-      |> Enum.reject(&(&1 in record_keys))
+      |> reject_existing(record_keys)
       |> Enum.uniq()
 
     state
@@ -818,7 +818,7 @@ defmodule SREChat.Store.RedisPersistence do
       |> Enum.map(fn {_bucket, token} -> get_in(state, ["tokens", token]) end)
       |> Enum.reject(&(&1 in [nil, ""]))
       |> Enum.map(&{"users", to_s(&1)})
-      |> Enum.reject(&(&1 in record_keys))
+      |> reject_existing(record_keys)
       |> Enum.uniq()
 
     read_records(state, user_keys)
@@ -837,7 +837,7 @@ defmodule SREChat.Store.RedisPersistence do
         end
       end)
       |> Enum.map(&{"users", to_s(&1)})
-      |> Enum.reject(&(&1 in record_keys))
+      |> reject_existing(record_keys)
       |> Enum.uniq()
 
     read_records(state, user_keys)
@@ -857,7 +857,7 @@ defmodule SREChat.Store.RedisPersistence do
       end)
       |> Enum.map(&{"user_groups", to_s(&1)})
       |> Enum.reject(fn {_bucket, uid} -> uid == "" end)
-      |> Enum.reject(&(&1 in record_keys))
+      |> reject_existing(record_keys)
       |> Enum.uniq()
 
     read_records(state, user_group_keys)
@@ -882,7 +882,7 @@ defmodule SREChat.Store.RedisPersistence do
         ]
       end)
       |> Enum.reject(fn {_bucket, id} -> id == "" end)
-      |> Enum.reject(&(&1 in record_keys))
+      |> reject_existing(record_keys)
       |> Enum.uniq()
 
     state =
@@ -920,7 +920,7 @@ defmodule SREChat.Store.RedisPersistence do
           {"conversation_users", conv_id}
         ]
       end)
-      |> Enum.reject(&(&1 in record_keys))
+      |> reject_existing(record_keys)
       |> Enum.uniq()
 
     state =
@@ -946,7 +946,7 @@ defmodule SREChat.Store.RedisPersistence do
           {"unread_counts", uid}
         ]
       end)
-      |> Enum.reject(&(&1 in record_keys))
+      |> reject_existing(record_keys)
       |> Enum.uniq()
 
     read_records(state, user_keys)
@@ -973,10 +973,15 @@ defmodule SREChat.Store.RedisPersistence do
             []
         end
       end)
-      |> Enum.reject(&(&1 in record_keys))
+      |> reject_existing(record_keys)
       |> Enum.uniq()
 
     read_records(state, participant_keys)
+  end
+
+  defp reject_existing(keys, existing_keys) do
+    existing = MapSet.new(existing_keys)
+    Enum.reject(keys, &MapSet.member?(existing, &1))
   end
 
   defp read_counters(state, _default_state, []), do: state

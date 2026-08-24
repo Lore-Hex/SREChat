@@ -1896,7 +1896,8 @@ defmodule SREChat.RedisPersistenceTest do
 
             # ...derived structures and counters never do. The receiver
             # recomputes them; shipping them would replicate lost updates.
-            for derived <- ~w(conversation_messages conversation_latest unread_counts
+            for derived <-
+                  ~w(message_muids conversation_messages conversation_latest unread_counts
                               user_conversations conversation_users user_groups
                               thread_messages) do
               refute derived in buckets, "derived bucket #{derived} leaked into the oplog"

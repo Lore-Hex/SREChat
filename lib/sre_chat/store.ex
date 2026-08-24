@@ -186,6 +186,14 @@ defmodule SREChat.Store do
   def reactions(uid, id, reaction \\ nil),
     do: call({:reactions, to_s(uid), to_s(id), reaction})
 
+  @doc "Cheap readiness check that fails when the Store mailbox is blocked."
+  def serving_status(timeout \\ 250) do
+    GenServer.call(__MODULE__, :serving_status, timeout)
+  catch
+    :exit, {:timeout, _call} -> {:error, :busy}
+    :exit, _reason -> {:error, :down}
+  end
+
   def call_on(server, request), do: call(server, request)
 
   @doc """
@@ -267,6 +275,8 @@ defmodule SREChat.Store do
     state = load_or_seed_state()
     {:ok, state}
   end
+
+  def handle_call(:serving_status, _from, state), do: {:reply, :ok, state}
 
   @impl true
   def handle_call({:locked_call, request, refresh}, from, state) do

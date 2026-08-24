@@ -168,6 +168,21 @@ defmodule SREChat.ReplicationTest do
     end)
   end
 
+  test "historical derived-index snapshots are skipped before Store ingest", context do
+    with_redis(context, fn ->
+      become_region!(1, @region_b_url)
+
+      ops =
+        for n <- 1..1_000 do
+          ["put", "message_muids", "legacy-muid-#{n}", Integer.to_string(n)]
+        end
+
+      json = Jason.encode!(%{"v" => 1, "origin" => 2, "ts" => 123, "ops" => ops})
+
+      assert {:ok, 0} = Applier.apply_encoded(json, "123-0")
+    end)
+  end
+
   test "same-origin same-millisecond ops apply in stream order", context do
     with_redis(context, fn ->
       become_region!(1, @region_b_url)

@@ -46,7 +46,7 @@ defmodule SREChatWeb.Endpoint do
   # SERVING problems only — the things that stop this region answering
   # correctly. Replication is deliberately NOT here; see health_warnings/0.
   def health_problems do
-    Enum.filter([redis_problem(), disk_problem()], &is_binary/1)
+    Enum.filter([redis_problem(), store_problem(), disk_problem()], &is_binary/1)
   end
 
   @doc false
@@ -88,6 +88,18 @@ defmodule SREChatWeb.Endpoint do
     error -> "redis check failed (#{inspect(error)})"
   catch
     :exit, reason -> "redis check exited (#{inspect(reason)})"
+  end
+
+  defp store_problem do
+    case SREChat.Store.serving_status() do
+      :ok -> nil
+      {:error, :busy} -> "store request queue blocked"
+      {:error, :down} -> "store unavailable"
+    end
+  rescue
+    error -> "store check failed (#{inspect(error)})"
+  catch
+    :exit, reason -> "store check exited (#{inspect(reason)})"
   end
 
   defp replication_problem do

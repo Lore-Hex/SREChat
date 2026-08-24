@@ -10,6 +10,7 @@ defmodule SREChatWeb.HealthTest do
   use ExUnit.Case, async: false
 
   alias SREChatWeb.Endpoint
+  alias SREChat.Store
 
   test "a healthy region reports no problems" do
     assert Endpoint.health_problems() == []
@@ -54,6 +55,21 @@ defmodule SREChatWeb.HealthTest do
     # differently — this region is up and unable to serve.
     assert 503 != 200
     assert 503 != 500
+  end
+
+  test "a blocked Store fails readiness instead of looking alive" do
+    :sys.suspend(Store)
+
+    try do
+      started = System.monotonic_time(:millisecond)
+      problems = Endpoint.health_problems()
+      elapsed = System.monotonic_time(:millisecond) - started
+
+      assert "store request queue blocked" in problems
+      assert elapsed < 1_000
+    after
+      :sys.resume(Store)
+    end
   end
 
   test "a deployment with no redis configured is not called degraded" do
