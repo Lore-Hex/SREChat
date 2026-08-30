@@ -9,6 +9,10 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
+      # Smaller batches do not drain faster overall — they YIELD, so the
+      # store answers between them and peak memory per batch drops. Region 1
+      # (1.9GB) was OOM-killed mid-batch on catch-up until this went to 5.
+      REPLICATION_BATCH_COUNT: "${REPLICATION_BATCH_COUNT:-25}"
       MIX_ENV: prod
       # BEAM defaults to latin1 in a minimal container, which Elixir warns can
       # corrupt UTF-8; +fnu forces UTF-8 filename handling.

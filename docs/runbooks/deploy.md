@@ -138,6 +138,39 @@ because the next `up -d` that recreates redis wipes it unattended anyway.
 This is why deploys to regions 0 and 1 extract only `lib config agent` and patch
 the one needed env var into the existing compose file, rather than replacing it.
 
+## Region 1 is undersized, and it bites
+
+| region | RAM | swap |
+|---|---|---|
+| 0 (GCP) | 7.9 GB | — |
+| 1 (AWS) | **1.9 GB** | 2 GB (added 2026-08-30) |
+| 2 (Azure) | 3.4 GB | — |
+
+Region 1 ran out of memory **8 times in 7 days**, and once wedged the instance
+into EC2 `impaired` with SSH and HTTPS both refused — recovered only by
+`aws ec2 reboot-instances`. The kernel log is the only evidence that survives:
+
+```bash
+sudo dmesg -T | grep "Out of memory: Killed"   # beam.smp, ~900 MB RSS
+```
+
+The loop: the region falls behind → on restart it ingests the backlog → each
+`ingest_replicated` batch held the store for **150+ seconds** → memory peaked →
+OOM → restart → ingest the same backlog again. Redis holds ~740 MB of the 1.9 GB
+on its own (the oplog itself is only ~45 MB, so that is records, not the stream).
+
+Mitigations applied, cheapest first:
+
+1. **2 GB swap** with `vm.swappiness=10`, persisted in `/etc/fstab`. Necessary,
+   not sufficient — it kept dying.
+2. **`REPLICATION_BATCH_COUNT=5`** (default 25). This is what actually stopped
+   it: smaller batches yield between them, so the store answers and peak memory
+   per batch drops. Region 1 went from a restart every ~40s to zero restarts.
+
+The real fix is more memory. Until then, keep `REPLICATION_BATCH_COUNT` low on
+region 1 and do not let it fall far behind — a long outage there turns into a
+catch-up that cannot complete.
+
 ## Secrets
 
 `deploy/.env` supplies `${...}` substitution to compose. Add a var to **both**
