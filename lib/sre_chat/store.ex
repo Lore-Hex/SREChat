@@ -936,6 +936,26 @@ defmodule SREChat.Store do
     {:reply, {:ok, groups}, state}
   end
 
+  # Liveness bookkeeping, not conversation: delivered live so peers see it, and
+  # never written to state, Redis, or the oplog.
+  #
+  # The agents heartbeat each other every cycle — with three regions that is six
+  # messages a tick, ~17k a day, each carrying a full serialised entity payload.
+  # On a deployment with four participants and almost no real conversation this
+  # had stored 48,108 messages and 193,152 keys, 98% of them heartbeats, for
+  # 750 MB of Redis. On region 1 (1.9 GB) that was fatal: it OOM-killed the BEAM
+  # eight times in a week, and the matching oplog made every catch-up a
+  # 150-second batch the box could not finish.
+  #
+  # Matched on the marker as well as the category so existing agents stop
+  # writing the moment the server is deployed, with no coordinated rollout.
+  @heartbeat_marker "::heartbeat::"
+
+  defp transient?(message) do
+    message["category"] == "transient" or
+      String.starts_with?(to_string(get_in(message, ["data", "text"]) || ""), @heartbeat_marker)
+  end
+
   def handle_call({:send_message, sender_uid, params, uploads, opts}, _from, state) do
     params = stringify_keys(params)
 
@@ -944,19 +964,26 @@ defmodule SREChat.Store do
         {:reply, {:error, error}, state}
 
       {:ok, message, state, auto_joined} ->
-        {state, retention_ops} = MessageState.store_with_retention(state, message)
-        {state, auto_delivery} = auto_deliver_direct_message(state, message)
+        if transient?(message) do
+          # Delivered, never stored, never replicated. See transient?/1.
+          broadcast_auto_joins(auto_joined)
+          PubSubFanout.message(state, message, device_id: origin_device_id(opts, message))
+          {:reply, {:ok, message}, state}
+        else
+          {state, retention_ops} = MessageState.store_with_retention(state, message)
+          {state, auto_delivery} = auto_deliver_direct_message(state, message)
 
-        persist_ops(
-          auto_join_persistence_ops(state, auto_joined) ++
-            PersistenceOps.message_create(state, message) ++
-            retention_ops ++ auto_delivery_persistence_ops(state, auto_delivery)
-        )
+          persist_ops(
+            auto_join_persistence_ops(state, auto_joined) ++
+              PersistenceOps.message_create(state, message) ++
+              retention_ops ++ auto_delivery_persistence_ops(state, auto_delivery)
+          )
 
-        broadcast_auto_joins(auto_joined)
-        PubSubFanout.message(state, message, device_id: origin_device_id(opts, message))
-        broadcast_auto_delivery(state, auto_delivery)
-        {:reply, {:ok, message}, state}
+          broadcast_auto_joins(auto_joined)
+          PubSubFanout.message(state, message, device_id: origin_device_id(opts, message))
+          broadcast_auto_delivery(state, auto_delivery)
+          {:reply, {:ok, message}, state}
+        end
     end
   end
 
@@ -968,19 +995,26 @@ defmodule SREChat.Store do
         {:reply, {:error, error}, state}
 
       {:ok, message, state, auto_joined} ->
-        {state, retention_ops} = MessageState.store_with_retention(state, message)
-        {state, auto_delivery} = auto_deliver_direct_message(state, message)
+        if transient?(message) do
+          # Delivered, never stored, never replicated. See transient?/1.
+          broadcast_auto_joins(auto_joined)
+          PubSubFanout.message(state, message, device_id: origin_device_id(opts, message))
+          {:reply, {:ok, message}, state}
+        else
+          {state, retention_ops} = MessageState.store_with_retention(state, message)
+          {state, auto_delivery} = auto_deliver_direct_message(state, message)
 
-        persist_ops(
-          auto_join_persistence_ops(state, auto_joined) ++
-            PersistenceOps.message_create(state, message) ++
-            retention_ops ++ auto_delivery_persistence_ops(state, auto_delivery)
-        )
+          persist_ops(
+            auto_join_persistence_ops(state, auto_joined) ++
+              PersistenceOps.message_create(state, message) ++
+              retention_ops ++ auto_delivery_persistence_ops(state, auto_delivery)
+          )
 
-        broadcast_auto_joins(auto_joined)
-        PubSubFanout.message(state, message, device_id: origin_device_id(opts, message))
-        broadcast_auto_delivery(state, auto_delivery)
-        {:reply, {:ok, message}, state}
+          broadcast_auto_joins(auto_joined)
+          PubSubFanout.message(state, message, device_id: origin_device_id(opts, message))
+          broadcast_auto_delivery(state, auto_delivery)
+          {:reply, {:ok, message}, state}
+        end
     end
   end
 
