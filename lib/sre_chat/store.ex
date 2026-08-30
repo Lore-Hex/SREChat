@@ -317,7 +317,7 @@ defmodule SREChat.Store do
       survivors =
         ops
         |> Replication.Applier.version_gate(origin, ts, stream_id)
-        |> Enum.reject(&transient_op?/1)
+        |> reject_transient_ops()
       {state, persist, fanouts} = Replication.Ingest.apply_ops(state, survivors, origin, ts)
       persist_ops(persist)
       Replication.Applier.stamp_versions(survivors, origin, ts, stream_id)
@@ -959,8 +959,29 @@ defmodule SREChat.Store do
   # writing the moment the server is deployed, with no coordinated rollout.
   @heartbeat_marker "::heartbeat::"
 
-  defp transient_op?({:put, "messages", _id, message}), do: transient?(message)
-  defp transient_op?(_op), do: false
+  # One heartbeat replicates as SEVERAL ops: the message itself and a
+  # `message_muids` pointer to it. Dropping only the message left the pointer
+  # behind — `srechat:messages` went flat at 52,887 while `message_muids` kept
+  # climbing ~400 a minute, which looked like the fix not working at all.
+  #
+  # The pointer op carries no body, so it cannot be classified alone. It is
+  # dropped by ID: whatever message we just refused to store, we refuse to index.
+  defp reject_transient_ops(ops) do
+    dropped =
+      for {:put, "messages", id, message} <- ops,
+          transient?(message),
+          into: MapSet.new(),
+          do: to_string(id)
+
+    Enum.reject(ops, &transient_op?(&1, dropped))
+  end
+
+  defp transient_op?({:put, "messages", _id, message}, _dropped), do: transient?(message)
+
+  defp transient_op?({:put, "message_muids", _muid, id}, dropped),
+    do: MapSet.member?(dropped, to_string(id))
+
+  defp transient_op?(_op, _dropped), do: false
 
   defp transient?(message) do
     message["category"] == "transient" or

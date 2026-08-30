@@ -106,6 +106,29 @@ defmodule SREChat.TransientMessageTest do
     assert stored_count() == before, "a replicated heartbeat was persisted"
   end
 
+  test "the muid POINTER to a dropped heartbeat is dropped with it" do
+    # One heartbeat replicates as several ops. Dropping only the message left an
+    # orphaned index entry: srechat:messages went flat while message_muids kept
+    # climbing ~400/min, which reads exactly like the fix not working.
+    hb = replicated_message("replicated-hb-2", "::heartbeat:: sre-agent-0 1787000003")
+
+    assert {:ok, _} =
+             Store.ingest_replicated(
+               [
+                 {:put, "messages", "replicated-hb-2", hb},
+                 {:put, "message_muids", "srv-replicated-hb-2", "replicated-hb-2"}
+               ],
+               2,
+               1_787_000_003,
+               "3-0"
+             )
+
+    result = Store.find_message_by_muid_for("t-bob", "srv-replicated-hb-2")
+
+    refute match?({:ok, _}, result),
+           "an orphaned muid pointer survived for a dropped heartbeat: #{inspect(result)}"
+  end
+
   test "an ordinary message arriving by REPLICATION is still stored" do
     before = stored_count()
 
