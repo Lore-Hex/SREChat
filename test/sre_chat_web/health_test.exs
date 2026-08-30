@@ -22,6 +22,43 @@ defmodule SREChatWeb.HealthTest do
     assert conn.resp_body == "ok"
   end
 
+  describe "a busy store is not a broken one" do
+    # `:sys.suspend/1` stops the GenServer handling calls while they queue —
+    # exactly the state a replication batch puts the store in, and the state the
+    # old 250ms probe reported as "this region cannot serve".
+    setup do
+      on_exit(fn -> try do: :sys.resume(SREChat.Store), rescue: (_ -> :ok) end)
+      :ok
+    end
+
+    test "a stall longer than one probe does NOT fail health" do
+      # Region 0 answered 503 for 223 requests in six hours this way, while
+      # every real /v3.0 request in the same window succeeded, and each 503 cost
+      # the owner a NODE DOWN and a RECOVERED alert on their phone.
+      :sys.suspend(SREChat.Store)
+      resumer = Task.async(fn -> Process.sleep(1_200); :sys.resume(SREChat.Store) end)
+
+      problems = SREChatWeb.Endpoint.health_problems()
+      Task.await(resumer, 10_000)
+
+      refute Enum.any?(problems, &(&1 =~ "store")),
+             "a momentary stall was reported as unfit: #{inspect(problems)}"
+    end
+
+    test "a store stuck through EVERY probe still fails health" do
+      # The tolerance must not become blindness: a store that never answers is
+      # genuinely unfit and has to say so.
+      :sys.suspend(SREChat.Store)
+      resumer = Task.async(fn -> Process.sleep(4_000); :sys.resume(SREChat.Store) end)
+
+      problems = SREChatWeb.Endpoint.health_problems()
+      Task.await(resumer, 12_000)
+
+      assert Enum.any?(problems, &(&1 =~ "store request queue blocked")),
+             "a fully blocked store was reported healthy: #{inspect(problems)}"
+    end
+  end
+
   test "problems are NAMED, not just counted" do
     # "degraded" with no detail sends an operator to read logs on three
     # machines. The response has to say which thing is wrong.
@@ -66,7 +103,13 @@ defmodule SREChatWeb.HealthTest do
       elapsed = System.monotonic_time(:millisecond) - started
 
       assert "store request queue blocked" in problems
-      assert elapsed < 1_000
+      # Bounded, not instant. The probe deliberately costs two attempts
+      # (2 x 700ms + 100ms backoff) because a single 250ms budget reported
+      # ordinary replication backpressure as an outage — 223 false 503s in six
+      # hours on region 0, each one a NODE DOWN and a RECOVERED on the owner's
+      # phone. Still well inside any sane load-balancer timeout, and the check
+      # must never hang: that is what this assertion is really guarding.
+      assert elapsed < 2_000
     after
       :sys.resume(Store)
     end

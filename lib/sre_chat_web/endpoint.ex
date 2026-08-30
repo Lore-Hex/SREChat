@@ -90,8 +90,26 @@ defmodule SREChatWeb.Endpoint do
     :exit, reason -> "redis check exited (#{inspect(reason)})"
   end
 
+  # Probe TWICE, with a real budget, before calling the region unfit.
+  #
+  # `serving_status/0` defaults to a 250ms GenServer.call. The store serializes
+  # replication ingest with local requests on purpose, so a batch landing at the
+  # wrong moment pushes one reply past 250ms — and the old check turned that into
+  # a 503. Measured on region 0: 223 such 503s in six hours, durations 259-503ms,
+  # while every real /v3.0 request in the same window succeeded. The region was
+  # serving the entire time.
+  #
+  # It did not stay quiet either: peers polling /health saw "not serving" and
+  # posted NODE DOWN, then RECOVERED, then FLAPPING — 28 alerts in 12 hours into
+  # the owner's phone. Momentary backpressure is not unfitness, and the cost of
+  # pretending otherwise is a pager nobody can trust.
+  #
+  # `:down` still fails immediately; that one really is unfit.
+  @store_probe_timeout 700
+  @store_probe_backoff 100
+
   defp store_problem do
-    case SREChat.Store.serving_status() do
+    case store_serving(2) do
       :ok -> nil
       {:error, :busy} -> "store request queue blocked"
       {:error, :down} -> "store unavailable"
@@ -100,6 +118,22 @@ defmodule SREChatWeb.Endpoint do
     error -> "store check failed (#{inspect(error)})"
   catch
     :exit, reason -> "store check exited (#{inspect(reason)})"
+  end
+
+  defp store_serving(attempts_left) do
+    case SREChat.Store.serving_status(@store_probe_timeout) do
+      :ok ->
+        :ok
+
+      {:error, :busy} when attempts_left > 1 ->
+        # Let the queue drain before asking again. Retrying instantly just lands
+        # in the same busy window and proves nothing.
+        Process.sleep(@store_probe_backoff)
+        store_serving(attempts_left - 1)
+
+      other ->
+        other
+    end
   end
 
   defp replication_problem do
