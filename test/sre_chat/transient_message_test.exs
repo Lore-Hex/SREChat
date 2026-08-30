@@ -43,6 +43,26 @@ defmodule SREChat.TransientMessageTest do
     length(msgs)
   end
 
+  # Shaped like a message that really came off a peer's oplog. A bare map without
+  # sender/receiver crashes PubSubFanout, which would make the heartbeat test
+  # pass for the wrong reason — dropped before fanout rather than dropped on
+  # purpose.
+  defp replicated_message(id, text) do
+    %{
+      "id" => id,
+      "muid" => "srv-" <> id,
+      "conversationId" => "user_t-alice_t-bob",
+      "category" => "message",
+      "type" => "text",
+      "sender" => "t-alice",
+      "receiver" => "t-bob",
+      "receiverType" => "user",
+      "sentAt" => 1_787_000_000,
+      "updatedAt" => 1_787_000_000,
+      "data" => %{"text" => text}
+    }
+  end
+
   test "an ordinary message is stored" do
     before = stored_count()
     assert {:ok, _} = send_text("a real message")
@@ -69,6 +89,32 @@ defmodule SREChat.TransientMessageTest do
     before = stored_count()
     assert {:ok, _} = send_text("presence ping", %{"category" => "transient"})
     assert stored_count() == before
+  end
+
+  test "a heartbeat arriving by REPLICATION is dropped, not stored" do
+    # send_message/4 stops this region writing them; a peer that has not been
+    # deployed yet, or an oplog still holding the old ones, would replicate them
+    # straight back in. That is what kept region 1's key count climbing at ~22/s
+    # while it drained the backlog, with the write-side fix already live.
+    before = stored_count()
+
+    hb = replicated_message("replicated-hb-1", "::heartbeat:: sre-agent-2 1787000001")
+
+    assert {:ok, _} =
+             Store.ingest_replicated([{:put, "messages", "replicated-hb-1", hb}], 2, 1_787_000_001, "1-0")
+
+    assert stored_count() == before, "a replicated heartbeat was persisted"
+  end
+
+  test "an ordinary message arriving by REPLICATION is still stored" do
+    before = stored_count()
+
+    msg = replicated_message("replicated-real-1", "a real replicated message")
+
+    assert {:ok, _} =
+             Store.ingest_replicated([{:put, "messages", "replicated-real-1", msg}], 2, 1_787_000_002, "2-0")
+
+    assert stored_count() == before + 1, "replication dropped a real message"
   end
 
   test "a message that merely mentions a heartbeat IS stored" do

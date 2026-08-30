@@ -309,7 +309,15 @@ defmodule SREChat.Store do
       # Version-gate INSIDE the entity locks (the plan machinery acquired
       # them around this call): a local writer cannot slip a newer value
       # in between the gate read and the apply.
-      survivors = Replication.Applier.version_gate(ops, origin, ts, stream_id)
+      # Drop transient ops here too. send_message/4 stops this region WRITING
+      # heartbeats, but a peer that has not been deployed yet — or an oplog
+      # still holding the old ones — would otherwise replicate them straight
+      # back in, which is exactly what kept region 1's key count climbing at
+      # ~22/s while it drained the backlog.
+      survivors =
+        ops
+        |> Replication.Applier.version_gate(origin, ts, stream_id)
+        |> Enum.reject(&transient_op?/1)
       {state, persist, fanouts} = Replication.Ingest.apply_ops(state, survivors, origin, ts)
       persist_ops(persist)
       Replication.Applier.stamp_versions(survivors, origin, ts, stream_id)
@@ -950,6 +958,9 @@ defmodule SREChat.Store do
   # Matched on the marker as well as the category so existing agents stop
   # writing the moment the server is deployed, with no coordinated rollout.
   @heartbeat_marker "::heartbeat::"
+
+  defp transient_op?({:put, "messages", _id, message}), do: transient?(message)
+  defp transient_op?(_op), do: false
 
   defp transient?(message) do
     message["category"] == "transient" or
