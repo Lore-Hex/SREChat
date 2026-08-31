@@ -87,6 +87,36 @@ class TestFindings:
         assert agent.sweep_findings() == []
 
 
+class TestHostErrors:
+    """The incidents that actually took regions down were host-level."""
+
+    def test_oom_kills_are_surfaced(self, agent, monkeypatch):
+        # The OOM killer shot the BEAM eight times in a week and reported ONLY
+        # to the kernel log; `docker inspect` said exit=0 oom=false throughout.
+        monkeypatch.setattr(agent, "_run", lambda cmd: (
+            "Out of memory: Killed process 1913 (beam.smp) anon-rss:907508kB"
+            if "-k" in cmd else "-- No entries --"))
+        out = agent.tool_system_errors("30m")
+        assert "KERNEL OOM" in out and "beam.smp" in out
+
+    def test_a_quiet_host_says_so(self, agent, monkeypatch):
+        monkeypatch.setattr(agent, "_run", lambda cmd: "-- No entries --")
+        assert agent.tool_system_errors("30m") == "(no output)"
+
+    def test_failed_units_are_surfaced(self, agent, monkeypatch):
+        monkeypatch.setattr(agent, "_run", lambda cmd: (
+            "" if "-k" in cmd else "sre-agent.service: Failed with result exit-code"))
+        assert "Failed with result" in agent.tool_system_errors("30m")
+
+    def test_every_region_has_it_even_without_cloud_credentials(self):
+        # Region 1 has no IAM instance profile and region 2 no managed identity,
+        # so this must not live behind the actionable/full-power grants.
+        monitor = _agent(SRE_REGION_INDEX="1", SRE_ALLOW_ACTIONS="1",
+                         SRE_ACTIONABLE_REGIONS="0", SRE_FULL_POWER_REGIONS="0")
+        assert "system_errors" in monitor.TOOLS
+        assert any(t == "system_errors" for t, _a, _l in monitor.SWEEP_SOURCES)
+
+
 class TestSweepBehaviour:
     @staticmethod
     def _wire(agent, monkeypatch, conclusion):

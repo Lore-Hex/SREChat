@@ -686,12 +686,35 @@ def tool_shell(arg: str) -> str:
 _FULL_POWER_TOOLS = {
     "shell": (tool_shell, "run a shell command on this VM (arg: the command)"),
 }
+def tool_system_errors(window: str) -> str:
+    """Host-level errors from the journal: OOM kills, failed units, disk, I/O.
+
+    Every incident that actually took a region down was visible here and nowhere
+    the agent was looking — the OOM killer that shot the BEAM eight times reports
+    ONLY to the kernel log, and `docker inspect` cheerfully said exit=0
+    oom=false while it happened. Needs no cloud credentials, which matters
+    because region 1 has no instance profile and region 2 no managed identity.
+    """
+    since = window or "30m"
+    out = _run(["sudo", "journalctl", "-p", "err", "--since", f"-{since}",
+                "--no-pager", "-n", "40"])
+    kernel = _run(["sudo", "journalctl", "-k", "--since", f"-{since}", "--no-pager"])
+    oom = [l for l in kernel.splitlines() if "Out of memory" in l or "oom-kill" in l][-5:]
+    parts = []
+    if out.strip() and "-- No entries --" not in out:
+        parts.append(out.strip()[:1500])
+    if oom:
+        parts.append("KERNEL OOM:\n" + "\n".join(oom)[:600])
+    return "\n\n".join(parts) or "(no output)"
+
+
 _READ_ONLY_TOOLS = {
     "region_health": (tool_region_health, "health of all three regions"),
     "replication_status": (tool_replication_status, "write a probe in every region and verify convergence"),
     "containers": (tool_local_containers, f"docker containers on this master ({CLOUD})"),
     "logs": (tool_local_logs, "recent logs from a local container (arg: app|redis|caddy)"),
     "wireguard": (tool_wireguard, "WireGuard peer status from this master"),
+    "system_errors": (tool_system_errors, "host errors: failed units, OOM kills, disk/IO (arg: window like 30m)"),
 }
 # Actionable tools: GCP reads and the region-0 restart. Only region 0 (GCP) is
 # granted these; on AWS/Azure the agent is a read-only monitor by design.
@@ -1128,9 +1151,12 @@ SWEEP_SECONDS = float(os.environ.get("SRE_SWEEP_SECONDS", "600"))
 
 # (tool name, argument, label). Only tools this region actually has are used.
 SWEEP_SOURCES = (
+    ("system_errors", "30m", "host errors (journal/kernel)"),
     ("tr_errors", "30m", "TrustedRouter errors (Cloud Logging)"),
     ("sentry", "", "unresolved Sentry issues"),
     ("logs", "app", "local app log"),
+    ("logs", "caddy", "local caddy log"),
+    ("logs", "redis", "local redis log"),
 )
 
 # Output that means "nothing wrong", so a quiet sweep does not look like a find.
