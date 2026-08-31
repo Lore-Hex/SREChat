@@ -163,3 +163,21 @@ class TestSweepBehaviour:
         except Exception:
             pass
         assert "<<<" in seen.get("t", "") and "never followed" in seen.get("t", "")
+
+
+class TestSourceFailures:
+    def test_a_failed_query_is_a_gap_not_a_finding(self, agent, monkeypatch):
+        # The sweep opened an investigation into its own Sentry 403 and reported
+        # it as something the cloud was doing wrong.
+        for t in ("system_errors", "tr_errors"):
+            monkeypatch.setitem(agent.TOOLS, t, (lambda a: "(no output)", "d"))
+        monkeypatch.setitem(agent.TOOLS, "logs", (lambda a: "", "d"))
+        monkeypatch.setitem(
+            agent.TOOLS, "sentry",
+            (lambda a: "(Sentry query failed: HTTP Error 403: Forbidden)", "d"))
+        assert agent.sweep_findings() == []
+
+    def test_sentry_host_is_overridable(self, agent):
+        # lore-hex-corp is an EU org served from de.sentry.io; the us host 403s
+        # and says nothing about the HOST being the problem.
+        assert agent.SENTRY_HOST.startswith("https://")

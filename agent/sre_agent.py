@@ -455,6 +455,7 @@ TR_SERVICE = os.environ.get("TR_RUN_SERVICE", "trusted-router")
 SENTRY_TOKEN = os.environ.get("SENTRY_AUTH_TOKEN", "")
 SENTRY_ORG = os.environ.get("SENTRY_ORG", "")
 SENTRY_PROJECT = os.environ.get("SENTRY_PROJECT", "")
+SENTRY_HOST = (os.environ.get("SENTRY_HOST") or "https://sentry.io").rstrip("/")
 
 
 def tool_tr_errors(arg: str = "") -> str:
@@ -500,7 +501,10 @@ def tool_sentry_issues(_arg: str = "") -> str:
     if not (SENTRY_TOKEN and SENTRY_ORG and SENTRY_PROJECT):
         return ("Sentry is not configured for this agent. Set SENTRY_AUTH_TOKEN, "
                 "SENTRY_ORG, and SENTRY_PROJECT to enable it.")
-    url = (f"https://sentry.io/api/0/projects/{SENTRY_ORG}/{SENTRY_PROJECT}/issues/"
+    # Sentry shards orgs by region: lore-hex-corp lives on de.sentry.io, and
+    # calling the us host for it returns 403 with no hint that the HOST is the
+    # problem. SENTRY_HOST is why the token looked broken when it was fine.
+    url = (f"{SENTRY_HOST}/api/0/projects/{SENTRY_ORG}/{SENTRY_PROJECT}/issues/"
            "?query=is:unresolved&statsPeriod=24h&limit=10")
     try:
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {SENTRY_TOKEN}"})
@@ -1174,6 +1178,10 @@ _SOURCE_UNAVAILABLE = (
     "credentials",
     "could not find default credentials",
     "unauthorized",
+    "query failed",
+    "http error 401",
+    "http error 403",
+    "forbidden",
 )
 
 
