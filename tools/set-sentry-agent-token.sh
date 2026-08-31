@@ -25,10 +25,13 @@ remote_cmd='
 set -eu
 F=/etc/srechat/notify.env
 sudo touch "$F"; sudo chmod 600 "$F"
-T="$(cat /root/.sentry_agent_token)"; sudo rm -f /root/.sentry_agent_token
+# sudo: the staged file is root-owned mode 600 and the SSH user is not root.
+# Without it this dies with "Permission denied" AFTER the token has been typed,
+# which wastes the one time Sentry ever shows it.
+T="$(sudo cat /root/.sentry_agent_token)"; sudo rm -f /root/.sentry_agent_token
 t=$(mktemp)
-sudo grep -v -E "^(SENTRY_AUTH_TOKEN|SENTRY_ORG|SENTRY_PROJECT)=" "$F" > "$t" || true
-{ cat "$t"; printf "SENTRY_AUTH_TOKEN=%s\nSENTRY_ORG=lore-hex-corp\nSENTRY_PROJECT=quill-router\n" "$T"; } | sudo tee "$F" >/dev/null
+sudo grep -v -E "^(SENTRY_AUTH_TOKEN|SENTRY_ORG|SENTRY_PROJECT|SENTRY_HOST)=" "$F" > "$t" || true
+{ cat "$t"; printf "SENTRY_AUTH_TOKEN=%s\nSENTRY_ORG=lore-hex-corp\nSENTRY_PROJECT=quill-router\nSENTRY_HOST=https://de.sentry.io\n" "$T"; } | sudo tee "$F" >/dev/null
 rm -f "$t"; unset T
 sudo systemctl restart sre-agent; sleep 5
 printf "  agent: %s  sentry vars: %s\n" "$(systemctl is-active sre-agent)" "$(sudo grep -c "^SENTRY_" "$F")"
