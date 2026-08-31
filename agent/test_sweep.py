@@ -43,7 +43,7 @@ class TestFindings:
         # "(no output)" from tr_errors means no errors, not a finding. Treating
         # it as one would page on every sweep of a healthy cloud.
         monkeypatch.setitem(agent.TOOLS, "tr_errors", (lambda a: "(no output)", "d"))
-        monkeypatch.setitem(agent.TOOLS, "logs", (lambda a: "", "d"))
+        monkeypatch.setattr(agent, "_sweep_container_log", lambda w: "(no output)")
         assert agent.sweep_findings() == []
 
     def test_an_unconfigured_source_is_not_a_finding(self, agent, monkeypatch):
@@ -53,7 +53,7 @@ class TestFindings:
             agent.TOOLS, "sentry",
             (lambda a: "Sentry is not configured for this agent. Set SENTRY_AUTH_TOKEN...", "d"))
         monkeypatch.setitem(agent.TOOLS, "tr_errors", (lambda a: "(no output)", "d"))
-        monkeypatch.setitem(agent.TOOLS, "logs", (lambda a: "", "d"))
+        monkeypatch.setattr(agent, "_sweep_container_log", lambda w: "(no output)")
         assert agent.sweep_findings() == []
 
     def test_a_source_we_cannot_read_is_a_gap_not_a_finding(self, agent, monkeypatch):
@@ -77,13 +77,14 @@ class TestFindings:
             raise RuntimeError("credentials expired")
 
         monkeypatch.setitem(agent.TOOLS, "tr_errors", (boom, "d"))
-        monkeypatch.setitem(agent.TOOLS, "logs", (lambda a: "ERROR db refused", "d"))
+        # Container logs go through the windowed reader now, not the TOOLS entry.
+        monkeypatch.setattr(agent, "_sweep_container_log", lambda w: "ERROR db refused")
         found = agent.sweep_findings()
         assert any("db refused" in ev for _l, ev in found)
 
     def test_a_region_without_a_source_just_skips_it(self, agent, monkeypatch):
         monkeypatch.delitem(agent.TOOLS, "tr_errors", raising=False)
-        monkeypatch.setitem(agent.TOOLS, "logs", (lambda a: "", "d"))
+        monkeypatch.setattr(agent, "_sweep_container_log", lambda w: "(no output)")
         assert agent.sweep_findings() == []
 
 
@@ -123,7 +124,7 @@ class TestSweepBehaviour:
         sent, emails = [], []
         agent._signal_seen.clear()
         monkeypatch.setitem(agent.TOOLS, "tr_errors", (lambda a: "500 upstream timeout", "d"))
-        monkeypatch.setitem(agent.TOOLS, "logs", (lambda a: "", "d"))
+        monkeypatch.setattr(agent, "_sweep_container_log", lambda w: "(no output)")
         monkeypatch.setattr(agent, "chat_with_tools", lambda m, s: {"content": conclusion})
         monkeypatch.setattr(agent, "send", lambda who, text: sent.append(text))
         monkeypatch.setattr(agent.escalate, "email_human", lambda b: emails.append(b) or "ok")
@@ -142,6 +143,28 @@ class TestSweepBehaviour:
         agent.sweep_cloud_errors()
         assert len(sent) == 1
         assert emails == [], "an unverifiable finding must not reach the inbox"
+
+    def test_a_HISTORICAL_finding_does_not_email(self, agent, monkeypatch):
+        # This is what flooded the inbox: real, nothing done about it, therefore
+        # "real and not resolved" — but it happened days ago. 12 emails in two
+        # hours from one region, about a graceful redis restart and Sentry
+        # issues last seen on the 27th.
+        sent, emails = self._wire(agent, monkeypatch,
+            "CAUSE: Historical graceful redis restart (SIGTERM, clean RDB save)\n"
+            "EVIDENCE: log line from three days ago\nACTION: NONE\nRESOLVED: no")
+        agent.sweep_cloud_errors()
+        assert emails == [], "a historical finding reached the inbox"
+        assert len(sent) == 1, "it should still be visible in chat"
+
+    def test_a_live_problem_it_did_not_fix_stays_in_chat(self, agent, monkeypatch):
+        # Deliberate: email means "something changed". A live problem the agent
+        # could not fix is still in chat, and the watchdog pages separately for
+        # conditions that stop a region serving.
+        sent, emails = self._wire(agent, monkeypatch,
+            "CAUSE: upstream provider erroring\nEVIDENCE: logs\nACTION: NONE\nRESOLVED: no")
+        agent.sweep_cloud_errors()
+        assert emails == []
+        assert len(sent) == 1
 
     def test_the_same_error_is_one_incident_across_sweeps(self, agent, monkeypatch):
         calls = []
@@ -171,7 +194,7 @@ class TestSourceFailures:
         # it as something the cloud was doing wrong.
         for t in ("system_errors", "tr_errors"):
             monkeypatch.setitem(agent.TOOLS, t, (lambda a: "(no output)", "d"))
-        monkeypatch.setitem(agent.TOOLS, "logs", (lambda a: "", "d"))
+        monkeypatch.setattr(agent, "_sweep_container_log", lambda w: "(no output)")
         monkeypatch.setitem(
             agent.TOOLS, "sentry",
             (lambda a: "(Sentry query failed: HTTP Error 403: Forbidden)", "d"))
@@ -181,3 +204,28 @@ class TestSourceFailures:
         # lore-hex-corp is an EU org served from de.sentry.io; the us host 403s
         # and says nothing about the HOST being the problem.
         assert agent.SENTRY_HOST.startswith("https://")
+
+
+class TestSweepWindow:
+    def test_the_window_covers_the_gap_between_sweeps(self, agent):
+        # Slightly longer than the interval, so an event landing in the seam
+        # between two sweeps is not missed.
+        w = agent._sweep_window()
+        assert w.endswith("m")
+        assert int(w[:-1]) >= int(agent.SWEEP_SECONDS // 60)
+
+    def test_container_log_reader_is_time_windowed(self, agent, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(agent, "_run", lambda cmd: (
+            seen.setdefault("cmd", cmd) and "" if "logs" in cmd else "abc123"))
+        agent._sweep_container_log("app")
+        cmd = seen.get("cmd", [])
+        assert "--since" in cmd, f"sweep read the log without a window: {cmd}"
+
+    def test_only_error_lines_are_kept(self, agent, monkeypatch):
+        monkeypatch.setattr(agent, "_run", lambda cmd: (
+            "abc123" if "ps" in cmd else
+            "[info] all good\n[error] connection refused\n[info] fine again"))
+        out = agent._sweep_container_log("app")
+        assert "connection refused" in out
+        assert "all good" not in out

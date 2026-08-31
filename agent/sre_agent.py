@@ -1154,10 +1154,34 @@ def triage_signal(text: str) -> None:
 SWEEP_SECONDS = float(os.environ.get("SRE_SWEEP_SECONDS", "600"))
 
 # (tool name, argument, label). Only tools this region actually has are used.
+# The window a sweep considers "now". Slightly longer than SWEEP_SECONDS so a
+# late event is not missed in the seam between two sweeps.
+def _sweep_window() -> str:
+    return f"{max(2, int(SWEEP_SECONDS // 60) + 5)}m"
+
+
+def _sweep_container_log(which: str) -> str:
+    """Recent lines only.
+
+    The generic `logs` tool returns `--tail 40` regardless of age, so every
+    sweep re-read the same old lines, rediscovered the same historical events,
+    and emailed about them again. The reported causes said so outright:
+    "Historical graceful redis restart", "Historical replication-gap event".
+    A sweep must look at what happened SINCE THE LAST ONE.
+    """
+    cid = _run(["sudo", "docker", "ps", "-qf", f"name={which}"]).split("\n")[0]
+    if not cid or cid.startswith("("):
+        return "(no output)"
+    out = _run(["sudo", "docker", "logs", "--since", _sweep_window(), "--tail", "60", cid])
+    keep = [l for l in out.splitlines()
+            if re.search(r"error|exception|fatal|crash|refused|timeout|\*\* \(", l, re.I)]
+    return "\n".join(keep[-40:]) or "(no output)"
+
+
 SWEEP_SOURCES = (
-    ("system_errors", "30m", "host errors (journal/kernel)"),
-    ("tr_errors", "30m", "TrustedRouter errors (Cloud Logging)"),
-    ("sentry", "", "unresolved Sentry issues"),
+    ("system_errors", None, "host errors (journal/kernel)"),
+    ("tr_errors", None, "TrustedRouter errors (Cloud Logging)"),
+    ("sentry", None, "unresolved Sentry issues"),
     ("logs", "app", "local app log"),
     ("logs", "caddy", "local caddy log"),
     ("logs", "redis", "local redis log"),
@@ -1193,7 +1217,12 @@ def sweep_findings() -> list[tuple[str, str]]:
         if not entry:
             continue
         try:
-            out = (entry[0](arg) or "").strip()
+            if tool == "logs":
+                out = _sweep_container_log(arg).strip()
+            else:
+                # Sentry's default 24h window kept resurfacing issues last seen
+                # days ago; narrow every source to the sweep window.
+                out = (entry[0](arg if arg is not None else _sweep_window()) or "").strip()
         except Exception as exc:  # noqa: BLE001 — one bad source must not stop the sweep
             log(f"sweep: {tool} failed: {exc}")
             continue
@@ -1258,10 +1287,18 @@ def sweep_cloud_errors() -> None:
         except Exception as exc:  # noqa: BLE001 — chat is not the pager
             log(f"sweep chat note failed: {exc}")
 
-        # Emailed when the agent CHANGED something or the problem is still live.
-        # A finding it could not stand up, or one already resolved and untouched,
-        # stays in chat.
-        if acted or (real and not resolved):
+        # Emailed ONLY when the agent CHANGED something.
+        #
+        # It used to email when a finding was "real and not resolved" too, which
+        # sounds like "a live problem" and is not: a historical event is real,
+        # and nothing was done about it, so every stale log line qualified. That
+        # sent 12 emails in two hours from one region — about a graceful redis
+        # restart days earlier, and Sentry issues last seen on the 27th.
+        #
+        # A finding worth waking someone for is one where something CHANGED —
+        # either the agent acted, or it is still acting. Everything else is in
+        # chat, where it can be read when convenient.
+        if acted:
             try:
                 log(f"sweep report: {escalate.email_human(incident_report(finding))}")
             except Exception as exc:  # noqa: BLE001
