@@ -126,6 +126,63 @@ defects in a suite that was already green.
 
 ---
 
+## Cleanup that becomes the outage
+
+**Never let a command read and write the same file.** An orphan sweep did
+`sed 's|a|b|' /tmp/orph >> /tmp/orph`. That does not terminate: it wrote **229
+million lines**, filled a 20 GB disk, and took the region down. The keys it was
+tidying were harmless; the tidying was not.
+
+**`df` and `du` disagreeing means a deleted file is still open.** `du` said
+7.7 GB while `df` said 100% full, because a runaway `xargs` still held the
+deleted 12 GB file. Space came back only when the process was killed:
+
+```bash
+for p in $(ls /proc | grep -E '^[0-9]+$'); do
+  ls -l /proc/$p/fd 2>/dev/null | grep '(deleted)' && echo "  ^ pid $p"
+done
+```
+
+**A cleanup needs a sanity gate, not just correct logic.** The rewrite refuses
+any delete list larger than two keys per pointer — the arithmetic maximum — and
+that gate would have stopped the original cold. Bound the blast radius of the
+thing whose job is deleting.
+
+**One round trip per key is a design error at scale.** The first version ran
+130,000 `docker exec redis-cli get` calls, blew a 10-minute timeout, and left the
+app stopped. Batched `MGET` over the same data takes seconds. If a loop's
+iteration count is the size of the data, it is not a loop, it is an outage.
+
+**Run cleanup with the app stopped, then make it durable before restarting.** A
+purge that removed 150k keys was undone by an immediate Redis restart replaying a
+pre-purge AOF: 2,388 keys became 162,507 again. `BGREWRITEAOF`, wait for
+`aof_rewrite_in_progress:0`, and only then restart.
+
+---
+
+## Credentials you cannot see
+
+**Test the cheapest hypothesis before sending someone to a UI.** A Sentry token
+403'd; the endpoint path suggested a missing `project:read`, so that is what was
+asked for — twice. One probe of `/organizations/<org>/`, which needs only the
+most basic scope, showed it 403'd too: the integration had granted *nothing*, and
+no amount of adding one scope would have fixed it. The org auth token that
+replaced it worked on the first try.
+
+**Silent non-registering clicks.** Two separate buttons in the same settings form
+took a click that did nothing and needed a second. If a UI action must have
+taken effect, reload and verify — do not trust that the click landed.
+
+**A staged secret must be read with the same privilege that wrote it.**
+`install -m 600 /dev/stdin /root/...` then `cat /root/...` without `sudo` fails
+*after* the human has typed the secret, wasting the one time a token is ever
+shown. Twice here.
+
+**Region matters.** `lore-hex-corp` is an EU org served from `de.sentry.io`; the
+US host returns the same generic 403 with nothing to indicate the HOST is wrong.
+
+---
+
 ## Terminal states and destroyed evidence
 
 **Check what a transition deletes before you trigger it.** Resizing region 0's

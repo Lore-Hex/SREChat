@@ -178,6 +178,45 @@ Untrusted text reaching a tool-calling loop is contained structurally, not by
 asking nicely: signal-triggered investigations are handed a read-only allowlist,
 so `shell`, `restart` and `tr_rollback` are never even offered to the model.
 
+### Each agent watches its own cloud
+
+Push does not work here. Creating a GCP webhook notification channel needs
+monitoring admin; region 1 has no IAM instance profile and region 2 no managed
+identity. Measured before this existed: **zero hook deliveries on all three
+regions and zero notification channels** — every agent was blind to its own
+cloud.
+
+So each agent PULLS, every 10 minutes, with the access it already holds:
+
+| source | where | catches |
+|---|---|---|
+| host journal + kernel | all three | OOM kills, failed units, disk, I/O |
+| app / caddy / redis logs | all three | crashes, 5xx bursts, connection failures |
+| Cloud Logging (`tr_errors`) | region 0 | TrustedRouter errors |
+| Sentry issues | all three | whatever Sentry is tracking |
+
+The host journal earns its place first: **every incident that actually took a
+region down was visible there and nowhere the agent was looking.** The OOM killer
+shot the BEAM eight times in a week and reports only to the kernel log, while
+`docker inspect` said `exit=0 oom=false` throughout.
+
+Findings go through the FULL investigation path, not the read-only one used for
+webhooks. The distinction is who is making the claim: a swept error is a
+condition the agent measured itself from its own cloud, so it gets the region's
+real tools and can repair. A webhook payload is a claim posted by a stranger. The
+log excerpt is still fenced as data either way, because a log line can carry text
+an outsider chose.
+
+Reporting matches confidence: a repair it performed, or a problem still live, is
+emailed; a finding it could not stand up stays in chat. A source it cannot READ —
+"Sentry is not configured", a 403, `sudo: a password is required` — is logged as
+a gap, never reported as a fault. Paging on a dead thermometer is not monitoring.
+
+Sentry needs an org auth token with `event:read`, installed by
+`tools/set-sentry-agent-token.sh`. Use a plain auth token, **not** an internal
+integration's token: the integration token 403s on every endpoint including basic
+org detail, and its permission form can silently grant nothing.
+
 ### Documentation
 
 | | |

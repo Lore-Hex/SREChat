@@ -324,6 +324,64 @@ in a browser, which is worse than no link because it looks like the answer.
 
 ---
 
+## The per-cloud error sweep
+
+Each agent reads its OWN cloud's errors every 10 minutes
+(`SRE_SWEEP_SECONDS`, default 600) and repairs what it can.
+
+**Why pull and not push.** Push was tried and cannot be built from here:
+creating a GCP webhook notification channel needs monitoring admin, region 1 has
+no IAM instance profile, region 2 no managed identity. Measured before the sweep
+existed: **zero `/hooks` deliveries on all three regions and zero GCP
+notification channels.** The pipeline was authenticated and idle.
+
+**Sources**, each used only if the region actually has the tool:
+
+| source | regions | catches |
+|---|---|---|
+| `system_errors` — journal `-p err` + kernel OOM | all | OOM kills, failed units, disk, I/O |
+| `logs` app / caddy / redis | all | crashes, 5xx bursts, connection refusals |
+| `tr_errors` — Cloud Logging | 0 | TrustedRouter errors |
+| `sentry` | all | whatever Sentry tracks |
+
+The host journal is listed first on purpose. **Every incident that actually took
+a region down was visible there and nowhere the agent was looking** — the OOM
+killer shot the BEAM eight times in a week and reports only to the kernel log,
+while `docker inspect` reported `exit=0 oom=false` throughout.
+
+**Trust boundary.** Swept findings go through `investigate_anomaly` — the FULL
+tool table, able to repair — while webhook signals keep `SIGNAL_TOOLS`, the
+read-only allowlist. The difference is who is making the claim: a swept error is
+a condition the agent measured itself from its own cloud; a webhook payload is a
+claim posted by a stranger. The excerpt is fenced as data either way, since a log
+line can carry text an outsider chose.
+
+**Reporting.** Every finding is answered in chat. Emailed only when the agent
+CHANGED something or the problem is still live; a finding it could not stand up
+stays in chat. Repeats share the inbound-signal fingerprint and cooldown, so an
+error persisting across sweeps is one incident, not one per sweep.
+
+**A source it cannot READ is a gap, not a finding.** "Sentry is not configured",
+a 401/403, `sudo: a password is required` — all logged and skipped. The sweep
+twice reported our own broken access as a cloud error, which is the monitoring
+equivalent of paging on a dead thermometer.
+
+### Sentry
+
+Needs an **org auth token** with `event:read`
+(`https://<org>.sentry.io/settings/auth-tokens/`), installed on every region by
+`tools/set-sentry-agent-token.sh`.
+
+Do **not** use an internal integration's token. One was tried at length: it 403s
+on every endpoint including `/organizations/<org>/`, which needs only the most
+basic scope, so the integration's permission form had granted nothing despite
+being set and saved. The org token is 71 characters and worked immediately; the
+integration token was 199 and never worked. `SENTRY_HOST` matters too —
+`lore-hex-corp` is an EU org served from `de.sentry.io`, and the US host returns
+403 with nothing to suggest the host is the problem.
+
+---
+
 ## Recurring lessons
 
 Moved to **[docs/lessons.md](lessons.md)** — every defect that shipped or nearly
