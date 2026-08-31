@@ -229,3 +229,31 @@ class TestSweepWindow:
         out = agent._sweep_container_log("app")
         assert "connection refused" in out
         assert "all good" not in out
+
+
+class TestActedDetection:
+    """A model never writes a bare "NONE"; it explains itself."""
+
+    def test_none_with_an_explanation_is_not_an_action(self, agent):
+        # Verbatim from the run that emailed three times in twenty minutes.
+        assert not agent._took_action(
+            "NONE — already recovered; verified healthy with tr_status, "
+            "containers, and a live replication probe rather than restarting anything.")
+        assert not agent._took_action(
+            "NONE — service had already recovered on its own; verified healthy "
+            "rather than restarting (a restart now would be the destructive option).")
+
+    def test_plain_negatives(self, agent):
+        for a in ("NONE", "none", "  none  ", "No action taken", "N/A",
+                  "nothing to do", "no repair was necessary", "did not change anything", ""):
+            assert not agent._took_action(a), f"{a!r} counted as an action"
+
+    def test_a_real_repair_still_counts(self, agent):
+        for a in ("Restarted deploy-app-1, then restarted deploy-redis-1",
+                  "Removed /var/log/srechat-audit.log.1",
+                  "Rolled traffic back to the previous revision"):
+            assert agent._took_action(a), f"{a!r} was not counted as an action"
+
+    def test_none_is_not_matched_inside_a_real_action(self, agent):
+        # "none" appears mid-sentence; the action is still real.
+        assert agent._took_action("Restarted the app; none of the peers needed changes")

@@ -1236,6 +1236,24 @@ def sweep_findings() -> list[tuple[str, str]]:
     return findings
 
 
+# A model never writes a bare "NONE". It writes "NONE — already recovered;
+# verified healthy rather than restarting". An exact match against "NONE"
+# therefore read every no-op as an action and emailed about it, which is most of
+# what flooded the inbox.
+_NO_ACTION_PREFIXES = (
+    "none", "no action", "no repair", "no change", "nothing",
+    "n/a", "na ", "no ", "did not", "didn't",
+)
+
+
+def _took_action(action) -> bool:
+    """True only when the agent actually changed something."""
+    text = (action or "").strip().lower().lstrip("*_-: ")
+    if not text:
+        return False
+    return not any(text.startswith(p) for p in _NO_ACTION_PREFIXES)
+
+
 def sweep_cloud_errors() -> None:
     """Find this cloud's errors, diagnose them, fix what can be fixed, report.
 
@@ -1273,7 +1291,7 @@ def sweep_cloud_errors() -> None:
         fields = investigate_mod.parse_conclusion(finding.conclusion)
         cause = fields["cause"] or "UNKNOWN"
         resolved = investigate_mod.is_resolved(finding.conclusion)
-        acted = (fields["action"] or "NONE").strip().upper() not in ("", "NONE")
+        acted = _took_action(fields["action"])
         real = not cause.strip().upper().startswith("UNKNOWN")
         log(f"sweep triaged: cause={cause[:70]!r} acted={acted} resolved={resolved}")
 
