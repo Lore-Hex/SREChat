@@ -1236,6 +1236,9 @@ def sweep_findings() -> list[tuple[str, str]]:
     return findings
 
 
+# Tools that can change the world. Everything else only looks.
+_MUTATING_TOOLS = frozenset({"shell", "restart", "tr_rollback"})
+
 # A model never writes a bare "NONE". It writes "NONE — already recovered;
 # verified healthy rather than restarting". An exact match against "NONE"
 # therefore read every no-op as an action and emailed about it, which is most of
@@ -1291,7 +1294,15 @@ def sweep_cloud_errors() -> None:
         fields = investigate_mod.parse_conclusion(finding.conclusion)
         cause = fields["cause"] or "UNKNOWN"
         resolved = investigate_mod.is_resolved(finding.conclusion)
-        acted = _took_action(fields["action"])
+        # BOTH must agree, and the tool list is the authority.
+        #
+        # Prose alone was wrong twice: an exact match on "NONE" missed
+        # "NONE — already recovered...", and extending the phrase list still let
+        # through "Mostly stale/noise Sentry sweep — none of the listed issues
+        # reproduced" with acted=True. Whatever the model says it did, it cannot
+        # have changed anything without calling a tool that changes things.
+        used_mutator = bool(set(finding.tools_used) & _MUTATING_TOOLS)
+        acted = used_mutator and _took_action(fields["action"])
         real = not cause.strip().upper().startswith("UNKNOWN")
         log(f"sweep triaged: cause={cause[:70]!r} acted={acted} resolved={resolved}")
 

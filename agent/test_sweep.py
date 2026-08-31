@@ -130,12 +130,15 @@ class TestSweepBehaviour:
         monkeypatch.setattr(agent.escalate, "email_human", lambda b: emails.append(b) or "ok")
         return sent, emails
 
-    def test_a_repair_is_reported_and_emailed(self, agent, monkeypatch):
-        sent, emails = self._wire(agent, monkeypatch,
+    def test_a_repair_is_reported_in_chat(self, agent, monkeypatch):
+        # The stubbed chat returns a conclusion without calling any tool, so
+        # there is no mutator in tools_used and no email — by design. Whether a
+        # real repair emails is proven in TestActedIsStructural, where the tool
+        # list is controlled.
+        sent, _emails = self._wire(agent, monkeypatch,
             "CAUSE: a bad revision\nEVIDENCE: logs\nACTION: rolled traffic back\nRESOLVED: yes")
         agent.sweep_cloud_errors()
         assert any("rolled traffic back" in t for t in sent)
-        assert len(emails) == 1, "a repair the agent performed must be written down"
 
     def test_noise_stays_in_chat(self, agent, monkeypatch):
         sent, emails = self._wire(agent, monkeypatch,
@@ -257,3 +260,54 @@ class TestActedDetection:
     def test_none_is_not_matched_inside_a_real_action(self, agent):
         # "none" appears mid-sentence; the action is still real.
         assert agent._took_action("Restarted the app; none of the peers needed changes")
+
+
+class TestActedIsStructural:
+    """Prose is a claim; the tool list is evidence."""
+
+    @staticmethod
+    def _run(agent, monkeypatch, conclusion, tools):
+        sent, emails = [], []
+        agent._signal_seen.clear()
+        monkeypatch.setattr(agent, "_sweep_container_log", lambda w: "(no output)")
+        monkeypatch.setitem(agent.TOOLS, "tr_errors", (lambda a: "500 upstream timeout", "d"))
+        monkeypatch.setattr(agent, "send", lambda who, text: sent.append(text))
+        monkeypatch.setattr(agent.escalate, "email_human", lambda b: emails.append(b) or "ok")
+
+        class F:
+            def __init__(self):
+                self.conclusion = conclusion
+                self.trigger = "swept: 500 upstream timeout"
+                self.evidence = "$ tr_errors 30m\n500 upstream timeout"
+                self.steps = [1]
+                self.tools_used = tools
+        monkeypatch.setattr(agent, "investigate_anomaly", lambda t: F())
+        agent.sweep_cloud_errors()
+        return sent, emails
+
+    def test_no_mutating_tool_means_no_email_whatever_the_prose(self, agent, monkeypatch):
+        # Verbatim from the run that kept emailing after two prose fixes.
+        sent, emails = self._run(
+            agent, monkeypatch,
+            "CAUSE: Mostly stale/noise Sentry sweep — none of the listed issues reproduced\n"
+            "ACTION: Reviewed and classified each issue as noise\nRESOLVED: yes",
+            ["sentry", "tr_status", "region_health"])
+        assert emails == [], "emailed without ever calling a tool that changes anything"
+        assert len(sent) == 1
+
+    def test_a_restart_emails(self, agent, monkeypatch):
+        sent, emails = self._run(
+            agent, monkeypatch,
+            "CAUSE: app was down\nACTION: Restarted deploy-app-1\nRESOLVED: yes",
+            ["containers", "restart"])
+        assert len(emails) == 1
+
+    def test_a_mutator_used_only_to_LOOK_does_not_email(self, agent, monkeypatch):
+        # shell is in the mutating set because repairs go through it, but a
+        # shell that only ran `df -h` changed nothing — the prose check catches
+        # that half.
+        sent, emails = self._run(
+            agent, monkeypatch,
+            "CAUSE: disk was briefly high\nACTION: none needed\nRESOLVED: yes",
+            ["shell", "region_health"])
+        assert emails == []
