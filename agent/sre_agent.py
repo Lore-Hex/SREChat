@@ -438,7 +438,11 @@ def _local_app_healthy() -> bool:
     """Return true only when the app itself answers its loopback health check."""
     try:
         with urllib.request.urlopen("http://127.0.0.1:4000/health", timeout=3) as response:
-            return response.status == 200 and response.read(16).strip() == b"ok"
+            # The endpoint deliberately keeps HTTP 200 while surfacing peer
+            # replication warnings in its body. That warning is not evidence
+            # that the local app is unavailable and must never authorize a
+            # local restart.
+            return response.status == 200
     except (OSError, TimeoutError, urllib.error.URLError):
         return False
 
