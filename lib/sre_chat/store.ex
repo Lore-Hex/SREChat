@@ -318,6 +318,7 @@ defmodule SREChat.Store do
         ops
         |> Replication.Applier.version_gate(origin, ts, stream_id)
         |> reject_transient_ops()
+
       {state, persist, fanouts} = Replication.Ingest.apply_ops(state, survivors, origin, ts)
       persist_ops(persist)
       Replication.Applier.stamp_versions(survivors, origin, ts, stream_id)

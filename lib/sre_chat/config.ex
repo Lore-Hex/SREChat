@@ -138,6 +138,7 @@ defmodule SREChat.Config do
       _ -> nil
     end
   end
+
   # Defaults true so production (behind TLS-terminating Caddy) is unchanged.
   # Set CHAT_USE_SSL=false only for a plain-HTTP local backend, where the
   # client SDKs must be told not to upgrade http/ws to https/wss.
@@ -169,6 +170,7 @@ defmodule SREChat.Config do
   def agent_uid do
     presence(Application.get_env(:sre_chat, :agent_uid)) || "sre-agent-#{region_index()}"
   end
+
   def extension_domain, do: Application.fetch_env!(:sre_chat, :extension_domain)
   def upload_dir, do: Application.fetch_env!(:sre_chat, :upload_dir)
 

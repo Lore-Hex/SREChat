@@ -28,7 +28,8 @@ defmodule SREChatWeb.Webhook do
     "🔔 [#{label}] #{body}" |> String.slice(0, @max_chars)
   end
 
-  def render(source, payload), do: "🔔 [#{source}] #{inspect(payload) |> String.slice(0, @max_chars)}"
+  def render(source, payload),
+    do: "🔔 [#{source}] #{inspect(payload) |> String.slice(0, @max_chars)}"
 
   # -- Sentry ---------------------------------------------------------------
 

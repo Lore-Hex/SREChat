@@ -67,7 +67,11 @@ defmodule SREChatWeb.HooksTest do
       # proxy that stamps its own Authorization silently breaks every sender
       # using the query form.
       conn =
-        Plug.Test.conn(:post, "/hooks/sentry?token=#{@secret}", Jason.encode!(%{"message" => "b"}))
+        Plug.Test.conn(
+          :post,
+          "/hooks/sentry?token=#{@secret}",
+          Jason.encode!(%{"message" => "b"})
+        )
         |> Plug.Conn.put_req_header("content-type", "application/json")
         |> Plug.Conn.put_req_header("authorization", "Basic dXNlcjpwYXNz")
         |> Endpoint.call([])
@@ -125,7 +129,9 @@ defmodule SREChatWeb.HooksTest do
       # This is what signing buys over a bearer token: the digest covers the
       # BODY, so replaying a captured header against different content fails.
       original = Jason.encode!(%{"message" => "original"})
-      digest = :crypto.mac(:hmac, :sha256, @client_secret, original) |> Base.encode16(case: :lower)
+
+      digest =
+        :crypto.mac(:hmac, :sha256, @client_secret, original) |> Base.encode16(case: :lower)
 
       conn =
         Plug.Test.conn(:post, "/hooks/sentry", Jason.encode!(%{"message" => "tampered"}))
