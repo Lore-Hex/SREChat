@@ -341,6 +341,23 @@ class TestActedIsStructural:
 
 
 class TestRestartGuard:
+    def test_a_healthy_app_with_peer_warnings_is_not_restarted(self, agent, monkeypatch):
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return b"ok (warning: replication peer unavailable)"
+
+        monkeypatch.setattr(agent.urllib.request, "urlopen", lambda *_a, **_k: Response())
+
+        assert agent._local_app_healthy()
+
     def test_a_healthy_app_is_not_restarted(self, agent, monkeypatch):
         ran = []
         monkeypatch.setattr(agent, "_local_app_healthy", lambda: True)
