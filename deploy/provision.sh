@@ -52,6 +52,13 @@ fi
 test -f "$HOME/SREChat/deploy/provision.sh" || { echo "SREChat tree missing at \$HOME/SREChat"; exit 1; }
 cd "$HOME/SREChat"
 
+# Retire the pre-SREChat agent unit. Leaving it enabled after the RoachChat
+# source tree is removed makes systemd retry a missing Python file every five
+# seconds forever, consuming CPU and flooding the journal.
+sudo systemctl disable --now roach-agent.service >/dev/null 2>&1 || true
+sudo rm -f /etc/systemd/system/roach-agent.service
+sudo systemctl daemon-reload
+
 echo "== writing region config =="
 sed "s|PUBLIC_HOST_PLACEHOLDER|${PUBLIC_HOST}|" deploy/Caddyfile.tmpl > deploy/Caddyfile
 cat > deploy/.env <<EOF
