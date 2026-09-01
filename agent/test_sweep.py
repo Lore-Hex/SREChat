@@ -210,6 +210,18 @@ class TestSourceFailures:
         # and says nothing about the HOST being the problem.
         assert agent.SENTRY_HOST.startswith("https://")
 
+    def test_sentry_lookback_rejects_stale_unresolved_issues(self, agent):
+        now = 1_800_000_000.0
+        stale = {"lastSeen": "2027-01-14T07:59:59Z"}
+        recent = {"lastSeen": "2027-01-14T08:00:01Z"}
+
+        assert not agent._sentry_issue_is_recent(stale, now=now)
+        assert agent._sentry_issue_is_recent(recent, now=now)
+
+    def test_sentry_lookback_keeps_unknown_timestamps_visible(self, agent):
+        assert agent._sentry_issue_is_recent({})
+        assert agent._sentry_issue_is_recent({"lastSeen": "not-an-iso-date"})
+
 
 class TestSweepWindow:
     def test_the_window_covers_the_gap_between_sweeps(self, agent):

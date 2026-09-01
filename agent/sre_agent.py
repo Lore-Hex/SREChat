@@ -36,6 +36,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 
 # Sibling module; the agent is run from its own directory by run-agent.sh.
 import apns
@@ -471,6 +472,24 @@ SENTRY_TOKEN = os.environ.get("SENTRY_AUTH_TOKEN", "")
 SENTRY_ORG = os.environ.get("SENTRY_ORG", "")
 SENTRY_PROJECT = os.environ.get("SENTRY_PROJECT", "")
 SENTRY_HOST = (os.environ.get("SENTRY_HOST") or "https://sentry.io").rstrip("/")
+SENTRY_LOOKBACK_SECONDS = 24 * 60 * 60
+
+
+def _sentry_issue_is_recent(issue: dict, *, now: float | None = None) -> bool:
+    """Enforce the advertised 24h window using ``lastSeen``.
+
+    Sentry's project issues endpoint accepts ``statsPeriod=24h`` but still
+    returns unresolved issues whose last event is days old. Keep malformed or
+    missing timestamps visible so a schema change cannot silently hide errors.
+    """
+    raw = issue.get("lastSeen")
+    if not isinstance(raw, str) or not raw:
+        return True
+    try:
+        last_seen = datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return True
+    return last_seen >= (time.time() if now is None else now) - SENTRY_LOOKBACK_SECONDS
 
 
 def tool_tr_errors(arg: str = "") -> str:
@@ -527,6 +546,7 @@ def tool_sentry_issues(_arg: str = "") -> str:
             issues = json.loads(resp.read().decode())
     except Exception as exc:  # noqa: BLE001
         return f"(Sentry query failed: {exc})"
+    issues = [issue for issue in issues if _sentry_issue_is_recent(issue)]
     if not issues:
         return "No unresolved Sentry issues in the last 24h."
     return "\n".join(
