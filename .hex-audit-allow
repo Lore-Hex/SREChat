@@ -18,3 +18,10 @@ GHSA-g2wm-735q-3f56
 # serialization, and Plug.Conn rejects control characters in header values.
 EEF-CVE-2026-43966
 GHSA-w4f7-4cxr-rv3c
+
+# cowlib Link-header ENCODER directive smuggling (cow_link:link/1). MEDIUM.
+# cowlib 2.19.0 remains the newest release and has no fix. SREChat does not
+# call cow_link, construct Link headers, or expose a response-link helper; a
+# repository-wide call-site search is pinned by review before this exception.
+# Remove when cowlib ships a fix and deps.update picks it up.
+EEF-CVE-2026-43971

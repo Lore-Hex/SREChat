@@ -14,6 +14,8 @@ import sys
 
 import pytest
 
+from investigate import Step
+
 
 def _agent(**env):
     keys = ("SRE_REGION_INDEX", "SRE_ALLOW_ACTIONS", "SRE_ACTIONABLE_REGIONS",
@@ -183,7 +185,7 @@ class TestSweepBehaviour:
         seen = {}
         self._wire(agent, monkeypatch, "CAUSE: x\nACTION: NONE\nRESOLVED: yes")
         monkeypatch.setattr(agent, "investigate_anomaly",
-                            lambda trigger: seen.setdefault("t", trigger) and None)
+                            lambda trigger, **_kwargs: seen.setdefault("t", trigger) and None)
         try:
             agent.sweep_cloud_errors()
         except Exception:
@@ -207,6 +209,18 @@ class TestSourceFailures:
         # lore-hex-corp is an EU org served from de.sentry.io; the us host 403s
         # and says nothing about the HOST being the problem.
         assert agent.SENTRY_HOST.startswith("https://")
+
+    def test_sentry_lookback_rejects_stale_unresolved_issues(self, agent):
+        now = 1_800_000_000.0
+        stale = {"lastSeen": "2027-01-14T07:59:59Z"}
+        recent = {"lastSeen": "2027-01-14T08:00:01Z"}
+
+        assert not agent._sentry_issue_is_recent(stale, now=now)
+        assert agent._sentry_issue_is_recent(recent, now=now)
+
+    def test_sentry_lookback_keeps_unknown_timestamps_visible(self, agent):
+        assert agent._sentry_issue_is_recent({})
+        assert agent._sentry_issue_is_recent({"lastSeen": "not-an-iso-date"})
 
 
 class TestSweepWindow:
@@ -266,7 +280,7 @@ class TestActedIsStructural:
     """Prose is a claim; the tool list is evidence."""
 
     @staticmethod
-    def _run(agent, monkeypatch, conclusion, tools):
+    def _run(agent, monkeypatch, conclusion, tools, outputs=None):
         sent, emails = [], []
         agent._signal_seen.clear()
         monkeypatch.setattr(agent, "_sweep_container_log", lambda w: "(no output)")
@@ -279,9 +293,13 @@ class TestActedIsStructural:
                 self.conclusion = conclusion
                 self.trigger = "swept: 500 upstream timeout"
                 self.evidence = "$ tr_errors 30m\n500 upstream timeout"
-                self.steps = [1]
+                results = outputs or ["changed state"] * len(tools)
+                self.steps = [
+                    Step(tool=tool, arg="", output=output, seconds=0.0)
+                    for tool, output in zip(tools, results, strict=True)
+                ]
                 self.tools_used = tools
-        monkeypatch.setattr(agent, "investigate_anomaly", lambda t: F())
+        monkeypatch.setattr(agent, "investigate_anomaly", lambda t, **_kwargs: F())
         agent.sweep_cloud_errors()
         return sent, emails
 
@@ -311,3 +329,56 @@ class TestActedIsStructural:
             "CAUSE: disk was briefly high\nACTION: none needed\nRESOLVED: yes",
             ["shell", "region_health"])
         assert emails == []
+
+    def test_a_refused_restart_does_not_email(self, agent, monkeypatch):
+        _sent, emails = self._run(
+            agent, monkeypatch,
+            "CAUSE: app was already healthy\nACTION: Tried to restart it\nRESOLVED: yes",
+            ["restart"],
+            ["refused: app is healthy; no restart performed"],
+        )
+        assert emails == []
+
+
+class TestRestartGuard:
+    def test_a_healthy_app_is_not_restarted(self, agent, monkeypatch):
+        ran = []
+        monkeypatch.setattr(agent, "_local_app_healthy", lambda: True)
+        monkeypatch.setattr(agent, "_run", lambda cmd, **kwargs: ran.append(cmd) or "restarted")
+
+        assert agent.tool_restart_region0("app").startswith("refused:")
+        assert ran == []
+
+    def test_an_unhealthy_app_can_be_restarted(self, agent, monkeypatch):
+        ran = []
+        monkeypatch.setattr(agent, "_local_app_healthy", lambda: False)
+        monkeypatch.setattr(agent, "_run", lambda cmd, **kwargs: ran.append(cmd) or "restarted")
+
+        assert agent.tool_restart_region0("app") == "restarted"
+        assert ran and "restart" in ran[0]
+
+
+class TestProductSweepIsolation:
+    def test_product_errors_cannot_restart_srechat(self, agent, monkeypatch):
+        offered = []
+        agent._signal_seen.clear()
+        monkeypatch.setitem(agent.TOOLS, "tr_errors", (lambda _a: "500 Spanner timeout", "d"))
+        monkeypatch.setitem(agent.TOOLS, "sentry", (lambda _a: "(no output)", "d"))
+        monkeypatch.setattr(agent, "_sweep_container_log", lambda _w: "(no output)")
+        monkeypatch.setattr(agent, "send", lambda *_a, **_k: None)
+
+        def inspect_tools(trigger, *, tools=None):
+            offered.extend((tools or {}).keys())
+
+            class Finding:
+                conclusion = "CAUSE: timeout\nACTION: NONE\nRESOLVED: no"
+                steps = []
+                tools_used = []
+
+            return Finding()
+
+        monkeypatch.setattr(agent, "investigate_anomaly", inspect_tools)
+        agent.sweep_cloud_errors()
+
+        assert "restart" not in offered
+        assert "tr_rollback" in offered

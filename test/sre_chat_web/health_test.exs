@@ -36,7 +36,12 @@ defmodule SREChatWeb.HealthTest do
       # every real /v3.0 request in the same window succeeded, and each 503 cost
       # the owner a NODE DOWN and a RECOVERED alert on their phone.
       :sys.suspend(SREChat.Store)
-      resumer = Task.async(fn -> Process.sleep(1_200); :sys.resume(SREChat.Store) end)
+
+      resumer =
+        Task.async(fn ->
+          Process.sleep(1_200)
+          :sys.resume(SREChat.Store)
+        end)
 
       problems = SREChatWeb.Endpoint.health_problems()
       Task.await(resumer, 10_000)
@@ -49,7 +54,12 @@ defmodule SREChatWeb.HealthTest do
       # The tolerance must not become blindness: a store that never answers is
       # genuinely unfit and has to say so.
       :sys.suspend(SREChat.Store)
-      resumer = Task.async(fn -> Process.sleep(4_000); :sys.resume(SREChat.Store) end)
+
+      resumer =
+        Task.async(fn ->
+          Process.sleep(4_000)
+          :sys.resume(SREChat.Store)
+        end)
 
       problems = SREChatWeb.Endpoint.health_problems()
       Task.await(resumer, 12_000)

@@ -73,6 +73,7 @@ defmodule SREChatWeb.WSHandler do
       require Logger
       Logger.info("WS_LIFE open")
     end
+
     {:ok, state |> schedule_heartbeat() |> schedule_auth_timeout()}
   end
 
@@ -240,6 +241,7 @@ defmodule SREChatWeb.WSHandler do
           require Logger
           Logger.info("WS_LIFE auth_ok uid=#{uid} credential=#{credential_kind(token)}")
         end
+
         cancel_auth_timeout(state)
         state = replace_user_subscription(state, uid)
         state = sync_group_subscriptions(%{state | uid: uid})

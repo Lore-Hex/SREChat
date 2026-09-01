@@ -112,7 +112,9 @@ defmodule SREChat.StoreRegressionTest do
       |> Base.url_encode64(padding: false)
 
     assert :error = AuthTokens.local_jwt_token("local." <> tampered_payload <> "." <> signature)
-    assert :error = AuthTokens.local_jwt_token(header <> "." <> tampered_payload <> "." <> signature)
+
+    assert :error =
+             AuthTokens.local_jwt_token(header <> "." <> tampered_payload <> "." <> signature)
 
     Application.put_env(:sre_chat, :local_jwt_secret, "jwt-secret-b")
     assert :error = AuthTokens.local_jwt_token(jwt)

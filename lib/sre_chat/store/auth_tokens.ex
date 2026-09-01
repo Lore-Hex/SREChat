@@ -68,6 +68,7 @@ defmodule SREChat.Store.AuthTokens do
   @doc false
   def blocked_uid_token?(token) do
     token = to_s(token)
+
     String.starts_with?(token, "uid:") and not is_nil(access_secret()) and
       uid_token(token) == :error
   end

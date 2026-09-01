@@ -101,7 +101,12 @@ defmodule SREChat.TransientMessageTest do
     hb = replicated_message("replicated-hb-1", "::heartbeat:: sre-agent-2 1787000001")
 
     assert {:ok, _} =
-             Store.ingest_replicated([{:put, "messages", "replicated-hb-1", hb}], 2, 1_787_000_001, "1-0")
+             Store.ingest_replicated(
+               [{:put, "messages", "replicated-hb-1", hb}],
+               2,
+               1_787_000_001,
+               "1-0"
+             )
 
     assert stored_count() == before, "a replicated heartbeat was persisted"
   end
@@ -135,7 +140,12 @@ defmodule SREChat.TransientMessageTest do
     msg = replicated_message("replicated-real-1", "a real replicated message")
 
     assert {:ok, _} =
-             Store.ingest_replicated([{:put, "messages", "replicated-real-1", msg}], 2, 1_787_000_002, "2-0")
+             Store.ingest_replicated(
+               [{:put, "messages", "replicated-real-1", msg}],
+               2,
+               1_787_000_002,
+               "2-0"
+             )
 
     assert stored_count() == before + 1, "replication dropped a real message"
   end

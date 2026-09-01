@@ -51,7 +51,14 @@ defmodule SREChatWeb.DevicePushTest do
   end
 
   test "registering a device stores it under the caller's own uid" do
-    conn = auth_conn(:post, "/v3.0/me/devices", %{"token" => "abc123", "env" => "development"}, "uid:alice")
+    conn =
+      auth_conn(
+        :post,
+        "/v3.0/me/devices",
+        %{"token" => "abc123", "env" => "development"},
+        "uid:alice"
+      )
+
     assert conn.status == 200
     assert json(conn)["data"]["success"] == true
 
@@ -95,8 +102,19 @@ defmodule SREChatWeb.DevicePushTest do
   end
 
   test "re-registering the same token refreshes it instead of duplicating" do
-    auth_conn(:post, "/v3.0/me/devices", %{"token" => "phone", "env" => "development"}, "uid:alice")
-    auth_conn(:post, "/v3.0/me/devices", %{"token" => "phone", "env" => "production"}, "uid:alice")
+    auth_conn(
+      :post,
+      "/v3.0/me/devices",
+      %{"token" => "phone", "env" => "development"},
+      "uid:alice"
+    )
+
+    auth_conn(
+      :post,
+      "/v3.0/me/devices",
+      %{"token" => "phone", "env" => "production"},
+      "uid:alice"
+    )
 
     assert %{"phone" => entry} = tokens_for("alice")
     assert map_size(tokens_for("alice")) == 1

@@ -268,6 +268,44 @@ defmodule SREChat.Store do
     end
   end
 
+  # Liveness bookkeeping, not conversation: delivered live so peers see it,
+  # and never written to state, Redis, or the oplog.
+  #
+  # The agents heartbeat each other every cycle. With three regions that is
+  # six messages a tick, about 17k a day, each carrying a full serialised
+  # entity payload. On a deployment with four participants and almost no real
+  # conversation this had stored 48,108 messages and 193,152 keys, 98% of them
+  # heartbeats, for 750 MB of Redis. On region 1 (1.9 GB) that was fatal.
+  #
+  # Matched on the marker as well as the category so existing agents stop
+  # writing the moment the server is deployed, with no coordinated rollout.
+  @heartbeat_marker "::heartbeat::"
+
+  # One heartbeat replicates as several ops: the message and a message_muids
+  # pointer. The pointer carries no body, so classify it by the dropped message
+  # id rather than leaving an orphaned index behind.
+  defp reject_transient_ops(ops) do
+    dropped =
+      for {:put, "messages", id, message} <- ops,
+          transient?(message),
+          into: MapSet.new(),
+          do: to_string(id)
+
+    Enum.reject(ops, &transient_op?(&1, dropped))
+  end
+
+  defp transient_op?({:put, "messages", _id, message}, _dropped), do: transient?(message)
+
+  defp transient_op?({:put, "message_muids", _muid, id}, dropped),
+    do: MapSet.member?(dropped, to_string(id))
+
+  defp transient_op?(_op, _dropped), do: false
+
+  defp transient?(message) do
+    message["category"] == "transient" or
+      String.starts_with?(to_string(get_in(message, ["data", "text"]) || ""), @heartbeat_marker)
+  end
+
   # GenServer
 
   @impl true
@@ -318,6 +356,7 @@ defmodule SREChat.Store do
         ops
         |> Replication.Applier.version_gate(origin, ts, stream_id)
         |> reject_transient_ops()
+
       {state, persist, fanouts} = Replication.Ingest.apply_ops(state, survivors, origin, ts)
       persist_ops(persist)
       Replication.Applier.stamp_versions(survivors, origin, ts, stream_id)
@@ -942,50 +981,6 @@ defmodule SREChat.Store do
       |> Enum.map(&GroupState.with_members_count(&1, state))
 
     {:reply, {:ok, groups}, state}
-  end
-
-  # Liveness bookkeeping, not conversation: delivered live so peers see it, and
-  # never written to state, Redis, or the oplog.
-  #
-  # The agents heartbeat each other every cycle — with three regions that is six
-  # messages a tick, ~17k a day, each carrying a full serialised entity payload.
-  # On a deployment with four participants and almost no real conversation this
-  # had stored 48,108 messages and 193,152 keys, 98% of them heartbeats, for
-  # 750 MB of Redis. On region 1 (1.9 GB) that was fatal: it OOM-killed the BEAM
-  # eight times in a week, and the matching oplog made every catch-up a
-  # 150-second batch the box could not finish.
-  #
-  # Matched on the marker as well as the category so existing agents stop
-  # writing the moment the server is deployed, with no coordinated rollout.
-  @heartbeat_marker "::heartbeat::"
-
-  # One heartbeat replicates as SEVERAL ops: the message itself and a
-  # `message_muids` pointer to it. Dropping only the message left the pointer
-  # behind — `srechat:messages` went flat at 52,887 while `message_muids` kept
-  # climbing ~400 a minute, which looked like the fix not working at all.
-  #
-  # The pointer op carries no body, so it cannot be classified alone. It is
-  # dropped by ID: whatever message we just refused to store, we refuse to index.
-  defp reject_transient_ops(ops) do
-    dropped =
-      for {:put, "messages", id, message} <- ops,
-          transient?(message),
-          into: MapSet.new(),
-          do: to_string(id)
-
-    Enum.reject(ops, &transient_op?(&1, dropped))
-  end
-
-  defp transient_op?({:put, "messages", _id, message}, _dropped), do: transient?(message)
-
-  defp transient_op?({:put, "message_muids", _muid, id}, dropped),
-    do: MapSet.member?(dropped, to_string(id))
-
-  defp transient_op?(_op, _dropped), do: false
-
-  defp transient?(message) do
-    message["category"] == "transient" or
-      String.starts_with?(to_string(get_in(message, ["data", "text"]) || ""), @heartbeat_marker)
   end
 
   def handle_call({:send_message, sender_uid, params, uploads, opts}, _from, state) do

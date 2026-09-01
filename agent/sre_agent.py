@@ -36,6 +36,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 
 # Sibling module; the agent is run from its own directory by run-agent.sh.
 import apns
@@ -433,11 +434,26 @@ def tool_wireguard(_arg: str = "") -> str:
     return _run(["sudo", "wg", "show"])
 
 
+def _local_app_healthy() -> bool:
+    """Return true only when the app itself answers its loopback health check."""
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:4000/health", timeout=3) as response:
+            return response.status == 200 and response.read(16).strip() == b"ok"
+    except (OSError, TimeoutError, urllib.error.URLError):
+        return False
+
+
 def tool_restart_region0(arg: str = "") -> str:
     """The ONLY state change available, and only for region 0's own service."""
     which = re.sub(r"[^a-z]", "", (arg or "app").strip().lower())[:12] or "app"
     if which not in {"app", "redis", "caddy"}:
         return f"refused: '{which}' is not a restartable service (app|redis|caddy)"
+    # A model once restarted a healthy app while investigating unrelated
+    # Spanner errors, then treated its own graceful SIGTERM and transient Caddy
+    # 502 as a crash loop and restarted it again. A restart is a repair only
+    # when the local service is actually unavailable.
+    if which == "app" and _local_app_healthy():
+        return "refused: app is healthy; no restart performed"
     return _run(["sudo", "docker", "compose", "--env-file", f"{DEPLOY_DIR}/deploy/.env",
                  "-f", f"{DEPLOY_DIR}/deploy/docker-compose.prod.yml", "restart", which],
                 timeout=90)
@@ -456,6 +472,24 @@ SENTRY_TOKEN = os.environ.get("SENTRY_AUTH_TOKEN", "")
 SENTRY_ORG = os.environ.get("SENTRY_ORG", "")
 SENTRY_PROJECT = os.environ.get("SENTRY_PROJECT", "")
 SENTRY_HOST = (os.environ.get("SENTRY_HOST") or "https://sentry.io").rstrip("/")
+SENTRY_LOOKBACK_SECONDS = 24 * 60 * 60
+
+
+def _sentry_issue_is_recent(issue: dict, *, now: float | None = None) -> bool:
+    """Enforce the advertised 24h window using ``lastSeen``.
+
+    Sentry's project issues endpoint accepts ``statsPeriod=24h`` but still
+    returns unresolved issues whose last event is days old. Keep malformed or
+    missing timestamps visible so a schema change cannot silently hide errors.
+    """
+    raw = issue.get("lastSeen")
+    if not isinstance(raw, str) or not raw:
+        return True
+    try:
+        last_seen = datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return True
+    return last_seen >= (time.time() if now is None else now) - SENTRY_LOOKBACK_SECONDS
 
 
 def tool_tr_errors(arg: str = "") -> str:
@@ -512,6 +546,7 @@ def tool_sentry_issues(_arg: str = "") -> str:
             issues = json.loads(resp.read().decode())
     except Exception as exc:  # noqa: BLE001
         return f"(Sentry query failed: {exc})"
+    issues = [issue for issue in issues if _sentry_issue_is_recent(issue)]
     if not issues:
         return "No unresolved Sentry issues in the last 24h."
     return "\n".join(
@@ -1018,11 +1053,16 @@ def incident_report(finding: investigate_mod.Investigation) -> str:
     ])
 
 
-def investigate_anomaly(trigger: str) -> investigate_mod.Investigation:
+def investigate_anomaly(
+    trigger: str,
+    *,
+    tools: investigate_mod.ToolTable | None = None,
+) -> investigate_mod.Investigation:
     """Diagnose (and where possible repair) a condition the watchdog measured."""
     log(f"investigating: {trigger}")
+    selected_tools = INVESTIGATION_TOOLS if tools is None else tools
     result = investigate_mod.investigate(
-        trigger, INVESTIGATION_TOOLS, chat_with_tools, log=log
+        trigger, selected_tools, chat_with_tools, log=log
     )
     fields = investigate_mod.parse_conclusion(result.conclusion)
     log(f"investigation done: cause={fields['cause'][:80]!r} resolved={fields['resolved']!r} "
@@ -1238,6 +1278,11 @@ def sweep_findings() -> list[tuple[str, str]]:
 
 # Tools that can change the world. Everything else only looks.
 _MUTATING_TOOLS = frozenset({"shell", "restart", "tr_rollback"})
+_NOOP_MUTATION_PREFIXES = (
+    "refused:",
+    "not allowed:",
+    "no action:",
+)
 
 # A model never writes a bare "NONE". It writes "NONE — already recovered;
 # verified healthy rather than restarting". An exact match against "NONE"
@@ -1255,6 +1300,17 @@ def _took_action(action) -> bool:
     if not text:
         return False
     return not any(text.startswith(p) for p in _NO_ACTION_PREFIXES)
+
+
+def _changed_state(finding: investigate_mod.Investigation) -> bool:
+    """Use executed tool results, not the model's prose, as mutation evidence."""
+    for step in finding.steps:
+        if step.tool not in _MUTATING_TOOLS:
+            continue
+        output = (step.output or "").strip().lower()
+        if not any(output.startswith(prefix) for prefix in _NOOP_MUTATION_PREFIXES):
+            return True
+    return False
 
 
 def sweep_cloud_errors() -> None:
@@ -1286,7 +1342,20 @@ def sweep_cloud_errors() -> None:
         )
 
         try:
-            finding = investigate_anomaly(trigger)
+            # Product errors cannot be fixed by bouncing this separate chat
+            # app. Keep product rollback available (it is independently gated),
+            # but do not offer local shell/restart tools for Sentry or Cloud Run
+            # findings. Local app/caddy/redis findings retain local repair tools.
+            product_finding = label in {
+                "TrustedRouter errors (Cloud Logging)",
+                "unresolved Sentry issues",
+            }
+            scoped_tools = (
+                {k: v for k, v in INVESTIGATION_TOOLS.items() if k not in {"restart", "shell"}}
+                if product_finding
+                else INVESTIGATION_TOOLS
+            )
+            finding = investigate_anomaly(trigger, tools=scoped_tools)
         except Exception as exc:  # noqa: BLE001
             log(f"sweep investigation failed: {exc}")
             continue
@@ -1301,7 +1370,7 @@ def sweep_cloud_errors() -> None:
         # through "Mostly stale/noise Sentry sweep — none of the listed issues
         # reproduced" with acted=True. Whatever the model says it did, it cannot
         # have changed anything without calling a tool that changes things.
-        used_mutator = bool(set(finding.tools_used) & _MUTATING_TOOLS)
+        used_mutator = _changed_state(finding)
         acted = used_mutator and _took_action(fields["action"])
         real = not cause.strip().upper().startswith("UNKNOWN")
         log(f"sweep triaged: cause={cause[:70]!r} acted={acted} resolved={resolved}")
