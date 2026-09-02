@@ -365,6 +365,69 @@ defmodule SREChat.ReplicationTest do
     end)
   end
 
+  test "the gap check reads the cursor's entry, not the stream head", context do
+    # Regression for the 1 TB/day egress of 2026-08-30: check_gap ran on
+    # every 250 ms tick and asked for the stream HEAD with its body. When
+    # the head became a 2.5 MB snapshot entry, two peers pulled ~10 MB/s
+    # forever with no gap and every cursor current. The check must cost the
+    # cursor entry, not the head entry.
+    with_redis(context, fn ->
+      become_region!(1, @region_b_url)
+      stream = RedisPersistence.oplog_stream_key(0)
+
+      # A fat head entry (~2 MB) followed by a small one the tailer has
+      # already applied, so there is no gap and nothing new to read.
+      fat_ops = for n <- 1..40_000, do: ["put", "message_muids", "m#{n}", "x"]
+
+      {:ok, _} =
+        Redix.command(context.redis_b, [
+          "XADD",
+          stream,
+          "1000-0",
+          "entry",
+          encode_entry(0, System.system_time(:millisecond), fat_ops)
+        ])
+
+      {:ok, small_id} =
+        Redix.command(context.redis_b, [
+          "XADD",
+          stream,
+          "2000-0",
+          "entry",
+          encode_entry(0, System.system_time(:millisecond), [
+            ["put", "users", "small-user", %{"uid" => "small-user"}]
+          ])
+        ])
+
+      :ok = RedisPersistence.put_replication_cursor(0, small_id)
+
+      {:ok, before} = Redix.command(context.redis_b, ["INFO", "stats"])
+      out_before = net_output_bytes(before)
+
+      peer = %{index: 0, url: @region_b_url}
+      {:ok, tailer} = Tailer.start_link(peer)
+
+      try do
+        # >= 8 ticks at 250 ms. The old check moved >= 8 x 2 MB here.
+        Process.sleep(2_200)
+        assert :sys.get_state(tailer).mode == :leader
+
+        {:ok, after_} = Redix.command(context.redis_b, ["INFO", "stats"])
+        moved = net_output_bytes(after_) - out_before
+
+        assert moved < 200_000,
+               "gap checks moved #{moved} bytes; the head entry is being fetched"
+      after
+        GenServer.stop(tailer)
+      end
+    end)
+  end
+
+  defp net_output_bytes(info) do
+    [_, n] = Regex.run(~r/total_net_output_bytes:(\d+)/, info)
+    String.to_integer(n)
+  end
+
   # -- helpers ---------------------------------------------------------
 
   defp elem_or_nil({:ok, user}), do: user
