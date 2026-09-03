@@ -177,26 +177,39 @@ defmodule SREChat.Replication.Tailer do
   # the middle of history.
   defp check_gap(%{cursor: "0-0"} = state), do: {:ok, state}
 
+  # The verdict is computed inside Redis so that no entry body ever crosses
+  # the wire. This runs on every 250 ms tick. `XRANGE - + COUNT 1` shipped the
+  # head entry's full body each time: on 2026-08-30 the head of region 1's
+  # oplog became a 2.5 MB snapshot entry (40,373 message_muids ops) and two
+  # peers polling it pulled ~10.5 MB/s — about 1 TB/day of cross-cloud egress
+  # (~$85/day on AWS) — while every cursor was current and no gap existed.
+  # Asking for the cursor's entry instead is no better in the wrong moment: a
+  # cursor parks on that same snapshot whenever it was the last thing applied
+  # and the stream goes quiet. So the XRANGE happens server-side and only its
+  # emptiness comes back: 1 if the cursor's entry still exists, 0 if the peer
+  # trimmed past it — the same verdict as before, for one integer.
+  @gap_check_script """
+  local r = redis.call('XRANGE', KEYS[1], ARGV[1], ARGV[1], 'COUNT', '1')
+  if #r == 0 then return 0 end
+  return 1
+  """
+
   defp check_gap(state) do
     stream = RedisPersistence.oplog_stream_key(state.peer.index)
 
-    case Redix.command(state.conn, ["XRANGE", stream, "-", "+", "COUNT", "1"]) do
-      {:ok, []} ->
+    case Redix.command(state.conn, ["EVAL", @gap_check_script, "1", stream, state.cursor]) do
+      {:ok, 1} ->
         {:ok, state}
 
-      {:ok, [[first_id, _fields]]} ->
-        if stream_id_after?(first_id, state.cursor) do
-          Logger.error(
-            "replication gap from region #{state.peer.index}: cursor #{state.cursor} " <>
-              "trimmed (earliest surviving entry #{first_id}); refusing to continue — " <>
-              "resync this region from a peer snapshot"
-          )
+      {:ok, 0} ->
+        Logger.error(
+          "replication gap from region #{state.peer.index}: cursor #{state.cursor} " <>
+            "no longer exists in the peer's oplog (trimmed); refusing to continue — " <>
+            "resync this region from a peer snapshot"
+        )
 
-          Observability.record_replication(state.peer.index, "gap_detected")
-          {:degraded, %{state | mode: :degraded, last_error: :replication_gap}}
-        else
-          {:ok, state}
-        end
+        Observability.record_replication(state.peer.index, "gap_detected")
+        {:degraded, %{state | mode: :degraded, last_error: :replication_gap}}
 
       {:error, reason} ->
         {:error, reason, state}
@@ -279,14 +292,4 @@ defmodule SREChat.Replication.Tailer do
   end
 
   # Redis stream ids are "<ms>-<seq>".
-  defp stream_id_after?(a, b) do
-    parse = fn id ->
-      case String.split(id, "-") do
-        [ms, seq] -> {String.to_integer(ms), String.to_integer(seq)}
-        _other -> {0, 0}
-      end
-    end
-
-    parse.(a) > parse.(b)
-  end
 end
