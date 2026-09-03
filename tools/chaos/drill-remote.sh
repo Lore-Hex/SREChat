@@ -115,8 +115,11 @@ for round in $(seq 1 4); do
   # Small, targeted queries cannot be truncated into a wrong answer.
   DET=$(run "sudo journalctl -u sre-agent --since '$SINCE' --no-pager 2>/dev/null \
              | grep -m1 -oE 'investigating:.*|ALERT ->.*' | cut -c1-140")
+  # Require a NON-EMPTY cause. A run that logged `cause='' action='' resolved=''`
+  # satisfied the old grep, so the drill broke out of its poll loop on the first
+  # round and scored "no diagnosis" against an agent that was still working.
   CON=$(run "sudo journalctl -u sre-agent --since '$SINCE' --no-pager 2>/dev/null \
-             | grep -oE 'cause=.*' | tail -1 | cut -c1-600")
+             | grep -oE \"cause='[^']+'.*\" | tail -1 | cut -c1-600")
   KEY=$(run "sudo journalctl -u sre-agent --since '$SINCE' --no-pager 2>/dev/null \
              | grep -c -E 'drill\.py|srechat-drills|chaos/drill' || true")
 

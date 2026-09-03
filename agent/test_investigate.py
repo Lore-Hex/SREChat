@@ -12,6 +12,7 @@ import json
 from investigate import (
     Investigation,
     build_tool_schemas,
+    ensure_fields,
     investigate,
     is_resolved,
     parse_conclusion,
@@ -213,3 +214,36 @@ class TestExhaustion:
 
         assert "ran out of steps" in result.conclusion
         assert not is_resolved(result.conclusion)
+
+
+class TestConclusionAlwaysParses:
+    """A conclusion with no CAUSE became an emailed page with nothing in it."""
+
+    def test_prose_without_the_format_becomes_UNKNOWN_but_keeps_the_prose(self):
+        # Verbatim shape of the live failure: 15 tool calls, then plain prose.
+        out = ensure_fields(
+            "I looked at the containers and the app is not running right now.",
+            ["containers", "shell", "logs"],
+            "concluded normally",
+        )
+        fields = parse_conclusion(out)
+        assert fields["cause"] == "UNKNOWN", "an unparseable answer must not yield an empty cause"
+        assert "app is not running" in fields["evidence"], "the model's words were thrown away"
+        assert "containers" in fields["evidence"], "the tools it used were thrown away"
+        assert fields["resolved"].lower().startswith("n")
+
+    def test_a_properly_formatted_conclusion_is_untouched(self):
+        good = "CAUSE: redis was stopped\nEVIDENCE: logs\nACTION: restarted it\nRESOLVED: yes"
+        assert ensure_fields(good, ["shell"], "x") == good
+
+    def test_empty_output_still_produces_fields(self):
+        fields = parse_conclusion(
+            ensure_fields("", [], "ran out of steps"))
+        assert fields["cause"] == "UNKNOWN"
+        assert "ran out of steps" in fields["evidence"]
+
+    def test_no_caller_can_ever_see_an_empty_cause(self):
+        for text in ["", "   ", "no idea", "CAUSE:\nACTION:", "Everything looks fine to me"]:
+            fields = parse_conclusion(
+                ensure_fields(text, ["logs"], "n"))
+            assert fields["cause"], f"{text!r} produced an empty cause"

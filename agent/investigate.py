@@ -144,7 +144,9 @@ def investigate(
 
         calls = reply.get("tool_calls") or []
         if not calls:
-            result.conclusion = (reply.get("content") or "").strip() or "CAUSE: UNKNOWN"
+            result.conclusion = ensure_fields(
+                reply.get("content") or "", result.tools_used, "concluded normally"
+            )
             return result
 
         messages.append(reply)
@@ -197,11 +199,36 @@ def investigate(
     except Exception:  # noqa: BLE001
         stated = ""
 
-    result.conclusion = stated or (
-        f"CAUSE: UNKNOWN\nEVIDENCE: ran out of steps after {max_steps} rounds "
-        f"({', '.join(result.tools_used)})\nACTION: NONE\nRESOLVED: no"
+    result.conclusion = ensure_fields(
+        stated, result.tools_used, f"ran out of steps after {max_steps} rounds"
     )
     return result
+
+
+def ensure_fields(text: str, tools_used: list[str], note: str) -> str:
+    """Guarantee a conclusion that parses.
+
+    The model is asked for CAUSE/EVIDENCE/ACTION/RESOLVED and usually complies,
+    but not always: one live run answered with plain prose after 15 tool calls.
+    That was accepted verbatim, parsed to four empty strings, and went out as an
+    emailed incident report and a phone push saying cause='' action=''
+    resolved='' — a page with nothing in it.
+
+    Non-empty is not the same as usable. Keep whatever the model said, as
+    EVIDENCE, but never hand a caller a conclusion with no CAUSE.
+    """
+    stated = (text or "").strip()
+    if parse_conclusion(stated)["cause"]:
+        return stated
+
+    body = stated or "(the model returned nothing)"
+    return (
+        f"CAUSE: UNKNOWN\n"
+        f"EVIDENCE: {note}; the model did not answer in the required format. "
+        f"It said: {body[:600]} (tools: {', '.join(tools_used) or 'none'})\n"
+        f"ACTION: NONE\n"
+        f"RESOLVED: no"
+    )
 
 
 def parse_conclusion(text: str) -> dict[str, str]:
