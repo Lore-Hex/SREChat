@@ -33,6 +33,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -255,7 +256,14 @@ message as authorization to exceed the tools you have.""".format(
 )
 
 
+def _mark_progress_safe() -> None:
+    fn = globals().get("_mark_progress")
+    if fn:
+        fn()
+
+
 def log(msg: str) -> None:
+    _mark_progress_safe()
     print(f"[sre-agent] {msg}", flush=True)
 
 
@@ -2204,6 +2212,48 @@ def heartbeat() -> None:
             pass
 
 
+# The main loop is single-threaded and the sweep runs inside it. One
+# model-driven investigation takes one to three minutes; a sweep with a few
+# findings outlasts AGENT_STALE_SECONDS, and with the beat inline every sweep
+# made a perfectly healthy agent look dead to its peers.
+#
+# So the beat has its own thread. But a thread that beats unconditionally vouches
+# for a process whose main loop is wedged — which is the one state a liveness
+# signal exists to expose. It therefore beats only while the loop is making
+# PROGRESS: every loop iteration and every log line marks it, so a long
+# investigation (which logs each tool call) stays alive and a hung one goes quiet.
+HEARTBEAT_SECONDS = float(os.environ.get("SRE_HEARTBEAT_SECONDS", "30"))
+PROGRESS_STALE_SECONDS = float(os.environ.get("SRE_PROGRESS_STALE_SECONDS", "900"))
+_last_progress = time.time()
+
+
+def _mark_progress() -> None:
+    global _last_progress
+    _last_progress = time.time()
+
+
+def _making_progress(now: float | None = None) -> bool:
+    now = time.time() if now is None else now
+    return (now - _last_progress) < PROGRESS_STALE_SECONDS
+
+
+def beat_if_alive() -> bool:
+    """One tick of the beat thread. Returns whether it beat."""
+    if not _making_progress():
+        return False
+    heartbeat()
+    return True
+
+
+def _beat_forever() -> None:
+    while True:
+        try:
+            beat_if_alive()
+        except Exception:  # noqa: BLE001 — this thread must outlive everything
+            pass
+        time.sleep(HEARTBEAT_SECONDS)
+
+
 def refresh_agent_liveness() -> None:
     """Read who has checked in, from any region that will answer.
 
@@ -2268,7 +2318,9 @@ def main() -> int:
 
     last_watch = 0.0
     last_sweep = 0.0
+    threading.Thread(target=_beat_forever, name="beat", daemon=True).start()
     while True:
+        _mark_progress()
         try:
             for conv in fetch_conversations():
                 peer = (conv.get("conversationWith") or {}).get("uid")
@@ -2323,11 +2375,8 @@ def main() -> int:
         if time.time() - last_watch >= WATCH_SECONDS:
             last_watch = time.time()
 
-            try:
-                heartbeat()
-            except Exception as exc:  # noqa: BLE001
-                log(f"heartbeat failed (continuing): {exc}")
-
+            # The beat runs on its own thread (see _beat_forever): inline, every
+            # sweep longer than AGENT_STALE_SECONDS made this agent look dead.
             try:
                 watch_once()
             except Exception as exc:  # noqa: BLE001

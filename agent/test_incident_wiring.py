@@ -441,3 +441,41 @@ class TestRepairMeansRepair:
         aws.agent.watch_once(); aws.agent.watch_once()
         assert "RESTORE SERVICE" not in prompts[0]
         assert "what a human must do" in prompts[0]
+
+
+class TestBeatThread:
+    """The sweep runs inline for minutes; the beat must not wait for it."""
+
+    def test_it_beats_while_the_loop_makes_progress(self, azure, monkeypatch):
+        a = azure.agent
+        beats = []
+        monkeypatch.setattr(a, "heartbeat", lambda: beats.append(1))
+        a._mark_progress()
+        assert a.beat_if_alive() is True and beats == [1]
+
+    def test_a_wedged_main_loop_stops_vouching_for_itself(self, azure, monkeypatch):
+        # A thread that beats unconditionally reports a hung process as healthy,
+        # which is the one state a liveness signal exists to expose.
+        import time as _t
+        a = azure.agent
+        beats = []
+        monkeypatch.setattr(a, "heartbeat", lambda: beats.append(1))
+        monkeypatch.setattr(a, "_last_progress", _t.time() - 2 * a.PROGRESS_STALE_SECONDS)
+        assert a.beat_if_alive() is False and beats == []
+
+    def test_a_log_line_is_progress(self, azure, monkeypatch):
+        # A long investigation logs every tool call, so it stays alive; a hung
+        # one logs nothing and goes quiet.
+        import time as _t
+        a = azure.agent
+        monkeypatch.setattr(a, "_last_progress", _t.time() - 2 * a.PROGRESS_STALE_SECONDS)
+        assert not a._making_progress()
+        a.log("investigate: containers() -> 76 chars")
+        assert a._making_progress()
+
+    def test_the_beat_is_no_longer_inline_in_the_main_loop(self, azure):
+        import inspect
+        src = inspect.getsource(azure.agent.main)
+        loop = src[src.index("while True:"):]
+        assert "heartbeat()" not in loop, "an inline beat waits behind every sweep"
+        assert "_beat_forever" in src
