@@ -479,3 +479,50 @@ class TestBeatThread:
         loop = src[src.index("while True:"):]
         assert "heartbeat()" not in loop, "an inline beat waits behind every sweep"
         assert "_beat_forever" in src
+
+
+class TestIncidentsThatEndByOtherMeans:
+    def test_an_unfixed_outage_that_recovers_is_closed(self, azure, monkeypatch):
+        # The agent said "NOT fixed"; an operator restored service. Left open,
+        # the incident would suppress the NEXT outage's opening for a day.
+        _quiet_fleet(azure, monkeypatch, containers="deploy-redis-1 deploy-caddy-1")
+        monkeypatch.setattr(azure.agent, "note_awaiting_ack", lambda *a, **k: None)
+        monkeypatch.setattr(azure.agent, "investigate_anomaly", lambda t, *, tools=None: _Finding(
+            "CAUSE: stopped\nACTION: NONE\nRESOLVED: no\nIMPACT: outage", ["containers"]))
+        azure.agent.watch_once(); azure.agent.watch_once()
+        assert len(azure.emails) == 2 and "NOT fixed" in azure.subjects[1]
+
+        monkeypatch.setattr(azure.agent, "tool_local_containers",
+                            lambda arg="": "deploy-app-1 deploy-redis-1 deploy-caddy-1")
+        azure.agent.watch_once()
+        assert len(azure.emails) == 3 and "healthy again" in azure.subjects[2]
+        assert not azure.agent.incidents.is_open("self:2")
+
+        # And the next outage IS announced.
+        monkeypatch.setattr(azure.agent, "tool_local_containers",
+                            lambda arg="": "deploy-redis-1 deploy-caddy-1")
+        azure.agent.watch_once(); azure.agent.watch_once()
+        assert len(azure.emails) == 5, f"the next outage went unannounced: {azure.subjects}"
+
+    def test_a_healthy_region_with_nothing_open_sends_nothing(self, azure, monkeypatch):
+        _quiet_fleet(azure, monkeypatch)
+        for _ in range(3):
+            azure.agent.watch_once()
+        assert azure.emails == []
+
+    def test_a_stale_open_incident_is_closed_at_the_baseline_look(self, azure):
+        # The ledger is on disk; the watchdog's memory is not. After a restart
+        # the ledger can hold "open" for something that is plainly fine now.
+        a = azure.agent
+        a.alert("AGENT DOWN: sre-agent-0 silent", key="agent-0")
+        assert a.incidents.is_open("agent-0")
+        a._watch_state.pop("agent-0", None)                 # the agent restarted
+        a._transition("agent-0", True, "RECOVERED: sre-agent-0", "AGENT DOWN: sre-agent-0")
+        assert not a.incidents.is_open("agent-0")
+        assert azure.subjects[-1].startswith("✅")
+
+    def test_the_baseline_look_is_otherwise_still_silent(self, azure):
+        a = azure.agent
+        a._transition("region-1", True, "RECOVERED: r1", "NODE DOWN: r1")
+        a._transition("agent-1", False, "RECOVERED: a1", "AGENT DOWN: a1")
+        assert azure.emails == [] and azure.chat == []

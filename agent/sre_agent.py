@@ -1750,6 +1750,34 @@ def _incident_email(headline: str, body_lines: list[str]) -> str:
     ])
 
 
+def close_own_incident_if_recovered() -> None:
+    """This region is healthy; if we said it was broken, say it is not.
+
+    The agent's own report closes an incident only when the agent fixed it. When
+    it said "NOT fixed" and something else restored service — an operator, a
+    restart policy, a drill harness — the incident stayed open forever, and an
+    open incident suppresses its own next opening for a day. The next real outage
+    on this region would have gone unannounced.
+    """
+    key = f"self:{REGION_INDEX}"
+    try:
+        if not incidents.is_open(key):
+            return
+        mail = _incident_email(
+            f"✅ SREChat {CLOUD}: region {REGION_INDEX} is healthy again", [
+                f"Region {REGION_INDEX} ({CLOUD}) is passing its health, container and disk "
+                "checks again.",
+                "",
+                "This agent's last investigation did not repair it, so something else "
+                "restored service — an operator, a restart policy, or a retry. This closes "
+                "the incident reported earlier.",
+            ])
+        log("own incident closed: " + incidents.outcome(key, mail, escalate.email_human,
+                                                         resolved=True))
+    except Exception as exc:  # noqa: BLE001
+        log(f"closing own incident failed: {exc}")
+
+
 def email_alert(text: str, *, key: str | None = None, recovered: bool = False) -> None:
     """The email half of an alert. Never raises: email is not the pager.
 
@@ -1800,7 +1828,13 @@ def _transition(key: str, up: bool, up_msg: str, down_msg: str, *,
         return
     _watch_state[key] = now
     if was is None:
-        return                    # first observation is the baseline, not news
+        # First observation is the baseline, not news — with one exception. The
+        # incident ledger is on disk and this state is not, so after a restart
+        # the ledger can still hold "open" for something we now see is fine.
+        # Left alone, that stale entry would swallow the next real opening.
+        if up and (incidents.is_open(key) or incidents.is_open(f"flap:{key}")):
+            email_alert(up_msg, key=key, recovered=True)
+        return
 
     stamp = time.time()
     recent = [t for t in _flaps.get(key, []) if stamp - t < FLAP_WINDOW_SECONDS]
@@ -2047,6 +2081,7 @@ def watch_once() -> None:
                 log(f"self-investigation failed: {exc}")
     elif REGION_INDEX not in down_regions:
         _watch_state["self-investigation"] = "idle"
+        close_own_incident_if_recovered()
 
     # 1b. Autonomous severity. The watchdog is deterministic code, not the LLM:
     #     overnight, with nobody chatting, the model never runs and cannot decide
