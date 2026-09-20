@@ -29,7 +29,9 @@ def agent():
 @pytest.fixture
 def sent(agent, monkeypatch):
     messages: list[str] = []
-    monkeypatch.setattr(agent, "alert", messages.append)
+    # alert() now also names the incident (key=, recovered=) for the email
+    # ledger; these tests are about WHICH lines are said, so keep only the text.
+    monkeypatch.setattr(agent, "alert", lambda text, **_kw: messages.append(text))
     return messages
 
 

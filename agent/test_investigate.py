@@ -247,3 +247,44 @@ class TestConclusionAlwaysParses:
             fields = parse_conclusion(
                 ensure_fields(text, ["logs"], "n"))
             assert fields["cause"], f"{text!r} produced an empty cause"
+
+
+class TestTolerantParsing:
+    """A strict prefix match turned decorated answers into four empty strings."""
+
+    def test_markdown_bold_fields_parse(self):
+        f = parse_conclusion(
+            "**CAUSE:** app container was stopped\n"
+            "**EVIDENCE:** containers\n"
+            "**ACTION:** restarted deploy-app-1\n"
+            "**RESOLVED:** yes\n"
+            "**IMPACT:** outage")
+        assert f["cause"] == "app container was stopped"
+        assert f["action"] == "restarted deploy-app-1"
+        assert f["resolved"] == "yes"
+        assert f["impact"] == "outage"
+
+    def test_bold_around_the_name_only(self):
+        f = parse_conclusion("**CAUSE**: redis stopped\n**RESOLVED**: no")
+        assert f["cause"] == "redis stopped"
+        assert f["resolved"] == "no"
+
+    def test_bullets_headings_and_quotes(self):
+        f = parse_conclusion("- CAUSE: a\n## ACTION: b\n> RESOLVED: yes\n* IMPACT: none")
+        assert (f["cause"], f["action"], f["resolved"], f["impact"]) == ("a", "b", "yes", "none")
+
+    def test_plain_format_still_parses(self):
+        f = parse_conclusion("CAUSE: x\nEVIDENCE: y\nACTION: NONE\nRESOLVED: no")
+        assert f["cause"] == "x" and f["action"] == "NONE"
+
+    def test_a_field_name_mid_sentence_is_not_a_field(self):
+        # "the root cause: ..." inside prose must not be read as the CAUSE line.
+        f = parse_conclusion("I think the root cause: might be redis")
+        assert f["cause"] == ""
+
+    def test_impact_defaults_to_empty_not_missing(self):
+        assert parse_conclusion("CAUSE: x")["impact"] == ""
+
+    def test_the_fallback_conclusion_carries_an_impact(self):
+        f = parse_conclusion(ensure_fields("just prose", ["logs"], "note"))
+        assert f["impact"] == "unknown"

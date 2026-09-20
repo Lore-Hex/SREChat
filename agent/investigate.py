@@ -20,6 +20,8 @@ Running out of steps is a reportable outcome, not a crash.
 
 from __future__ import annotations
 
+import re
+
 import json
 import time
 from dataclasses import dataclass, field
@@ -111,6 +113,12 @@ Rules:
     EVIDENCE: <which tool output shows it>
     ACTION: <what you changed, or NONE>
     RESOLVED: <yes|no>
+    IMPACT: <outage|degraded|none>
+  IMPACT is about NOW and about US. outage: something users or peer regions
+  depend on is broken, or was during the window you were shown. degraded: real
+  errors are occurring but service continues. none: noise, expected behaviour,
+  internet background scanning, something historical, or a problem in a system
+  you cannot affect. When unsure between degraded and none, say none.
 - Prefer the least destructive action that fixes it. You are on a live region.
 """
 
@@ -205,6 +213,15 @@ def investigate(
     return result
 
 
+# Leading markdown (bullets, headings, bold, quotes) and bold around the colon.
+_FIELD_LINE = re.compile(
+    r"^[\s>*#`_\-]*"
+    r"(cause|evidence|action|resolved|impact)"
+    r"[\s*_`]*:[\s*_`]*(.*)$",
+    re.IGNORECASE,
+)
+
+
 def ensure_fields(text: str, tools_used: list[str], note: str) -> str:
     """Guarantee a conclusion that parses.
 
@@ -227,7 +244,8 @@ def ensure_fields(text: str, tools_used: list[str], note: str) -> str:
         f"EVIDENCE: {note}; the model did not answer in the required format. "
         f"It said: {body[:600]} (tools: {', '.join(tools_used) or 'none'})\n"
         f"ACTION: NONE\n"
-        f"RESOLVED: no"
+        f"RESOLVED: no\n"
+        f"IMPACT: unknown"
     )
 
 
@@ -236,13 +254,17 @@ def parse_conclusion(text: str) -> dict[str, str]:
 
     Absent fields come back empty rather than missing, so a caller can never
     read a stale value from a previous investigation by accident.
+
+    Tolerant of decoration on purpose. Models asked for `CAUSE: ...` regularly
+    answer `**CAUSE:** ...`, `- CAUSE: ...` or `## CAUSE: ...`, and a strict
+    prefix match turned each of those into four empty strings — which is
+    indistinguishable, downstream, from a model that answered nothing.
     """
-    fields = {"cause": "", "evidence": "", "action": "", "resolved": ""}
+    fields = {"cause": "", "evidence": "", "action": "", "resolved": "", "impact": ""}
     for line in (text or "").splitlines():
-        for key in fields:
-            prefix = f"{key}:"
-            if line.strip().lower().startswith(prefix):
-                fields[key] = line.split(":", 1)[1].strip()
+        match = _FIELD_LINE.match(line)
+        if match:
+            fields[match.group(1).lower()] = match.group(2).strip().strip("*_` ").strip()
     return fields
 
 

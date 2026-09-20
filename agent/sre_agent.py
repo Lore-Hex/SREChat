@@ -41,6 +41,7 @@ from datetime import datetime
 # Sibling module; the agent is run from its own directory by run-agent.sh.
 import apns
 import escalate
+import incidents
 import investigate as investigate_mod
 
 REGION_HOST = os.environ.get("SRE_HOST", "sre0.trustedrouter.com")
@@ -729,6 +730,9 @@ def tool_shell(arg: str) -> str:
 _FULL_POWER_TOOLS = {
     "shell": (tool_shell, "run a shell command on this VM (arg: the command)"),
 }
+_SSH_NOISE = re.compile(r"\bsshd(-session)?\[\d+\]|pam_unix\(sshd:", re.IGNORECASE)
+
+
 def tool_system_errors(window: str) -> str:
     """Host-level errors from the journal: OOM kills, failed units, disk, I/O.
 
@@ -743,6 +747,11 @@ def tool_system_errors(window: str) -> str:
                 "--no-pager", "-n", "40"])
     kernel = _run(["sudo", "journalctl", "-k", "--since", f"-{since}", "--no-pager"])
     oom = [l for l in kernel.splitlines() if "Out of memory" in l or "oom-kill" in l][-5:]
+    # An internet-facing sshd logs an "error" for every scanner that connects and
+    # hangs up. Region 1 spent 42 model-driven investigations a day concluding,
+    # each time, that this was "internet background noise". Drop it at the source:
+    # nothing here depends on sshd, and no repair could ever follow from it.
+    out = "\n".join(l for l in out.splitlines() if not _SSH_NOISE.search(l))
     parts = []
     if out.strip() and "-- No entries --" not in out:
         parts.append(out.strip()[:1500])
@@ -923,7 +932,7 @@ ACK_TIMEOUT_SECONDS = float(os.environ.get("SRE_ACK_TIMEOUT", "600"))
 _awaiting_ack: dict[str, dict] = {}
 
 
-def opening_email(trigger: str) -> str:
+def opening_email(trigger: str, *, can_repair: bool = True) -> str:
     """Sent the moment the agent starts working, before it knows anything.
 
     Deliberately cheap and early. The after-action report is the useful one,
@@ -933,14 +942,18 @@ def opening_email(trigger: str) -> str:
     infrastructure, right now, because of this."
     """
     return "\n".join([
-        f"[{CLOUD}] investigating: {trigger[:120]}",
+        f"🔴 SREChat {CLOUD}: {trigger[:120]} — investigating",
         "",
         f"Agent:   {AGENT_UID} on {CLOUD} (region {REGION_INDEX})",
         f"Trigger: {trigger}",
         f"Started: {time.strftime('%Y-%m-%d %H:%M:%SZ', time.gmtime())}",
         "",
-        "It is investigating now and will repair what it can. A full report with "
-        "the evidence and everything it changed follows when it finishes.",
+        ("It is investigating now and will repair what it can. A full report with "
+         "the evidence and everything it changed follows when it finishes."
+         if can_repair else
+         "It is investigating now. This region's agent is a MONITOR: it can diagnose "
+         "but holds no tool that changes anything, so if this needs a repair it will "
+         "need you. A full report with the evidence follows when it finishes."),
         "",
         f"  chat    https://{REGION_HOST}/app/",
         f"  region  https://{REGION_HOST}/health",
@@ -1038,7 +1051,8 @@ def incident_report(finding: investigate_mod.Investigation) -> str:
         *(f"health, region {r['index']}: https://{r['host']}/health" for r in REGIONS),
     ]
     return "\n".join([
-        f"[{CLOUD}] {fields['cause'] or 'unknown cause'} — {headline}",
+        f"{'✅' if resolved else '⚠️'} SREChat {CLOUD}: "
+        f"{'fixed' if resolved else 'NOT fixed'} — {(fields['cause'] or 'unknown cause')[:150]}",
         "",
         f"Trigger:   {finding.trigger}",
         f"Cause:     {fields['cause'] or 'UNKNOWN'}",
@@ -1222,6 +1236,11 @@ def _sweep_container_log(which: str) -> str:
     return "\n".join(keep[-40:]) or "(no output)"
 
 
+# A chronic finding from one source — an upstream provider that keeps erroring,
+# say — is worth one email, then quiet. Six hours: long enough not to nag, short
+# enough that a problem still live after a working morning is mentioned again.
+SWEEP_REMIND_SECONDS = float(os.environ.get("SRE_SWEEP_REMIND_SECONDS", str(6 * 3600)))
+
 SWEEP_SOURCES = (
     ("system_errors", None, "host errors (journal/kernel)"),
     ("tr_errors", None, "TrustedRouter errors (Cloud Logging)"),
@@ -1278,6 +1297,19 @@ def sweep_findings() -> list[tuple[str, str]]:
             continue
         findings.append((label, out))
     return findings
+
+
+# Product tools have no place in a LOCAL outage. Rolling TrustedRouter back
+# cannot fix a chat region, the reads burn the step budget, and a confused model
+# holding tr_rollback while its own region is down is how one incident becomes
+# two.
+_PRODUCT_TOOLS = frozenset({"tr_rollback", "tr_status", "tr_errors", "tr_revisions",
+                            "sentry", "gcp_instances", "gcp_dns"})
+
+
+def _local_repair_tools() -> dict:
+    """What an investigation of THIS region's own trouble may use."""
+    return {k: v for k, v in INVESTIGATION_TOOLS.items() if k not in _PRODUCT_TOOLS}
 
 
 # Tools that can change the world. Everything else only looks.
@@ -1389,20 +1421,31 @@ def sweep_cloud_errors() -> None:
         except Exception as exc:  # noqa: BLE001 — chat is not the pager
             log(f"sweep chat note failed: {exc}")
 
-        # Emailed ONLY when the agent CHANGED something.
+        # Two reasons to email, and the ledger bounds both.
         #
-        # It used to email when a finding was "real and not resolved" too, which
-        # sounds like "a live problem" and is not: a historical event is real,
-        # and nothing was done about it, so every stale log line qualified. That
-        # sent 12 emails in two hours from one region — about a graceful redis
-        # restart days earlier, and Sentry issues last seen on the 27th.
+        #   * It CHANGED something. A repair is always written down.
+        #   * The model classed the finding as a live outage or degradation.
+        #     This is its explicit IMPACT field, not an inference from prose —
+        #     prose was tried three ways and was wrong each time ("real and not
+        #     resolved" matched every historical line; an exact "NONE" missed
+        #     "NONE — already recovered"; a phrase list missed the next phrasing).
         #
-        # A finding worth waking someone for is one where something CHANGED —
-        # either the agent acted, or it is still acting. Everything else is in
-        # chat, where it can be read when convenient.
-        if acted:
+        # The previous rule was the first reason alone, and it sent nothing for
+        # sixteen days across fifty investigations a day. Hard failures never
+        # depend on this judgement at all: they are detected deterministically by
+        # the watchdog and emailed through alert().
+        impact = (fields.get("impact") or "").strip().lower()
+        live = impact.startswith(("outage", "degraded"))
+        log(f"sweep impact={impact or 'unstated'!r} live={live} acted={acted}")
+        if acted or live:
+            key = f"sweep:{REGION_INDEX}:{label}"
             try:
-                log(f"sweep report: {escalate.email_human(incident_report(finding))}")
+                result = incidents.report(
+                    # A repair is its own event; a chronic finding is one per window.
+                    f"{key}:{time.time():.0f}" if acted else key,
+                    incident_report(finding), escalate.email_human,
+                    remind_seconds=SWEEP_REMIND_SECONDS)
+                log(f"sweep report: {result}")
             except Exception as exc:  # noqa: BLE001
                 log(f"sweep report failed: {exc}")
 
@@ -1520,6 +1563,10 @@ _fail_streak: dict[str, int] = {}     # what -> consecutive bad observations
 # RECOVERED from every watching agent — the single loudest noise source. Three
 # misses at the 30s cadence ≈ 90s of real downtime before anyone is paged.
 FAILS_TO_ALERT = int(os.environ.get("SRE_FAILS_TO_ALERT", "3"))
+# Consecutive bad LOCAL looks (containers, disk) before this region treats itself
+# as broken. See watch_once: one look is a deploy, two is an outage.
+LOCAL_FAILS_TO_ACT = int(os.environ.get("SRE_LOCAL_FAILS_TO_ACT", "2"))
+_local_fail_streak = 0
 
 
 def _debounced(key: str, ok: bool) -> bool:
@@ -1532,6 +1579,28 @@ def _debounced(key: str, ok: bool) -> bool:
     if _fail_streak[key] < FAILS_TO_ALERT and _watch_state.get(key, "up") == "up":
         return True                      # suspicious, not yet news
     return False
+
+
+# How long a peer defers to a region's own agent before emailing anyway.
+OWNER_GRACE_SECONDS = float(os.environ.get("SRE_OWNER_GRACE_SECONDS", "600"))
+_down_since: dict[str, float] = {}
+
+
+def _agent_alive(index: int) -> bool:
+    last = _agent_seen.get(f"sre-agent-{index}")
+    return last is not None and (time.time() - last) < AGENT_STALE_SECONDS
+
+
+def _owner_is_reporting(target_index: int) -> bool:
+    """True when region `target_index`'s OWN agent is alive to email about it.
+
+    Every agent now opens an incident for its own region's trouble, and it is the
+    better reporter: it can see the containers, the disk and the logs, and its
+    second email carries the cause. A peer can only say "it stopped answering".
+    So a peer emails only when the owner cannot — the agent is silent, which is
+    what a dead VM looks like — or, via OWNER_GRACE_SECONDS, when it has not.
+    """
+    return target_index != REGION_INDEX and _agent_alive(target_index)
 
 
 def _primary_reporter(target_index: int) -> bool:
@@ -1632,8 +1701,15 @@ def _duration_ms(line: str) -> int:
     return int(match.group(1)) if match else 0
 
 
-def alert(text: str) -> None:
-    """Page the owner. 🔔 marks it as an alert in the clients."""
+def alert(text: str, *, key: str | None = None, recovered: bool = False,
+          email: bool = True) -> None:
+    """Page the owner. 🔔 marks it as an alert in the clients.
+
+    `key` names the INCIDENT this line belongs to and `recovered` says whether
+    the line is its end. Together they let the email ledger say each incident
+    twice — that it broke, and how it ended — however many times this function
+    is called in between.
+    """
     try:
         send(OWNER_UID, f"🔔 {text}")
         log(f"ALERT -> {OWNER_UID}: {text[:120]}")
@@ -1642,6 +1718,57 @@ def alert(text: str) -> None:
     # Outside the try above on purpose: if writing to chat fails, the phone push
     # is the only remaining way you hear about it, so it still gets attempted.
     push_alert(text)
+    if email:
+        email_alert(text, key=key, recovered=recovered)
+
+
+def _incident_email(headline: str, body_lines: list[str]) -> str:
+    """Subject on the first line, then a body that stands on its own."""
+    return "\n".join([
+        headline[:190],
+        "",
+        *body_lines,
+        "",
+        f"Reported by {AGENT_UID} on {CLOUD} (region {REGION_INDEX}) at "
+        f"{time.strftime('%Y-%m-%d %H:%M:%SZ', time.gmtime())}.",
+        "",
+        "Region health:",
+        *[f"  https://{r['host']}/health   ({r['cloud']})" for r in REGIONS],
+        "",
+        f"Reply in chat: https://{REGION_HOST}/app/",
+    ])
+
+
+def email_alert(text: str, *, key: str | None = None, recovered: bool = False) -> None:
+    """The email half of an alert. Never raises: email is not the pager.
+
+    Every hard failure the watchdog detects funnels through alert(), and until
+    this existed none of them produced an email — a region could go down and the
+    only record was a chat line and a phone banner. Deterministic checks decide
+    that something is an incident; the ledger decides whether it was already said.
+    """
+    try:
+        incident = key or f"alert:{signal_fingerprint(text)}"
+        if recovered:
+            mail = _incident_email(f"✅ SREChat recovered: {text}", [
+                text, "", "This closes the incident reported earlier. Nothing is needed from you.",
+            ])
+            result = incidents.outcome(incident, mail, escalate.email_human, resolved=True)
+            if result.startswith("suppressed: no open incident"):
+                # A flapping incident is tracked under its own key; a clean
+                # recovery is what ends it.
+                result = incidents.outcome(f"flap:{incident}", mail, escalate.email_human,
+                                           resolved=True)
+        else:
+            mail = _incident_email(f"🔴 SREChat incident: {text}", [
+                text, "",
+                "The agents are on it: the owning region investigates and repairs what it "
+                "has the authority to repair. You will get one more email when this ends.",
+            ])
+            result = incidents.opened(incident, mail, escalate.email_human)
+        log(f"incident email [{incident}]: {result}")
+    except Exception as exc:  # noqa: BLE001
+        log(f"incident email failed: {exc}")
 
 
 # A region that goes down and up repeatedly is ONE incident, not many. Region 0
@@ -1654,7 +1781,8 @@ FLAPS_TO_REPORT = int(os.environ.get("SRE_FLAPS_TO_REPORT", "3"))
 _flaps: dict[str, list[float]] = {}
 
 
-def _transition(key: str, up: bool, up_msg: str, down_msg: str) -> None:
+def _transition(key: str, up: bool, up_msg: str, down_msg: str, *,
+                email: bool = True) -> None:
     now = "up" if up else "down"
     was = _watch_state.get(key)
     if was == now:
@@ -1676,11 +1804,14 @@ def _transition(key: str, up: bool, up_msg: str, down_msg: str) -> None:
             f"FLAPPING: {key} has changed state {len(recent)} times in the last "
             f"{int(FLAP_WINDOW_SECONDS / 60)} minutes and is currently {now}. "
             "Something is restarting rather than staying down — check restart "
-            "counts and logs rather than waiting for it to fail cleanly."
+            "counts and logs rather than waiting for it to fail cleanly.",
+            key=f"flap:{key}",
+            email=email,
         )
         return
 
-    alert(up_msg if up else down_msg)
+    # A recovery always goes to the ledger: it only emails if the opening did.
+    alert(up_msg if up else down_msg, key=key, recovered=up, email=email or up)
 
 
 def probe_region(r: dict) -> bool:
@@ -1702,13 +1833,31 @@ def watch_once() -> None:
         if not ok and not _primary_reporter(r["index"]):
             _watch_state[f"region-{r['index']}"] = "down"   # track, silently
             continue
-        _transition(
-            f"region-{r['index']}", ok,
-            f"RECOVERED: region {r['index']} ({r['cloud']}, {r['host']}) is serving again.",
+        down_msg = (
             f"NODE DOWN: region {r['index']} ({r['cloud']}, {r['host']}) has failed "
             f"{FAILS_TO_ALERT} straight health checks (~{int(FAILS_TO_ALERT * WATCH_SECONDS)}s). "
-            f"Reported by {AGENT_UID} on {CLOUD}.",
+            f"Reported by {AGENT_UID} on {CLOUD}."
         )
+        region_key = f"region-{r['index']}"
+        _transition(
+            region_key, ok,
+            f"RECOVERED: region {r['index']} ({r['cloud']}, {r['host']}) is serving again.",
+            down_msg,
+            email=not _owner_is_reporting(r["index"]),
+        )
+        # The owner's own agent emails about its own region — with a diagnosis,
+        # which a peer cannot give — so a peer holds ITS email while that agent
+        # is alive. But only for a while: an outage the owner cannot see (it
+        # probes from inside; the world connects from outside) must still reach
+        # an inbox. The ledger makes repeating this every cycle free.
+        if ok:
+            _down_since.pop(region_key, None)
+        elif r["index"] != REGION_INDEX:
+            since = _down_since.setdefault(region_key, time.time())
+            if time.time() - since >= OWNER_GRACE_SECONDS:
+                email_alert(
+                    down_msg + f" Still down after {int((time.time() - since) / 60)} minutes.",
+                    key=region_key)
 
     # 1a0. Local containers. A chaos drill found this gap: stopping redis left
     #      /health answering 200, because the health endpoint does not touch it.
@@ -1717,32 +1866,48 @@ def watch_once() -> None:
     #      liveness check, so the expected containers are checked directly.
     local_missing: list[str] = []
     local_trouble = ""
-    if FULL_POWER:
-        try:
-            running = tool_local_containers("")
-            local_missing = [name for name in EXPECTED_CONTAINERS if name not in running]
-        except Exception as exc:  # noqa: BLE001
-            log(f"container check failed: {exc}")
+    # On EVERY region, not only the full-power one. This used to sit under
+    # `if FULL_POWER:`, so regions 0 and 1 never looked at their own containers
+    # or disk at all — region 1 was OOM-killed eight times in a week with its own
+    # agent none the wiser. Looking needs no authority; only repairing does.
+    try:
+        running = tool_local_containers("")
+        local_missing = [name for name in EXPECTED_CONTAINERS if name not in running]
+    except Exception as exc:  # noqa: BLE001
+        log(f"container check failed: {exc}")
 
-        # Disk. A chaos drill filled the disk and NOTHING noticed: containers
-        # keep running and /health keeps answering 200 right up until a write
-        # fails, so every signal the watchdog had stayed green while the region
-        # was minutes from being unable to accept a message.
-        #
-        # This is the third blind spot of the same shape — health that does not
-        # exercise the thing it depends on. Checked directly, like the
-        # containers.
-        try:
-            used = _disk_percent_used()
-            if used >= DISK_ALERT_PERCENT:
-                local_trouble = f"disk is {used}% full on region {REGION_INDEX}"
-                log(local_trouble)
-        except Exception as exc:  # noqa: BLE001
-            log(f"disk check failed: {exc}")
-        if (local_missing or local_trouble) and REGION_INDEX not in down_regions:
-            down_regions.append(REGION_INDEX)
-            if local_missing:
-                log(f"local containers missing: {local_missing}")
+    # Disk. A chaos drill filled the disk and NOTHING noticed: containers
+    # keep running and /health keeps answering 200 right up until a write
+    # fails, so every signal the watchdog had stayed green while the region
+    # was minutes from being unable to accept a message.
+    #
+    # This is the third blind spot of the same shape — health that does not
+    # exercise the thing it depends on. Checked directly, like the
+    # containers.
+    try:
+        used = _disk_percent_used()
+        if used >= DISK_ALERT_PERCENT:
+            local_trouble = f"disk is {used}% full on region {REGION_INDEX}"
+            log(local_trouble)
+    except Exception as exc:  # noqa: BLE001
+        log(f"disk check failed: {exc}")
+
+    # A deploy bounces a container for a few seconds, and a single look landing
+    # in that gap used to open an incident — the agent "repaired" every deploy
+    # and emailed about it. Two consecutive looks (~30-60s) is longer than any
+    # routine restart and still faster than a peer's health debounce.
+    global _local_fail_streak
+    if local_missing or local_trouble:
+        _local_fail_streak += 1
+    else:
+        _local_fail_streak = 0
+    if _local_fail_streak < LOCAL_FAILS_TO_ACT:
+        local_missing, local_trouble = [], ""
+
+    if (local_missing or local_trouble) and REGION_INDEX not in down_regions:
+        down_regions.append(REGION_INDEX)
+        if local_missing:
+            log(f"local containers missing: {local_missing}")
 
     # 1a. If OUR OWN region is the broken one and we hold a shell, do not just
     #     report it — work it. This is the only path on which the model chooses
@@ -1752,7 +1917,7 @@ def watch_once() -> None:
     #     Gated on transition, not on state: re-investigating every cycle would
     #     spend a model call every few seconds for the whole duration of an
     #     outage, and would relitigate a cause already found.
-    if FULL_POWER and REGION_INDEX in down_regions:
+    if REGION_INDEX in down_regions:
         if _watch_state.get("self-investigation") != "running":
             _watch_state["self-investigation"] = "running"
             try:
@@ -1771,18 +1936,28 @@ def watch_once() -> None:
                 # them nothing to answer. The disk drill produced two emails and
                 # a push and complete silence in chat, which is how this was
                 # found.
+                local_tools = _local_repair_tools()
+                can_repair = bool(set(local_tools) & _MUTATING_TOOLS)
                 try:
-                    send(OWNER_UID, f"🔧 Working on it: {trigger}")
+                    send(OWNER_UID, (
+                        f"🔧 Working on it: {trigger}" if can_repair else
+                        f"🔍 Investigating (this region's agent is a monitor and "
+                        f"cannot repair): {trigger}"))
                 except Exception as exc:  # noqa: BLE001 — chat is not the pager
                     log(f"chat opening note failed: {exc}")
 
-                # Before it touches anything: a note that it is about to.
+                # Before it touches anything: a note that it is about to. Through
+                # the ledger, so a crash-looping agent re-entering this block
+                # with fresh memory cannot announce the same outage again.
+                self_key = f"self:{REGION_INDEX}"
                 try:
-                    log(f"opening note: {escalate.email_human(opening_email(trigger))}")
+                    log("opening note: " + incidents.opened(
+                        self_key, opening_email(trigger, can_repair=can_repair),
+                        escalate.email_human))
                 except Exception as exc:  # noqa: BLE001
                     log(f"opening note failed: {exc}")
 
-                finding = investigate_anomaly(trigger)
+                finding = investigate_anomaly(trigger, tools=local_tools)
                 fields = investigate_mod.parse_conclusion(finding.conclusion)
                 log(f"self-repair: cause={fields['cause']!r} action={fields['action']!r} "
                     f"resolved={fields['resolved']!r}")
@@ -1794,7 +1969,9 @@ def watch_once() -> None:
                 # the agent's work — the evidence it acted on, and the links to
                 # go look for themselves.
                 try:
-                    log(f"self-repair report: {escalate.email_human(incident_report(finding))}")
+                    log("self-repair report: " + incidents.outcome(
+                        self_key, incident_report(finding), escalate.email_human,
+                        resolved=investigate_mod.is_resolved(finding.conclusion)))
                 except Exception as exc:  # noqa: BLE001 — the page still matters
                     log(f"self-repair report failed: {exc}")
 
@@ -1919,7 +2096,8 @@ def watch_once() -> None:
             alert(
                 f"APP RESTART LOOP in region {REGION_INDEX} ({CLOUD}): container has "
                 f"restarted {restarts - previous} times since the last check "
-                f"({restarts} total). It is crashing, not merely slow."
+                f"({restarts} total). It is crashing, not merely slow.",
+                key=f"restart-loop:{REGION_INDEX}",
             )
     except (ValueError, TypeError):
         pass

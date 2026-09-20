@@ -47,7 +47,7 @@ class TestSubject:
         subject = agent.incident_report(_finding(RESOLVED)).splitlines()[0]
 
         assert "redis container was stopped" in subject
-        assert "resolved" in subject
+        assert "fixed" in subject and "NOT fixed" not in subject
         assert "Azure" in subject
 
     def test_an_unresolved_incident_says_so_loudly(self, agent) -> None:
@@ -55,14 +55,14 @@ class TestSubject:
             _finding("CAUSE: disk full\nACTION: none\nRESOLVED: no")
         ).splitlines()[0]
 
-        assert "NOT resolved" in subject
+        assert "NOT fixed" in subject
 
     def test_a_missing_conclusion_does_not_read_as_success(self, agent) -> None:
         # An empty verdict must never render as "resolved" — that is the
         # failure that leaves a real outage unattended.
         subject = agent.incident_report(_finding("")).splitlines()[0]
 
-        assert "NOT resolved" in subject
+        assert "NOT fixed" in subject
         assert "unknown cause" in subject
 
 
