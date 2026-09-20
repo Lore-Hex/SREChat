@@ -1553,6 +1553,9 @@ WATCH_SECONDS = float(os.environ.get("SRE_WATCH_SECONDS", "30"))
 # An agent is considered down if it hasn't been seen for this long. Each agent
 # posts a heartbeat to the others, so silence means the process or its host died.
 AGENT_STALE_SECONDS = float(os.environ.get("SRE_AGENT_STALE_SECONDS", "180"))
+# How long after start a peer may go unheard before that silence is reported.
+LIVENESS_GRACE_SECONDS = float(os.environ.get("SRE_LIVENESS_GRACE_SECONDS", "600"))
+_STARTED_AT = time.time()
 
 _watch_state: dict[str, str] = {}     # what -> "up" | "down"
 _agent_seen: dict[str, float] = {}    # agent uid -> last heartbeat epoch
@@ -1823,6 +1826,7 @@ def probe_region(r: dict) -> bool:
 
 
 def watch_once() -> None:
+    refresh_agent_liveness()
     # 1. Every region's health endpoint. Debounced so deploys do not page, and
     #    reported by exactly one agent so one outage is one message.
     down_regions = []
@@ -1957,7 +1961,23 @@ def watch_once() -> None:
                 except Exception as exc:  # noqa: BLE001
                     log(f"opening note failed: {exc}")
 
-                finding = investigate_anomaly(trigger, tools=local_tools)
+                # A live drill diagnosed a stopped container perfectly — which
+                # RunCommand stopped it, at what second, why the restart policy
+                # did not bring it back — and then left production down, because
+                # the stop "was not a failure or crash". Correct, and useless.
+                # Who stopped it belongs in the report; it is not a reason to
+                # stay down. The owner can say so in chat if they want it down.
+                directive = (
+                    "\n\nYour job is to RESTORE SERVICE on this region, then explain. "
+                    "If something that should be running is stopped — even cleanly, even "
+                    "by an operator's command — start it, verify it is serving, and report "
+                    "who or what stopped it. Do not leave production down because the stop "
+                    "looked deliberate. Prefer the least destructive repair."
+                    if can_repair else
+                    "\n\nYou hold no tool that changes anything on this region. Diagnose "
+                    "as precisely as you can and say exactly what a human must do."
+                )
+                finding = investigate_anomaly(trigger + directive, tools=local_tools)
                 fields = investigate_mod.parse_conclusion(finding.conclusion)
                 log(f"self-repair: cause={fields['cause']!r} action={fields['action']!r} "
                     f"resolved={fields['resolved']!r}")
@@ -2051,7 +2071,14 @@ def watch_once() -> None:
         uid = f"sre-agent-{idx}"
         last = _agent_seen.get(uid)
         if last is None:
-            continue              # not yet heard from; wait for a baseline
+            if now - _STARTED_AT < LIVENESS_GRACE_SECONDS:
+                continue          # not yet heard from; wait for a baseline
+            # Never heard from, long after we should have. "No baseline" used to
+            # be an unbounded excuse: when liveness itself broke, every agent
+            # waited forever for a first heartbeat and reported nothing at all.
+            # Silence that outlasts the grace IS the finding.
+            _watch_state.setdefault(f"agent-{idx}", "up")
+            last = _STARTED_AT
         fresh = (now - last) < AGENT_STALE_SECONDS
         if not fresh and not _primary_reporter(idx):
             _watch_state[f"agent-{idx}"] = "down"
@@ -2152,15 +2179,53 @@ def watch_once() -> None:
         pass
 
 
+def _beat(host: str) -> None:
+    req = urllib.request.Request(f"https://{host}/v3.0/presence/beat", data=b"{}", method="POST")
+    req.add_header("Authorization", f"Bearer {uid_token(AGENT_UID)}")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        resp.read()
+
+
 def heartbeat() -> None:
-    """Tell the other agents we're alive. They page the owner if we stop."""
-    for idx in range(len(REGIONS)):
-        if idx == REGION_INDEX:
-            continue
+    """Tell every region we are alive. Peers page the owner if we stop.
+
+    Against EVERY region's API directly, not through chat. Heartbeats used to be
+    chat messages: stored, they cost 750 MB and an OOM loop; made transient, they
+    became invisible to the REST polling that reads them, and agent-down
+    detection was silently off for eighteen days. A region now knows who can
+    reach it with no storage and no replication, and any region that is up can
+    answer for the fleet.
+    """
+    for r in REGIONS:
         try:
-            send(f"sre-agent-{idx}", f"{HEARTBEAT_PREFIX} {AGENT_UID} {int(time.time())}")
-        except Exception:  # noqa: BLE001
+            _beat(r["host"])
+        except Exception:  # noqa: BLE001 — a region being down is reported elsewhere
             pass
+
+
+def refresh_agent_liveness() -> None:
+    """Read who has checked in, from any region that will answer.
+
+    Ages are computed on the SERVER's clock (its `now` minus its record) and
+    applied to ours, so clock skew between clouds cannot fake a fresh or a stale
+    agent. `max` because regions are asked in failover order and each only knows
+    who reached IT — the freshest sighting anywhere is the truth.
+    """
+    try:
+        data = api("GET", "/presence").get("data") or {}
+    except Exception as exc:  # noqa: BLE001
+        log(f"liveness read failed: {exc}")
+        return
+    server_now = data.get("now")
+    if not isinstance(server_now, (int, float)):
+        return
+    local_now = time.time()
+    for uid, at in (data.get("seen") or {}).items():
+        if not isinstance(at, (int, float)) or not str(uid).startswith("sre-agent-"):
+            continue
+        seen_at = local_now - max(0.0, server_now - at)
+        _agent_seen[uid] = max(_agent_seen.get(uid, 0.0), seen_at)
 
 
 HEARTBEAT_PREFIX = "::heartbeat::"
@@ -2221,7 +2286,11 @@ def main() -> int:
                     # liveness and never answer, or the agents would chat in a
                     # loop forever.
                     if text.startswith(HEARTBEAT_PREFIX):
-                        _agent_seen[msg["sender"]] = time.time()
+                        # Legacy heartbeats still sitting in a peer's store. They
+                        # are skipped as conversation and deliberately do NOT
+                        # count as a sighting: during a failover read these were
+                        # stamped "seen now", went stale three minutes later, and
+                        # raised AGENT DOWN for two agents that were fine.
                         continue
                     # An ops signal is not a conversation. It goes nowhere near
                     # handle(), which routes text to a tool and answers the

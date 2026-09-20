@@ -39,6 +39,23 @@ defmodule SREChatWeb.ApiRouter do
     end)
   end
 
+  # Agent liveness. See SREChat.Presence for why this is not a chat message.
+  #
+  # POST records the AUTHENTICATED caller — never a uid from the body, or any
+  # user could keep a dead agent looking alive.
+  post "/presence/beat" do
+    with_user(conn, fn conn, user, _token ->
+      SREChat.Presence.beat(user["uid"])
+      JSON.ok(conn, %{"uid" => user["uid"], "at" => System.system_time(:second)})
+    end)
+  end
+
+  get "/presence" do
+    with_user(conn, fn conn, _user, _token ->
+      JSON.ok(conn, %{"now" => System.system_time(:second), "seen" => SREChat.Presence.snapshot()})
+    end)
+  end
+
   get "/me" do
     with_user(conn, fn conn, _user, token ->
       case Store.me(token) do

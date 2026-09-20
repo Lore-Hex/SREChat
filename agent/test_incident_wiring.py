@@ -342,3 +342,102 @@ class TestWhoEmailsAboutAPeer:
         monkeypatch.setattr(aws.agent, "probe_region", lambda r: True)
         aws.agent.watch_once()
         assert [s[0] for s in aws.subjects] == ["🔴", "✅"]
+
+
+class TestLivenessOffTheChatPath:
+    """Heartbeats as chat cost 750 MB; as transient chat they delivered nothing."""
+
+    def test_sightings_use_the_SERVERS_clock_for_age(self, azure, monkeypatch):
+        import time as _t
+        a = azure.agent
+        a._agent_seen.clear()
+        # The server's clock is an hour off ours. Age is what matters, not epoch.
+        skewed_now = _t.time() + 3600
+        monkeypatch.setattr(a, "api", lambda m, p, *r, **k: {"data": {
+            "now": skewed_now,
+            "seen": {"sre-agent-0": skewed_now - 5, "sre-agent-1": skewed_now - 900,
+                     "joseph": skewed_now - 1}}})
+        a.refresh_agent_liveness()
+        assert a._agent_alive(0), "5s old on the server's clock must read as alive"
+        assert not a._agent_alive(1), "15 minutes old must read as stale"
+        assert "joseph" not in a._agent_seen, "only agents are tracked"
+
+    def test_a_failed_read_changes_nothing(self, azure, monkeypatch):
+        import time as _t
+        a = azure.agent
+        a._agent_seen["sre-agent-0"] = _t.time()
+        def boom(*_a, **_k):
+            raise OSError("all regions unreachable")
+        monkeypatch.setattr(a, "api", boom)
+        a.refresh_agent_liveness()
+        assert a._agent_alive(0)
+
+    def test_a_stored_legacy_heartbeat_does_not_vouch_for_anyone(self, azure):
+        # During a failover read these were stamped "seen now", went stale three
+        # minutes later, and raised AGENT DOWN for two agents that were fine.
+        import inspect
+        src = inspect.getsource(azure.agent.main)
+        block = src[src.index("if text.startswith(HEARTBEAT_PREFIX):"):][:700]
+        assert "_agent_seen[" not in block.split("continue")[0]
+
+    def test_it_beats_against_every_region_and_one_failure_stops_nothing(self, azure, monkeypatch):
+        a = azure.agent
+        hit = []
+        def beat(host):
+            hit.append(host)
+            if "sre1" in host:
+                raise OSError("region 1 is down")
+        monkeypatch.setattr(a, "_beat", beat)
+        a.heartbeat()
+        assert hit == [r["host"] for r in a.REGIONS]
+
+    def test_never_hearing_from_a_peer_is_eventually_a_finding(self, azure, monkeypatch):
+        # "No baseline yet" was an unbounded excuse: with liveness broken, every
+        # agent waited forever for a first heartbeat and reported nothing.
+        import time as _t
+        a = azure.agent
+        _quiet_fleet(azure, monkeypatch)
+        a._agent_seen.clear()
+        monkeypatch.setattr(a, "refresh_agent_liveness", lambda: None)
+        monkeypatch.setattr(a, "_STARTED_AT", _t.time() - 2 * a.LIVENESS_GRACE_SECONDS)
+        a.watch_once()
+        assert any("AGENT DOWN" in c for c in azure.chat), \
+            "two silent peers, long past the grace, and nothing was said"
+
+    def test_but_not_during_startup(self, azure, monkeypatch):
+        a = azure.agent
+        _quiet_fleet(azure, monkeypatch)
+        a._agent_seen.clear()
+        monkeypatch.setattr(a, "refresh_agent_liveness", lambda: None)
+        a.watch_once()
+        assert not any("AGENT DOWN" in c for c in azure.chat)
+
+
+class TestRepairMeansRepair:
+    def test_a_region_that_can_repair_is_told_to_restore_service(self, azure, monkeypatch):
+        # A live drill diagnosed a stopped container perfectly and then left
+        # production down because the stop "was not a failure or crash".
+        _quiet_fleet(azure, monkeypatch, containers="deploy-redis-1 deploy-caddy-1")
+        prompts = []
+        monkeypatch.setattr(azure.agent, "investigate_anomaly", lambda t, *, tools=None: (
+            prompts.append(t) or _Finding("CAUSE: x\nACTION: started it\nRESOLVED: yes", ["shell"])))
+        azure.agent.watch_once(); azure.agent.watch_once()
+        assert "RESTORE SERVICE" in prompts[0]
+        assert "even" in prompts[0] and "operator" in prompts[0]
+
+    def test_the_directive_stays_out_of_the_email_subject(self, azure, monkeypatch):
+        _quiet_fleet(azure, monkeypatch, containers="deploy-redis-1 deploy-caddy-1")
+        monkeypatch.setattr(azure.agent, "investigate_anomaly", lambda t, *, tools=None:
+                            _Finding("CAUSE: x\nACTION: started it\nRESOLVED: yes", ["shell"]))
+        azure.agent.watch_once(); azure.agent.watch_once()
+        assert "RESTORE SERVICE" not in azure.emails[0]
+
+    def test_a_monitor_is_told_to_diagnose_not_to_repair(self, aws, monkeypatch):
+        _quiet_fleet(aws, monkeypatch, containers="deploy-redis-1 deploy-caddy-1")
+        monkeypatch.setattr(aws.agent, "note_awaiting_ack", lambda *a, **k: None)
+        prompts = []
+        monkeypatch.setattr(aws.agent, "investigate_anomaly", lambda t, *, tools=None: (
+            prompts.append(t) or _Finding("CAUSE: x\nACTION: NONE\nRESOLVED: no", ["logs"])))
+        aws.agent.watch_once(); aws.agent.watch_once()
+        assert "RESTORE SERVICE" not in prompts[0]
+        assert "what a human must do" in prompts[0]

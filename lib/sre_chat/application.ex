@@ -14,6 +14,7 @@ defmodule SREChat.Application do
     children =
       [
         SREChat.Observability,
+        SREChat.Presence,
         {Registry, keys: :duplicate, name: SREChat.PubSub},
         SREChat.Store,
         SREChat.RedisBus,
